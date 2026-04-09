@@ -1,0 +1,11 @@
+{
+  "name": "enemy-builder",
+  "version": "0.1.0",
+  "title": "Enemy Builder",
+  "author": "OpenAI Codex",
+  "factorio_version": "2.0",
+  "dependencies": [
+    "base >= 2.0"
+  ],
+  "description": "Adds a rival robot builder that starts by claiming nearby coal."
+}
