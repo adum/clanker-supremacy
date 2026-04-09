@@ -11,6 +11,8 @@ avatar.healing_per_tick = 100
 avatar.alert_when_damaged = false
 avatar.running_speed = 0.16
 avatar.distance_per_frame = 0.14
+avatar.collision_mask = {layers = {}, not_colliding_with_itself = true}
+avatar.collision_box = {{0, 0}, {0, 0}}
 avatar.damage_hit_tint = {0.0, 0.3, 0.45, 0.0}
 avatar.light =
 {
