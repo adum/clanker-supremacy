@@ -36,6 +36,7 @@ local direction_by_name = {
   northwest = defines.direction.northwest
 }
 
+local cardinal_direction_rotation_order = {"north", "east", "south", "west"}
 local diagonal_ratio = 0.41421356237
 
 local function deep_copy(value)
@@ -53,6 +54,59 @@ end
 
 local function clone_position(position)
   return {x = position.x, y = position.y}
+end
+
+local function rotate_offset(offset, orientation)
+  if not offset then
+    return {x = 0, y = 0}
+  end
+
+  local x = offset.x or 0
+  local y = offset.y or 0
+
+  if orientation == "east" then
+    return {x = -y, y = x}
+  end
+
+  if orientation == "south" then
+    return {x = -x, y = -y}
+  end
+
+  if orientation == "west" then
+    return {x = y, y = -x}
+  end
+
+  return {x = x, y = y}
+end
+
+local function rotate_direction_name(direction_name, orientation)
+  if not direction_name then
+    return nil
+  end
+
+  local base_index = nil
+  for index, candidate_name in ipairs(cardinal_direction_rotation_order) do
+    if candidate_name == direction_name then
+      base_index = index
+      break
+    end
+  end
+
+  if not base_index then
+    return direction_name
+  end
+
+  local rotation_steps = 0
+  if orientation == "east" then
+    rotation_steps = 1
+  elseif orientation == "south" then
+    rotation_steps = 2
+  elseif orientation == "west" then
+    rotation_steps = 3
+  end
+
+  local rotated_index = ((base_index - 1 + rotation_steps) % #cardinal_direction_rotation_order) + 1
+  return cardinal_direction_rotation_order[rotated_index]
 end
 
 local function tile_position_to_world_center(position)
@@ -342,6 +396,10 @@ local function describe_builder_state(builder_state)
     lines[#lines + 1] = "next-machine-refuel-tick=" .. builder_state.next_machine_refuel_tick
   end
 
+  if builder_state.next_machine_input_supply_tick then
+    lines[#lines + 1] = "next-machine-input-supply-tick=" .. builder_state.next_machine_input_supply_tick
+  end
+
   if builder_state.next_machine_output_collection_tick then
     lines[#lines + 1] = "next-machine-output-collection-tick=" .. builder_state.next_machine_output_collection_tick
   end
@@ -566,6 +624,10 @@ local function should_pursue_milestone(builder_state, milestone)
     return true
   end
 
+  if milestone.pursue_proactively == true then
+    return true
+  end
+
   return builder_data.scaling and builder_data.scaling.pursue_milestones_proactively == true
 end
 
@@ -595,6 +657,50 @@ local function get_post_place_pause_ticks(task)
   return 0
 end
 
+local function get_approach_randomness(task, arrival_distance)
+  local movement_settings = builder_data.movement or {}
+  local max_offset = task and task.approach_randomness
+
+  if max_offset == nil then
+    max_offset = movement_settings.approach_randomness or 0
+  end
+
+  if arrival_distance and arrival_distance > 0 then
+    max_offset = math.min(max_offset, arrival_distance * 0.75)
+  end
+
+  if max_offset < 0.01 then
+    return 0
+  end
+
+  return max_offset
+end
+
+local function create_randomized_approach_position(target_position, max_offset)
+  if not target_position then
+    return nil
+  end
+
+  if not max_offset or max_offset <= 0 then
+    return clone_position(target_position)
+  end
+
+  local angle = (next_random_index(360) - 1) * (math.pi / 180)
+  local radius = ((next_random_index(1000) - 1) / 999) * max_offset
+
+  return {
+    x = target_position.x + (math.cos(angle) * radius),
+    y = target_position.y + (math.sin(angle) * radius)
+  }
+end
+
+local function create_task_approach_position(task, target_position, arrival_distance)
+  return create_randomized_approach_position(
+    target_position,
+    get_approach_randomness(task, arrival_distance or (task and task.arrival_distance) or nil)
+  )
+end
+
 local function destroy_entity_if_valid(entity)
   if entity and entity.valid then
     entity.destroy()
@@ -611,6 +717,45 @@ local function get_builder_main_inventory(entity)
   end
 
   return entity.get_inventory(defines.inventory.character_main)
+end
+
+local function get_inventory_take_limit(item_name)
+  local limits = builder_data.logistics and builder_data.logistics.inventory_take_limits
+  if not limits then
+    return nil
+  end
+
+  return limits[item_name]
+end
+
+local function get_inventory_take_allowance(entity, item_name)
+  local limit = get_inventory_take_limit(item_name)
+  if not limit then
+    return nil
+  end
+
+  return math.max(0, limit - get_item_count(entity, item_name))
+end
+
+local function get_capped_collection_stack(entity, item_stack)
+  local allowance = get_inventory_take_allowance(entity, item_stack.name)
+  if allowance == nil then
+    return item_stack
+  end
+
+  if allowance <= 0 then
+    return nil
+  end
+
+  if item_stack.count <= allowance then
+    return item_stack
+  end
+
+  return {
+    name = item_stack.name,
+    quality = item_stack.quality,
+    count = allowance
+  }
 end
 
 local function get_missing_inventory_target(entity, inventory_targets)
@@ -996,6 +1141,37 @@ local function transfer_inventory_contents(source_inventory, destination, debug_
   return moved_items
 end
 
+local function transfer_inventory_item(source_inventory, destination_inventory, item_name, requested_count, debug_reason)
+  if not (source_inventory and destination_inventory and item_name and requested_count and requested_count > 0) then
+    return 0
+  end
+
+  local available_count = source_inventory.get_item_count(item_name)
+  if available_count <= 0 then
+    return 0
+  end
+
+  local inserted_count = destination_inventory.insert{
+    name = item_name,
+    count = math.min(requested_count, available_count)
+  }
+
+  if inserted_count <= 0 then
+    return 0
+  end
+
+  source_inventory.remove{
+    name = item_name,
+    count = inserted_count
+  }
+
+  if debug_reason then
+    debug_log(debug_reason .. ": moved " .. item_name .. "=" .. inserted_count)
+  end
+
+  return inserted_count
+end
+
 local function insert_entity_fuel(entity, fuel)
   if not fuel then
     return
@@ -1069,7 +1245,57 @@ local function find_downstream_machine_placement(surface, force, task, drop_posi
   return nil, nil, stats
 end
 
-local function find_entity_placement_near_anchor(surface, force, entity_name, anchor_position, search_radius, step, directions)
+local function entity_overlaps_resources(entity)
+  if not (entity and entity.valid) then
+    return false
+  end
+
+  return #entity.surface.find_entities_filtered{
+    area = entity.selection_box,
+    type = "resource",
+    limit = 1
+  } > 0
+end
+
+local function count_registered_sites_near_position(requirement, position)
+  if not (requirement and requirement.site_type and position) then
+    return 0
+  end
+
+  local count = 0
+  local radius = requirement.radius or 24
+  local radius_squared = radius * radius
+  local entity_field = requirement.entity_field or "assembler"
+
+  for _, site in ipairs(ensure_production_sites()) do
+    local entity = site[entity_field]
+    if site.site_type == requirement.site_type and entity and entity.valid then
+      if square_distance(position, entity.position) <= radius_squared then
+        count = count + 1
+      end
+    end
+  end
+
+  return count
+end
+
+local function anchor_has_registered_site(anchor_entity, requirement)
+  if not (anchor_entity and anchor_entity.valid and requirement and requirement.site_type) then
+    return false
+  end
+
+  local entity_field = requirement.entity_field or "assembler"
+
+  for _, site in ipairs(ensure_production_sites()) do
+    if site.site_type == requirement.site_type and site[entity_field] == anchor_entity then
+      return true
+    end
+  end
+
+  return false
+end
+
+local function find_entity_placement_near_anchor(surface, force, entity_name, anchor_position, search_radius, step, directions, placement_validator)
   local stats = {
     positions_checked = 0,
     placeable_positions = 0
@@ -1087,7 +1313,9 @@ local function find_entity_placement_near_anchor(surface, force, entity_name, an
           force = force
         } then
           stats.placeable_positions = stats.placeable_positions + 1
-          return clone_position(position), direction, stats
+          if not placement_validator or placement_validator(position, direction) then
+            return clone_position(position), direction, stats
+          end
         end
       end
     else
@@ -1098,12 +1326,121 @@ local function find_entity_placement_near_anchor(surface, force, entity_name, an
         force = force
       } then
         stats.placeable_positions = stats.placeable_positions + 1
-        return clone_position(position), nil, stats
+        if not placement_validator or placement_validator(position, nil) then
+          return clone_position(position), nil, stats
+        end
       end
     end
   end
 
   return nil, nil, stats
+end
+
+local function layout_fits_around_anchor_entity(builder, anchor_entity, layout_config, summary)
+  if not layout_config then
+    return true
+  end
+
+  if layout_config.forbid_resource_overlap and entity_overlaps_resources(anchor_entity) then
+    if summary then
+      summary.resource_overlap_rejections = (summary.resource_overlap_rejections or 0) + 1
+    end
+    return false
+  end
+
+  for _, orientation in ipairs(layout_config.layout_orientations or {"north"}) do
+    local probe_entities = {}
+    local layout_valid = true
+
+    for _, element in ipairs(layout_config.layout_elements or {}) do
+      local rotated_offset = rotate_offset(element.offset, orientation)
+      local desired_position = {
+        x = anchor_entity.position.x + rotated_offset.x,
+        y = anchor_entity.position.y + rotated_offset.y
+      }
+      local direction_name = rotate_direction_name(element.direction_name, orientation)
+      local build_position, build_direction = find_entity_placement_near_anchor(
+        builder.surface,
+        builder.force,
+        element.entity_name,
+        desired_position,
+        element.placement_search_radius or 0,
+        element.placement_step or 0.5,
+        direction_name and {direction_by_name[direction_name]} or nil
+      )
+
+      if not build_position then
+        layout_valid = false
+        break
+      end
+
+      local probe_entity = builder.surface.create_entity{
+        name = element.entity_name,
+        position = build_position,
+        direction = build_direction,
+        force = builder.force,
+        create_build_effect_smoke = false,
+        raise_built = false
+      }
+
+      if not probe_entity then
+        layout_valid = false
+        break
+      end
+
+      probe_entities[#probe_entities + 1] = probe_entity
+
+      if layout_config.forbid_resource_overlap and entity_overlaps_resources(probe_entity) then
+        if summary then
+          summary.resource_overlap_rejections = (summary.resource_overlap_rejections or 0) + 1
+        end
+        layout_valid = false
+        break
+      end
+    end
+
+    for _, probe_entity in ipairs(probe_entities) do
+      if probe_entity and probe_entity.valid then
+        probe_entity.destroy()
+      end
+    end
+
+    if layout_valid then
+      return true
+    end
+  end
+
+  return false
+end
+
+local function machine_site_candidate_is_valid(builder, task, position, direction, summary)
+  local probe_entity = builder.surface.create_entity{
+    name = task.entity_name,
+    position = position,
+    direction = direction,
+    force = builder.force,
+    create_build_effect_smoke = false,
+    raise_built = false
+  }
+
+  if not probe_entity then
+    return false
+  end
+
+  local valid = true
+
+  if task.forbid_resource_overlap and entity_overlaps_resources(probe_entity) then
+    summary.resource_overlap_rejections = (summary.resource_overlap_rejections or 0) + 1
+    valid = false
+  end
+
+  if valid and task.layout_reservation and not layout_fits_around_anchor_entity(builder, probe_entity, task.layout_reservation, summary) then
+    summary.layout_reservation_rejections = (summary.layout_reservation_rejections or 0) + 1
+    valid = false
+  end
+
+  probe_entity.destroy()
+  return valid
 end
 
 local function site_matches_patterns(site, pattern_names)
@@ -1141,6 +1478,7 @@ local function find_machine_site_near_resource_sites(builder_state, task)
 
   local builder = builder_state.entity
   local anchor_candidates = {}
+  local anchor_preference = task.anchor_preference and task.anchor_preference.fewer_registered_sites or nil
 
   for _, site in ipairs(cleanup_resource_sites()) do
     if site_matches_patterns(site, task.anchor_pattern_names) then
@@ -1149,20 +1487,27 @@ local function find_machine_site_near_resource_sites(builder_state, task)
         anchor_candidates[#anchor_candidates + 1] = {
           site = site,
           anchor_position = anchor_position,
-          distance = square_distance(builder.position, anchor_position)
+          distance = square_distance(builder.position, anchor_position),
+          nearby_registered_site_count = count_registered_sites_near_position(anchor_preference, anchor_position)
         }
       end
     end
   end
 
   table.sort(anchor_candidates, function(left, right)
+    if left.nearby_registered_site_count ~= right.nearby_registered_site_count then
+      return left.nearby_registered_site_count < right.nearby_registered_site_count
+    end
+
     return left.distance < right.distance
   end)
 
   local summary = {
     anchor_sites_considered = 0,
     positions_checked = 0,
-    placeable_positions = 0
+    placeable_positions = 0,
+    resource_overlap_rejections = 0,
+    layout_reservation_rejections = 0
   }
 
   local max_anchor_sites = task.max_anchor_sites or #anchor_candidates
@@ -1180,7 +1525,10 @@ local function find_machine_site_near_resource_sites(builder_state, task)
       anchor_candidate.anchor_position,
       task.placement_search_radius,
       task.placement_step,
-      task.placement_directions
+      task.placement_directions,
+      (task.forbid_resource_overlap or task.layout_reservation) and function(position, direction)
+        return machine_site_candidate_is_valid(builder, task, position, direction, summary)
+      end or nil
     )
 
     summary.positions_checked = summary.positions_checked + placement_stats.positions_checked
@@ -1194,6 +1542,166 @@ local function find_machine_site_near_resource_sites(builder_state, task)
         build_direction = build_direction,
         summary = summary
       }
+    end
+  end
+
+  return nil, summary
+end
+
+local function get_task_anchor_entity_names(task)
+  if not task then
+    return nil
+  end
+
+  if task.anchor_entity_names and #task.anchor_entity_names > 0 then
+    return task.anchor_entity_names
+  end
+
+  if task.anchor_entity_name then
+    return {task.anchor_entity_name}
+  end
+
+  return nil
+end
+
+local function destroy_entities(entities)
+  for _, entity in ipairs(entities or {}) do
+    if entity and entity.valid then
+      entity.destroy()
+    end
+  end
+end
+
+local function find_layout_site_near_machine(builder_state, task)
+  local builder = builder_state.entity
+  local anchor_entity_names = get_task_anchor_entity_names(task)
+  local summary = {
+    anchor_entities_considered = 0,
+    anchors_skipped_registered = 0,
+    orientations_considered = 0,
+    layout_elements_checked = 0,
+    positions_checked = 0,
+    placeable_positions = 0,
+    resource_overlap_rejections = 0
+  }
+
+  if not anchor_entity_names then
+    return nil, summary
+  end
+
+  local filter = {
+    force = builder.force,
+    name = anchor_entity_names
+  }
+
+  if task.anchor_search_radius then
+    filter.position = builder.position
+    filter.radius = task.anchor_search_radius
+  end
+
+  local anchor_entities = builder.surface.find_entities_filtered(filter)
+  table.sort(anchor_entities, function(left, right)
+    return square_distance(builder.position, left.position) < square_distance(builder.position, right.position)
+  end)
+
+  local max_anchor_entities = task.max_anchor_entities or #anchor_entities
+
+  for _, anchor_entity in ipairs(anchor_entities) do
+    if summary.anchor_entities_considered >= max_anchor_entities then
+      break
+    end
+
+    if anchor_entity.valid then
+      if anchor_has_registered_site(anchor_entity, task.require_missing_registered_site) then
+        summary.anchors_skipped_registered = summary.anchors_skipped_registered + 1
+      else
+        summary.anchor_entities_considered = summary.anchor_entities_considered + 1
+
+        if task.forbid_resource_overlap and entity_overlaps_resources(anchor_entity) then
+          summary.resource_overlap_rejections = summary.resource_overlap_rejections + 1
+        else
+          for _, orientation in ipairs(task.layout_orientations or {"north"}) do
+            summary.orientations_considered = summary.orientations_considered + 1
+
+            local placements = {}
+            local probe_entities = {}
+            local layout_valid = true
+
+            for _, element in ipairs(task.layout_elements or {}) do
+              summary.layout_elements_checked = summary.layout_elements_checked + 1
+
+              local rotated_offset = rotate_offset(element.offset, orientation)
+              local desired_position = {
+                x = anchor_entity.position.x + rotated_offset.x,
+                y = anchor_entity.position.y + rotated_offset.y
+              }
+              local direction_name = rotate_direction_name(element.direction_name, orientation)
+              local build_position, build_direction, placement_stats = find_entity_placement_near_anchor(
+                builder.surface,
+                builder.force,
+                element.entity_name,
+                desired_position,
+                element.placement_search_radius or 0,
+                element.placement_step or 0.5,
+                direction_name and {direction_by_name[direction_name]} or nil
+              )
+
+              summary.positions_checked = summary.positions_checked + placement_stats.positions_checked
+              summary.placeable_positions = summary.placeable_positions + placement_stats.placeable_positions
+
+              if not build_position then
+                layout_valid = false
+                break
+              end
+
+              local probe_entity = builder.surface.create_entity{
+                name = element.entity_name,
+                position = build_position,
+                direction = build_direction,
+                force = builder.force,
+                create_build_effect_smoke = false,
+                raise_built = false
+              }
+
+              if not probe_entity then
+                layout_valid = false
+                break
+              end
+
+              if task.forbid_resource_overlap and entity_overlaps_resources(probe_entity) then
+                summary.resource_overlap_rejections = summary.resource_overlap_rejections + 1
+                probe_entities[#probe_entities + 1] = probe_entity
+                layout_valid = false
+                break
+              end
+
+              probe_entities[#probe_entities + 1] = probe_entity
+              placements[#placements + 1] = {
+                id = element.id or ("layout-" .. tostring(#placements + 1)),
+                site_role = element.site_role,
+                entity_name = element.entity_name,
+                item_name = element.item_name or element.entity_name,
+                build_position = clone_position(build_position),
+                build_direction = build_direction,
+                fuel = element.fuel
+              }
+            end
+
+            destroy_entities(probe_entities)
+
+            if layout_valid then
+              return {
+                anchor_entity = anchor_entity,
+                anchor_position = clone_position(anchor_entity.position),
+                build_position = clone_position(anchor_entity.position),
+                orientation = orientation,
+                placements = placements,
+                summary = summary
+              }, summary
+            end
+          end
+        end
+      end
     end
   end
 
@@ -1245,19 +1753,11 @@ local function collect_nearby_container_items(builder_state, tick)
 
       local inventory = get_container_inventory(container)
       if inventory and not inventory.is_empty() then
-        local reason = "collected from " .. container.name .. " at " .. format_position(container.position)
-        for _, item_stack in ipairs(get_sorted_item_stacks(inventory.get_contents())) do
-          if item_stack.count and item_stack.count > 0 then
-            local inserted_count = insert_stack(builder, item_stack, reason)
-            if inserted_count > 0 then
-              inventory.remove{
-                name = item_stack.name,
-                quality = item_stack.quality,
-                count = inserted_count
-              }
-            end
-          end
-        end
+        pull_inventory_contents_to_builder(
+          inventory,
+          builder,
+          "collected from " .. container.name .. " at " .. format_position(container.position)
+        )
       end
     end
   end
@@ -1410,6 +1910,108 @@ local function refuel_nearby_machines(builder_state, tick)
   end
 end
 
+local function supply_nearby_machine_inputs(builder_state, tick)
+  local supply_settings = builder_data.logistics and builder_data.logistics.nearby_machine_input_supply
+  if not supply_settings then
+    return
+  end
+
+  if tick < (builder_state.next_machine_input_supply_tick or 0) then
+    return
+  end
+
+  builder_state.next_machine_input_supply_tick = tick + supply_settings.interval_ticks
+
+  local builder = builder_state.entity
+  local filter = {
+    position = builder.position,
+    radius = supply_settings.radius
+  }
+
+  if supply_settings.entity_type then
+    filter.type = supply_settings.entity_type
+  elseif supply_settings.entity_types then
+    filter.type = supply_settings.entity_types
+  end
+
+  if supply_settings.entity_name then
+    filter.name = supply_settings.entity_name
+  elseif supply_settings.entity_names then
+    filter.name = supply_settings.entity_names
+  end
+
+  if supply_settings.own_force_only then
+    filter.force = builder.force
+  end
+
+  local entities = builder.surface.find_entities_filtered(filter)
+  table.sort(entities, function(left, right)
+    return square_distance(builder.position, left.position) < square_distance(builder.position, right.position)
+  end)
+
+  local entities_scanned = 0
+
+  for _, entity in ipairs(entities) do
+    if supply_settings.max_entities_per_scan and entities_scanned >= supply_settings.max_entities_per_scan then
+      break
+    end
+
+    if entity.valid and entity ~= builder then
+      entities_scanned = entities_scanned + 1
+
+      local recipe = entity.get_recipe and entity.get_recipe()
+      local input_inventory = entity.get_inventory and entity.get_inventory(defines.inventory.assembling_machine_input)
+
+      if recipe and input_inventory then
+        for _, ingredient in ipairs(recipe.ingredients or {}) do
+          local ingredient_type = ingredient.type or "item"
+          local ingredient_name = ingredient.name
+
+          if ingredient_type == "item" and ingredient_name then
+            local current_count = input_inventory.get_item_count(ingredient_name)
+            local desired_count = (supply_settings.target_ingredient_item_count or 20) - current_count
+
+            if desired_count > 0 then
+              local available_count = get_item_count(builder, ingredient_name)
+              local transfer_count = math.min(desired_count, available_count)
+
+              if transfer_count > 0 then
+                local inserted_count = input_inventory.insert{
+                  name = ingredient_name,
+                  count = transfer_count
+                }
+
+                if inserted_count > 0 then
+                  local reason =
+                    "supplied " .. ingredient_name .. " to " .. entity.name ..
+                    " at " .. format_position(entity.position)
+                  local removed_count = remove_item(builder, ingredient_name, inserted_count, reason)
+
+                  if removed_count < inserted_count then
+                    input_inventory.remove{
+                      name = ingredient_name,
+                      count = inserted_count - removed_count
+                    }
+                    inserted_count = removed_count
+                  end
+
+                  if inserted_count > 0 then
+                    debug_log(
+                      reason .. " with " .. inserted_count ..
+                      "; machine now has " .. input_inventory.get_item_count(ingredient_name) ..
+                      " " .. ingredient_name
+                    )
+                  end
+                end
+              end
+            end
+          end
+        end
+      end
+    end
+  end
+end
+
 local function register_smelting_site(task, miner, downstream_machine, output_container)
   local production_sites = ensure_production_sites()
   local task_id = (task and task.id) or (task and task.pattern_name) or "smelting-site"
@@ -1451,12 +2053,131 @@ local function register_smelting_site(task, miner, downstream_machine, output_co
   debug_log(message)
 end
 
+local function register_assembler_defense_site(task, assembler, placed_layout_entities)
+  if not (task and assembler and assembler.valid) then
+    return nil
+  end
+
+  local turrets = {}
+  local inserters = {}
+  local poles = {}
+  local solar_panels = {}
+
+  for _, placement in ipairs(placed_layout_entities or {}) do
+    local entity = placement.entity
+    if entity and entity.valid then
+      if placement.site_role == "turret" then
+        turrets[#turrets + 1] = entity
+      elseif placement.site_role == "burner-inserter" then
+        inserters[#inserters + 1] = entity
+      elseif placement.site_role == "power-pole" then
+        poles[#poles + 1] = entity
+      elseif placement.site_role == "solar-panel" then
+        solar_panels[#solar_panels + 1] = entity
+      end
+    end
+  end
+
+  if #turrets == 0 then
+    return nil
+  end
+
+  local production_sites = ensure_production_sites()
+  for _, site in ipairs(production_sites) do
+    if site.site_type == "assembler-defense" and site.assembler == assembler then
+      site.task_id = task.id or task.completed_scaling_milestone_name or "assembler-defense"
+      site.turrets = turrets
+      site.inserters = inserters
+      site.power_poles = poles
+      site.solar_panels = solar_panels
+      site.ammo_item_name = (task.transfer and task.transfer.ammo_item_name) or "firearm-magazine"
+      site.turret_ammo_target_count = (task.transfer and task.transfer.turret_ammo_target_count) or 20
+      site.per_turret_transfer_limit = (task.transfer and task.transfer.per_turret_transfer_limit) or 1
+      site.transfer_interval_ticks = (task.transfer and task.transfer.interval_ticks) or 30
+      return site
+    end
+  end
+
+  production_sites[#production_sites + 1] = {
+    task_id = task.id or task.completed_scaling_milestone_name or "assembler-defense",
+    site_type = "assembler-defense",
+    assembler = assembler,
+    turrets = turrets,
+    inserters = inserters,
+    power_poles = poles,
+    solar_panels = solar_panels,
+    ammo_item_name = (task.transfer and task.transfer.ammo_item_name) or "firearm-magazine",
+    turret_ammo_target_count = (task.transfer and task.transfer.turret_ammo_target_count) or 20,
+    per_turret_transfer_limit = (task.transfer and task.transfer.per_turret_transfer_limit) or 1,
+    transfer_interval_ticks = (task.transfer and task.transfer.interval_ticks) or 30,
+    next_transfer_tick = 0
+  }
+
+  debug_log(
+    "task " .. (task.id or "assembler-defense") ..
+    ": registered assembler defense site at " .. format_position(assembler.position) ..
+    " with " .. tostring(#turrets) .. " turrets"
+  )
+
+  return production_sites[#production_sites]
+end
+
 local function process_production_sites(tick)
   local production_sites = ensure_production_sites()
   local kept_sites = {}
 
   for _, site in ipairs(production_sites) do
-    if site.miner and site.miner.valid and site.downstream_machine and site.downstream_machine.valid and (not site.output_container or site.output_container.valid) then
+    if site.site_type == "assembler-defense" then
+      local valid_turrets = {}
+
+      for _, turret in ipairs(site.turrets or {}) do
+        if turret and turret.valid then
+          valid_turrets[#valid_turrets + 1] = turret
+        end
+      end
+
+      site.turrets = valid_turrets
+
+      if site.assembler and site.assembler.valid and #site.turrets > 0 then
+        if tick >= (site.next_transfer_tick or 0) then
+          site.next_transfer_tick = tick + (site.transfer_interval_ticks or 30)
+
+          local output_inventory = site.assembler.get_output_inventory and site.assembler.get_output_inventory()
+          if output_inventory then
+            table.sort(site.turrets, function(left, right)
+              local left_inventory = left.get_inventory and left.get_inventory(defines.inventory.turret_ammo)
+              local right_inventory = right.get_inventory and right.get_inventory(defines.inventory.turret_ammo)
+              local left_count = left_inventory and left_inventory.get_item_count(site.ammo_item_name or "firearm-magazine") or 0
+              local right_count = right_inventory and right_inventory.get_item_count(site.ammo_item_name or "firearm-magazine") or 0
+
+              if left_count ~= right_count then
+                return left_count < right_count
+              end
+
+              return square_distance(site.assembler.position, left.position) < square_distance(site.assembler.position, right.position)
+            end)
+
+            for _, turret in ipairs(site.turrets) do
+              local ammo_inventory = turret.get_inventory and turret.get_inventory(defines.inventory.turret_ammo)
+              if ammo_inventory then
+                local desired_count = (site.turret_ammo_target_count or 20) - ammo_inventory.get_item_count(site.ammo_item_name or "firearm-magazine")
+                if desired_count > 0 then
+                  transfer_inventory_item(
+                    output_inventory,
+                    ammo_inventory,
+                    site.ammo_item_name or "firearm-magazine",
+                    math.min(desired_count, site.per_turret_transfer_limit or desired_count),
+                    "production site " .. site.task_id .. ": moved ammo into " .. turret.name .. " at " .. format_position(turret.position)
+                  )
+                end
+              end
+            end
+          end
+        end
+
+        kept_sites[#kept_sites + 1] = site
+      end
+    elseif site.miner and site.miner.valid and site.downstream_machine and site.downstream_machine.valid and (not site.output_container or site.output_container.valid) then
       if tick >= (site.next_transfer_tick or 0) then
         site.next_transfer_tick = tick + site.transfer_interval_ticks
 
@@ -1492,7 +2213,8 @@ pull_inventory_contents_to_builder = function(source_inventory, builder, reason,
 
   for _, item_stack in ipairs(get_sorted_item_stacks(source_inventory.get_contents())) do
     if item_stack.count and item_stack.count > 0 and (not allowed_item_names or allowed_item_names[item_stack.name]) then
-      local inserted_count = insert_stack(builder, item_stack, reason)
+      local capped_stack = get_capped_collection_stack(builder, item_stack)
+      local inserted_count = capped_stack and insert_stack(builder, capped_stack, reason) or 0
       if inserted_count > 0 then
         source_inventory.remove{
           name = item_stack.name,
@@ -1683,6 +2405,10 @@ local function get_goal_summary(builder_state)
   end
 
   local task = get_display_task(builder_state)
+  if task and task.repeatable_scaling_milestone_name then
+    return "Goal: " .. get_milestone_display_name(task.repeatable_scaling_milestone_name)
+  end
+
   if task and task.scaling_pattern_name then
     return "Goal: Expand " .. get_pattern_display_name(task.scaling_pattern_name)
   end
@@ -2771,6 +3497,7 @@ local function start_place_miner_task(builder_state, task, tick)
     phase = "moving",
     resource_position = clone_position(resource.position),
     build_position = build_position,
+    approach_position = create_task_approach_position(task, build_position),
     build_direction = build_direction,
     downstream_machine_position = downstream_machine_position,
     output_container_position = output_container_position,
@@ -2833,6 +3560,7 @@ local function start_gather_world_items_task(builder_state, task, tick)
     target_entity = gather_site.entity,
     target_decorative_position = gather_site.decorative_position,
     target_position = clone_position(gather_site.target_position),
+    approach_position = create_task_approach_position(task, gather_site.target_position),
     harvest_products = gather_site.source.yields,
     mining_duration_ticks = gather_site.source.mining_duration_ticks or task.mining_duration_ticks,
     last_position = clone_position(entity.position),
@@ -2869,6 +3597,7 @@ local function start_move_to_resource_task(builder_state, task, tick)
     phase = "moving-to-resource",
     resource_position = clone_position(resource.position),
     target_position = clone_position(resource.position),
+    approach_position = create_task_approach_position(task, resource.position),
     last_position = clone_position(entity.position),
     last_progress_tick = tick
   }
@@ -2897,7 +3626,9 @@ local function start_place_machine_near_site_task(builder_state, task, tick)
       "task " .. task.id .. ": no buildable " .. task.entity_name ..
       " site found near anchor sites; checked " .. summary.anchor_sites_considered ..
       " anchors, " .. summary.positions_checked .. " candidate positions, " ..
-      summary.placeable_positions .. " placeable spots; retry at tick " ..
+      summary.placeable_positions .. " placeable spots, " ..
+      (summary.resource_overlap_rejections or 0) .. " resource-overlap rejections, " ..
+      (summary.layout_reservation_rejections or 0) .. " layout-fit rejections; retry at tick " ..
       builder_state.task_state.next_attempt_tick
     )
     return
@@ -2906,6 +3637,7 @@ local function start_place_machine_near_site_task(builder_state, task, tick)
   builder_state.task_state = {
     phase = "moving",
     build_position = clone_position(site.build_position),
+    approach_position = create_task_approach_position(task, site.build_position),
     build_direction = site.build_direction,
     anchor_position = clone_position(site.anchor_position),
     anchor_pattern_name = site.site.pattern_name,
@@ -2917,6 +3649,57 @@ local function start_place_machine_near_site_task(builder_state, task, tick)
     "task " .. task.id .. ": found build site for " .. task.entity_name ..
     " near " .. (site.site.pattern_name or "resource site") ..
     " at " .. format_position(site.anchor_position) ..
+    "; moving toward " .. format_position(site.build_position)
+  )
+end
+
+local function start_place_layout_near_machine_task(builder_state, task, tick)
+  local entity = builder_state.entity
+  debug_log(
+    "task " .. task.id .. ": scanning for layout anchor " ..
+    table.concat(get_task_anchor_entity_names(task) or {}, ", ") ..
+    " from " .. format_position(entity.position)
+  )
+
+  local site, summary = find_layout_site_near_machine(builder_state, task)
+  if not site then
+    builder_state.task_state = {
+      phase = "waiting-for-resource",
+      wait_reason = "no-layout-site",
+      next_attempt_tick = tick + task.search_retry_ticks
+    }
+    debug_log(
+      "task " .. task.id .. ": no layout site found; checked " ..
+      summary.anchor_entities_considered .. " anchors, " ..
+      (summary.anchors_skipped_registered or 0) .. " anchors already registered, " ..
+      summary.orientations_considered .. " orientations, " ..
+      summary.layout_elements_checked .. " layout elements, " ..
+      summary.positions_checked .. " candidate positions, " ..
+      summary.placeable_positions .. " placeable spots, " ..
+      (summary.resource_overlap_rejections or 0) .. " resource-overlap rejections; retry at tick " ..
+      builder_state.task_state.next_attempt_tick
+    )
+    return
+  end
+
+  builder_state.task_state = {
+    phase = "moving",
+    build_position = clone_position(site.build_position),
+    approach_position = create_task_approach_position(task, site.build_position),
+    anchor_position = clone_position(site.anchor_position),
+    anchor_entity = site.anchor_entity,
+    layout_orientation = site.orientation,
+    layout_placements = site.placements,
+    layout_index = 1,
+    placed_layout_entities = {},
+    last_position = clone_position(entity.position),
+    last_progress_tick = tick
+  }
+
+  debug_log(
+    "task " .. task.id .. ": found layout near " .. site.anchor_entity.name ..
+    " at " .. format_position(site.anchor_position) ..
+    " using orientation " .. tostring(site.orientation) ..
     "; moving toward " .. format_position(site.build_position)
   )
 end
@@ -2942,6 +3725,11 @@ local function start_task(builder_state, task, tick)
     return
   end
 
+  if task.type == "place-layout-near-machine" then
+    start_place_layout_near_machine_task(builder_state, task, tick)
+    return
+  end
+
   complete_current_task(builder_state, task, "unsupported task type " .. task.type)
 end
 
@@ -2951,9 +3739,10 @@ local function refresh_task(builder_state, task, tick)
   start_task(builder_state, task, tick)
 end
 
-local function move_builder_to_position(builder_state, task, tick, destination_position, next_phase)
+local function move_builder_to_position(builder_state, task, tick, destination_position, next_phase, approach_position)
   local entity = builder_state.entity
   local task_state = builder_state.task_state
+  local movement_position = approach_position or destination_position
 
   if square_distance(entity.position, destination_position) <= (task.arrival_distance * task.arrival_distance) then
     set_idle(entity)
@@ -2962,8 +3751,8 @@ local function move_builder_to_position(builder_state, task, tick, destination_p
     return
   end
 
-  local delta_x = destination_position.x - entity.position.x
-  local delta_y = destination_position.y - entity.position.y
+  local delta_x = movement_position.x - entity.position.x
+  local delta_y = movement_position.y - entity.position.y
   local direction = direction_from_delta(delta_x, delta_y)
 
   if direction then
@@ -2986,7 +3775,14 @@ local function move_builder_to_position(builder_state, task, tick, destination_p
 end
 
 local function move_builder(builder_state, task, tick)
-  move_builder_to_position(builder_state, task, tick, builder_state.task_state.build_position, "building")
+  move_builder_to_position(
+    builder_state,
+    task,
+    tick,
+    builder_state.task_state.build_position,
+    "building",
+    builder_state.task_state.approach_position
+  )
 end
 
 local function move_to_gather_source(builder_state, task, tick)
@@ -3001,6 +3797,7 @@ local function move_to_gather_source(builder_state, task, tick)
     end
 
     task_state.target_position = clone_position(task_state.target_entity.position)
+    task_state.approach_position = create_task_approach_position(task, task_state.target_position)
   elseif task_state.target_kind == "decorative" then
     if not decorative_target_exists(entity.surface, task_state.target_decorative_position, task_state.target_name) then
       debug_log("task " .. task.id .. ": decorative source disappeared before harvest")
@@ -3010,7 +3807,14 @@ local function move_to_gather_source(builder_state, task, tick)
   end
 
   local was_moving = task_state.phase == "moving-to-source"
-  move_builder_to_position(builder_state, task, tick, task_state.target_position, "harvesting")
+  move_builder_to_position(
+    builder_state,
+    task,
+    tick,
+    task_state.target_position,
+    "harvesting",
+    task_state.approach_position
+  )
 
   if was_moving and task_state.phase == "harvesting" and not task_state.harvest_complete_tick then
     task_state.harvest_complete_tick = tick + task_state.mining_duration_ticks
@@ -3022,7 +3826,14 @@ local function move_to_gather_source(builder_state, task, tick)
 end
 
 local function move_to_resource(builder_state, task, tick)
-  move_builder_to_position(builder_state, task, tick, builder_state.task_state.target_position, "arrived-at-resource")
+  move_builder_to_position(
+    builder_state,
+    task,
+    tick,
+    builder_state.task_state.target_position,
+    "arrived-at-resource",
+    builder_state.task_state.approach_position
+  )
 end
 
 local function begin_post_place_pause(builder_state, task, tick, next_phase, placed_entity)
@@ -3101,6 +3912,88 @@ local function finish_place_miner_task(builder_state, task, tick)
     "placed " .. task.miner_name .. " at " .. format_position(miner.position) ..
     (downstream_machine and " with " .. downstream_machine.name .. " at " .. format_position(downstream_machine.position) or "") ..
     (container and " and " .. container.name .. " at " .. format_position(container.position) or "")
+  )
+end
+
+local function seed_entity_from_builder_inventory(builder, target_entity, seed_items, reason)
+  local inserted_items = {}
+
+  for _, seed_item in ipairs(seed_items or {}) do
+    local removed_count = remove_item(builder, seed_item.name, seed_item.count, reason)
+    if removed_count > 0 then
+      local inserted_count = target_entity.insert{
+        name = seed_item.name,
+        count = removed_count
+      }
+
+      if inserted_count < removed_count then
+        insert_item(
+          builder,
+          seed_item.name,
+          removed_count - inserted_count,
+          "refunded after partial insert into " .. target_entity.name .. " at " .. format_position(target_entity.position)
+        )
+      end
+
+      if inserted_count > 0 then
+        inserted_items[#inserted_items + 1] = {
+          name = seed_item.name,
+          count = inserted_count
+        }
+      end
+    end
+  end
+
+  if #inserted_items > 0 then
+    debug_log(reason .. ": inserted " .. format_products(inserted_items))
+  end
+
+  return inserted_items
+end
+
+local function finish_place_layout_near_machine_task(builder_state, task, tick)
+  local task_state = builder_state.task_state
+  local anchor_entity = task_state.anchor_entity
+
+  if not (anchor_entity and anchor_entity.valid) then
+    debug_log("task " .. task.id .. ": anchor entity disappeared before layout completion; refreshing task")
+    refresh_task(builder_state, task, tick)
+    return
+  end
+
+  local valid_entities = {}
+  for _, placement in ipairs(task_state.placed_layout_entities or {}) do
+    if placement.entity and placement.entity.valid then
+      valid_entities[#valid_entities + 1] = placement
+    end
+  end
+
+  if #valid_entities < #(task.layout_elements or {}) then
+    debug_log("task " .. task.id .. ": layout completed with missing entities; refreshing task")
+    refresh_task(builder_state, task, tick)
+    return
+  end
+
+  local seeded_items = seed_entity_from_builder_inventory(
+    builder_state.entity,
+    anchor_entity,
+    task.seed_anchor_items,
+    "seeded " .. anchor_entity.name .. " at " .. format_position(anchor_entity.position)
+  )
+
+  register_assembler_defense_site(task, anchor_entity, valid_entities)
+
+  if task.completed_scaling_milestone_name then
+    ensure_builder_state_fields(builder_state)
+    builder_state.completed_scaling_milestones[task.completed_scaling_milestone_name] = true
+  end
+
+  complete_current_task(
+    builder_state,
+    task,
+    "fortified " .. anchor_entity.name .. " at " .. format_position(anchor_entity.position) ..
+    " with " .. tostring(#valid_entities) .. " support entities" ..
+    (#seeded_items > 0 and "; seeded " .. format_products(seeded_items) or "")
   )
 end
 
@@ -3466,6 +4359,116 @@ local function place_machine_near_site(builder_state, task, tick)
   finish_place_machine_near_site_task(builder_state, task, tick)
 end
 
+local function place_layout_near_machine(builder_state, task, tick)
+  local entity = builder_state.entity
+  local task_state = builder_state.task_state
+  local surface = entity.surface
+
+  local function record_consumed_build_item(item_name, count)
+    if not task.consume_items_on_place then
+      return
+    end
+
+    task_state.consumed_build_items = task_state.consumed_build_items or {}
+    task_state.consumed_build_items[item_name] = (task_state.consumed_build_items[item_name] or 0) + (count or 1)
+  end
+
+  local function refund_consumed_build_items(reason)
+    if not task_state.consumed_build_items then
+      return
+    end
+
+    for item_name, count in pairs(task_state.consumed_build_items) do
+      insert_item(entity, item_name, count, reason)
+    end
+
+    task_state.consumed_build_items = nil
+  end
+
+  local function destroy_placed_layout_entities()
+    for _, placement in ipairs(task_state.placed_layout_entities or {}) do
+      destroy_entity_if_valid(placement.entity)
+    end
+
+    task_state.placed_layout_entities = {}
+  end
+
+  local function abort_build(reason)
+    refund_consumed_build_items("refunded after aborted build for " .. task.id)
+    destroy_placed_layout_entities()
+    refresh_task(builder_state, task, tick)
+    debug_log("task " .. task.id .. ": " .. reason)
+  end
+
+  local placement = task_state.layout_placements and task_state.layout_placements[task_state.layout_index]
+  if not placement then
+    task_state.phase = "build-complete"
+    return
+  end
+
+  if not surface.can_place_entity{
+    name = placement.entity_name,
+    position = placement.build_position,
+    direction = placement.build_direction,
+    force = entity.force
+  } then
+    abort_build("layout position became invalid for " .. placement.entity_name .. " at " .. format_position(placement.build_position))
+    return
+  end
+
+  local placed_entity = surface.create_entity{
+    name = placement.entity_name,
+    position = placement.build_position,
+    direction = placement.build_direction,
+    force = entity.force,
+    create_build_effect_smoke = false
+  }
+
+  if not placed_entity then
+    abort_build("failed to place " .. placement.entity_name .. " at " .. format_position(placement.build_position))
+    return
+  end
+
+  if task.consume_items_on_place then
+    local removed_count = remove_item(
+      entity,
+      placement.item_name,
+      1,
+      "placed " .. placement.item_name .. " at " .. format_position(placed_entity.position)
+    )
+    if removed_count < 1 then
+      placed_entity.destroy()
+      abort_build("missing " .. placement.item_name .. " in builder inventory")
+      return
+    end
+
+    record_consumed_build_item(placement.item_name, removed_count)
+  end
+
+  insert_entity_fuel(placed_entity, placement.fuel)
+
+  task_state.placed_layout_entities[#task_state.placed_layout_entities + 1] = {
+    id = placement.id,
+    site_role = placement.site_role,
+    entity = placed_entity
+  }
+
+  debug_log(
+    "task " .. task.id .. ": placed " .. placement.entity_name ..
+    " at " .. format_position(placed_entity.position) ..
+    (placement.site_role and " as " .. placement.site_role or "")
+  )
+
+  task_state.layout_index = task_state.layout_index + 1
+  begin_post_place_pause(
+    builder_state,
+    task,
+    tick,
+    task_state.layout_index > #(task_state.layout_placements or {}) and "build-complete" or "building",
+    placed_entity
+  )
+end
+
 local function harvest_world_items(builder_state, task, tick)
   local entity = builder_state.entity
   local task_state = builder_state.task_state
@@ -3548,6 +4551,17 @@ local function get_scaling_pattern_name(builder_state)
       end
     end
 
+    if unlocked and unlock and unlock.required_completed_milestones then
+      ensure_builder_state_fields(builder_state)
+
+      for _, milestone_name in ipairs(unlock.required_completed_milestones) do
+        if not builder_state.completed_scaling_milestones[milestone_name] then
+          unlocked = false
+          break
+        end
+      end
+    end
+
     if unlocked then
       builder_state.scaling_pattern_index = candidate_index
       return pattern_name
@@ -3610,6 +4624,17 @@ local function create_scaling_milestone_task(milestone)
   return task
 end
 
+local function create_scaling_repeatable_milestone_task(milestone)
+  local task = create_scaling_milestone_task(milestone)
+  if not task then
+    return nil
+  end
+
+  task.completed_scaling_milestone_name = nil
+  task.repeatable_scaling_milestone_name = milestone.name
+  return task
+end
+
 normalize_scaling_active_task = function(builder_state)
   local task = builder_state and builder_state.scaling_active_task or nil
   if not task then
@@ -3620,6 +4645,15 @@ normalize_scaling_active_task = function(builder_state)
     for _, milestone in ipairs((builder_data.scaling and builder_data.scaling.production_milestones) or {}) do
       if milestone.name == task.completed_scaling_milestone_name then
         builder_state.scaling_active_task = create_scaling_milestone_task(milestone)
+        return
+      end
+    end
+  end
+
+  if task.repeatable_scaling_milestone_name then
+    for _, milestone in ipairs((builder_data.scaling and builder_data.scaling.production_milestones) or {}) do
+      if milestone.name == task.repeatable_scaling_milestone_name then
+        builder_state.scaling_active_task = create_scaling_repeatable_milestone_task(milestone)
         return
       end
     end
@@ -3843,6 +4877,44 @@ local function plan_scaling_milestone(builder_state, milestone, tick)
   return true
 end
 
+local function repeatable_scaling_task_has_site(builder_state, task)
+  if not task then
+    return false
+  end
+
+  if task.type == "place-layout-near-machine" then
+    local site = find_layout_site_near_machine(builder_state, task)
+    return site ~= nil
+  end
+
+  if task.type == "place-machine-near-site" then
+    local site = find_machine_site_near_resource_sites(builder_state, task)
+    return site ~= nil
+  end
+
+  return true
+end
+
+local function plan_repeatable_scaling_milestones(builder_state, tick)
+  ensure_builder_state_fields(builder_state)
+
+  for _, milestone in ipairs((builder_data.scaling and builder_data.scaling.production_milestones) or {}) do
+    if milestone.repeat_when_eligible and builder_state.completed_scaling_milestones[milestone.name] then
+      local task = create_scaling_repeatable_milestone_task(milestone)
+      if task and repeatable_scaling_task_has_site(builder_state, task) then
+        if plan_scaling_required_items(builder_state, milestone.required_items, tick) then
+          return true
+        end
+
+        start_scaling_subtask(builder_state, task, tick)
+        return true
+      end
+    end
+  end
+
+  return false
+end
+
 start_scaling_collection = function(builder_state, site, item_name, tick, allow_wait_for_items)
   local collect_position = get_site_collect_position(site)
   if not collect_position then
@@ -3857,6 +4929,7 @@ start_scaling_collection = function(builder_state, site, item_name, tick, allow_
     allowed_item_names = get_site_allowed_items(site),
     allow_wait_for_items = allow_wait_for_items == true,
     target_position = collect_position,
+    approach_position = create_task_approach_position(nil, collect_position, 1.1),
     last_position = clone_position(builder_state.entity.position),
     last_progress_tick = tick
   }
@@ -3966,6 +5039,10 @@ local function plan_scaling(builder_state, tick)
     end
   end
 
+  if plan_repeatable_scaling_milestones(builder_state, tick) then
+    return
+  end
+
   local pattern_name = get_scaling_pattern_name(builder_state)
   if not pattern_name then
     set_idle(builder_state.entity)
@@ -4026,6 +5103,8 @@ local function advance_task_phase(builder_state, task, tick)
   if phase == "building" then
     if task.type == "place-machine-near-site" then
       place_machine_near_site(builder_state, task, tick)
+    elseif task.type == "place-layout-near-machine" then
+      place_layout_near_machine(builder_state, task, tick)
     else
       place_miner(builder_state, task, tick)
     end
@@ -4046,6 +5125,8 @@ local function advance_task_phase(builder_state, task, tick)
   if phase == "build-complete" then
     if task.type == "place-machine-near-site" then
       finish_place_machine_near_site_task(builder_state, task, tick)
+    elseif task.type == "place-layout-near-machine" then
+      finish_place_layout_near_machine_task(builder_state, task, tick)
     else
       finish_place_miner_task(builder_state, task, tick)
     end
@@ -4094,6 +5175,7 @@ local function advance_scaling(builder_state, tick)
     local entity = builder_state.entity
     local task_state = builder_state.task_state
     local destination_position = task_state.target_position
+    local movement_position = task_state.approach_position or destination_position
 
     if square_distance(entity.position, destination_position) <= (1.1 * 1.1) then
       set_idle(entity)
@@ -4103,8 +5185,8 @@ local function advance_scaling(builder_state, tick)
     end
 
     local direction = direction_from_delta(
-      destination_position.x - entity.position.x,
-      destination_position.y - entity.position.y
+      movement_position.x - entity.position.x,
+      movement_position.y - entity.position.y
     )
 
     if direction then
@@ -4154,6 +5236,7 @@ local function advance_builder(builder_state, tick)
   collect_nearby_container_items(builder_state, tick)
   collect_nearby_machine_output_items(builder_state, tick)
   refuel_nearby_machines(builder_state, tick)
+  supply_nearby_machine_inputs(builder_state, tick)
 
   local task = get_active_task(builder_state)
   if not task then

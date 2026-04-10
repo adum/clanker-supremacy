@@ -39,6 +39,123 @@ local gather_sources = {
   }
 }
 
+local firearm_magazine_assembler_name = "enemy-builder-firearm-magazine-assembler"
+local ammo_defense_required_items = {
+  {name = "burner-inserter", count = 2},
+  {name = "gun-turret", count = 2},
+  {name = "small-electric-pole", count = 4},
+  {name = "solar-panel", count = 4},
+  {name = "iron-plate", count = 80}
+}
+local ammo_defense_layout_elements = {
+  {
+    id = "left-burner-inserter",
+    site_role = "burner-inserter",
+    entity_name = "burner-inserter",
+    offset = {x = -2, y = 0},
+    direction_name = "west",
+    placement_search_radius = 0.5,
+    placement_step = 0.5,
+    fuel = {
+      name = "coal",
+      count = 4
+    }
+  },
+  {
+    id = "right-burner-inserter",
+    site_role = "burner-inserter",
+    entity_name = "burner-inserter",
+    offset = {x = 2, y = 0},
+    direction_name = "east",
+    placement_search_radius = 0.5,
+    placement_step = 0.5,
+    fuel = {
+      name = "coal",
+      count = 4
+    }
+  },
+  {
+    id = "left-turret",
+    site_role = "turret",
+    entity_name = "gun-turret",
+    offset = {x = -4, y = 0},
+    placement_search_radius = 0.5,
+    placement_step = 0.5
+  },
+  {
+    id = "right-turret",
+    site_role = "turret",
+    entity_name = "gun-turret",
+    offset = {x = 4, y = 0},
+    placement_search_radius = 0.5,
+    placement_step = 0.5
+  },
+  {
+    id = "power-pole-1",
+    site_role = "power-pole",
+    entity_name = "small-electric-pole",
+    offset = {x = 0, y = -2},
+    placement_search_radius = 0.5,
+    placement_step = 0.5
+  },
+  {
+    id = "power-pole-2",
+    site_role = "power-pole",
+    entity_name = "small-electric-pole",
+    offset = {x = 0, y = -5},
+    placement_search_radius = 0.5,
+    placement_step = 0.5
+  },
+  {
+    id = "power-pole-3",
+    site_role = "power-pole",
+    entity_name = "small-electric-pole",
+    offset = {x = 0, y = -8},
+    placement_search_radius = 0.5,
+    placement_step = 0.5
+  },
+  {
+    id = "power-pole-4",
+    site_role = "power-pole",
+    entity_name = "small-electric-pole",
+    offset = {x = 0, y = -11},
+    placement_search_radius = 0.5,
+    placement_step = 0.5
+  },
+  {
+    id = "solar-panel-1",
+    site_role = "solar-panel",
+    entity_name = "solar-panel",
+    offset = {x = -3, y = -5},
+    placement_search_radius = 0.5,
+    placement_step = 0.5
+  },
+  {
+    id = "solar-panel-2",
+    site_role = "solar-panel",
+    entity_name = "solar-panel",
+    offset = {x = 3, y = -5},
+    placement_search_radius = 0.5,
+    placement_step = 0.5
+  },
+  {
+    id = "solar-panel-3",
+    site_role = "solar-panel",
+    entity_name = "solar-panel",
+    offset = {x = -3, y = -8},
+    placement_search_radius = 0.5,
+    placement_step = 0.5
+  },
+  {
+    id = "solar-panel-4",
+    site_role = "solar-panel",
+    entity_name = "solar-panel",
+    offset = {x = 3, y = -8},
+    placement_search_radius = 0.5,
+    placement_step = 0.5
+  }
+}
+
 local coal_outpost_build_task = {
   type = "place-miner-on-resource",
   pattern_name = "coal_outpost",
@@ -165,6 +282,36 @@ local copper_smelting_build_task = {
   }
 }
 
+local firearm_magazine_outpost_build_task = {
+  type = "place-machine-near-site",
+  pattern_name = "firearm_magazine_outpost",
+  entity_name = firearm_magazine_assembler_name,
+  consume_item_name = "assembling-machine-1",
+  recipe_name = "firearm-magazine",
+  recipe_is_fixed = true,
+  anchor_pattern_names = {"coal_outpost", "iron_smelting", "stone_outpost", "copper_smelting"},
+  anchor_position_source = "miner",
+  max_anchor_sites = 12,
+  search_retry_ticks = 5 * 60,
+  placement_search_radius = 10,
+  placement_step = 1,
+  arrival_distance = 1.6,
+  stuck_retry_ticks = 3 * 60,
+  forbid_resource_overlap = true,
+  layout_reservation = {
+    layout_orientations = {"north", "east", "south", "west"},
+    forbid_resource_overlap = true,
+    layout_elements = deep_copy(ammo_defense_layout_elements)
+  },
+  anchor_preference = {
+    fewer_registered_sites = {
+      site_type = "assembler-defense",
+      entity_field = "assembler",
+      radius = 24
+    }
+  }
+}
+
 local bootstrap_gather_task = {
   id = "gather-bootstrap-materials",
   type = "gather-world-items",
@@ -185,7 +332,7 @@ local builder_data = {
     unlock_all_technologies = true
   },
   prototypes = {
-    firearm_magazine_assembler_name = "enemy-builder-firearm-magazine-assembler"
+    firearm_magazine_assembler_name = firearm_magazine_assembler_name
   },
   default_plan = "bootstrap",
   avatar = {
@@ -197,6 +344,9 @@ local builder_data = {
   },
   build = {
     post_place_pause_ticks = 90
+  },
+  movement = {
+    approach_randomness = 0.6
   },
   ui = {
     overlay = {
@@ -218,6 +368,12 @@ local builder_data = {
     }
   },
   logistics = {
+    inventory_take_limits = {
+      coal = 500,
+      ["iron-plate"] = 500,
+      stone = 500,
+      ["copper-plate"] = 500
+    },
     nearby_container_collection = {
       interval_ticks = 5 * 60,
       radius = 24,
@@ -232,6 +388,14 @@ local builder_data = {
       target_fuel_item_count = 20,
       own_force_only = true,
       max_entities_per_scan = 24
+    },
+    nearby_machine_input_supply = {
+      interval_ticks = 4 * 60,
+      radius = 24,
+      entity_types = {"assembling-machine"},
+      target_ingredient_item_count = 20,
+      own_force_only = true,
+      max_entities_per_scan = 12
     },
     nearby_machine_output_collection = {
       interval_ticks = 4 * 60,
@@ -302,6 +466,43 @@ local builder_data = {
           {name = "iron-gear-wheel", count = 5},
           {name = "electronic-circuit", count = 3}
         }
+      },
+      ["burner-inserter"] = {
+        craft_ticks = 30,
+        ingredients = {
+          {name = "iron-plate", count = 1},
+          {name = "iron-gear-wheel", count = 1}
+        }
+      },
+      ["small-electric-pole"] = {
+        craft_ticks = 30,
+        result_count = 2,
+        ingredients = {
+          {name = "wood", count = 1},
+          {name = "copper-cable", count = 2}
+        }
+      },
+      ["steel-plate"] = {
+        craft_ticks = 960,
+        ingredients = {
+          {name = "iron-plate", count = 5}
+        }
+      },
+      ["gun-turret"] = {
+        craft_ticks = 480,
+        ingredients = {
+          {name = "iron-gear-wheel", count = 10},
+          {name = "copper-plate", count = 10},
+          {name = "iron-plate", count = 20}
+        }
+      },
+      ["solar-panel"] = {
+        craft_ticks = 600,
+        ingredients = {
+          {name = "steel-plate", count = 5},
+          {name = "electronic-circuit", count = 15},
+          {name = "copper-plate", count = 5}
+        }
       }
     }
   },
@@ -353,13 +554,20 @@ local builder_data = {
         {name = "stone-furnace", count = 1}
       },
       build_task = copper_smelting_build_task
+    },
+    firearm_magazine_outpost = {
+      display_name = "firearm magazine outpost",
+      required_items = {
+        {name = "assembling-machine-1", count = 1}
+      },
+      build_task = firearm_magazine_outpost_build_task
     }
   },
   scaling = {
     enabled = true,
     idle_retry_ticks = 2 * 60,
     pursue_milestones_proactively = false,
-    cycle_pattern_names = {"coal_outpost", "iron_smelting", "stone_outpost", "copper_smelting"},
+    cycle_pattern_names = {"coal_outpost", "iron_smelting", "stone_outpost", "copper_smelting", "firearm_magazine_outpost"},
     pattern_unlocks = {
       stone_outpost = {
         minimum_site_counts = {
@@ -372,6 +580,9 @@ local builder_data = {
           coal_outpost = 5,
           iron_smelting = 5
         }
+      },
+      firearm_magazine_outpost = {
+        required_completed_milestones = {"firearm-magazine-defense"}
       }
     },
     reserve_items = {
@@ -403,7 +614,40 @@ local builder_data = {
           placement_search_radius = 8,
           placement_step = 1,
           arrival_distance = 1.1,
-          stuck_retry_ticks = 3 * 60
+          stuck_retry_ticks = 3 * 60,
+          forbid_resource_overlap = true
+        }
+      },
+      {
+        name = "firearm-magazine-defense",
+        display_name = "Fortify firearm magazine assembler",
+        pursue_proactively = true,
+        repeat_when_eligible = true,
+        required_items = deep_copy(ammo_defense_required_items),
+        task = {
+          id = "scale-place-firearm-magazine-defense",
+          type = "place-layout-near-machine",
+          anchor_entity_names = {firearm_magazine_assembler_name},
+          max_anchor_entities = 8,
+          search_retry_ticks = 5 * 60,
+          arrival_distance = 1.6,
+          stuck_retry_ticks = 3 * 60,
+          layout_orientations = {"north", "east", "south", "west"},
+          require_missing_registered_site = {
+            site_type = "assembler-defense",
+            entity_field = "assembler"
+          },
+          forbid_resource_overlap = true,
+          transfer = {
+            interval_ticks = 30,
+            ammo_item_name = "firearm-magazine",
+            turret_ammo_target_count = 20,
+            per_turret_transfer_limit = 1
+          },
+          seed_anchor_items = {
+            {name = "iron-plate", count = 80}
+          },
+          layout_elements = deep_copy(ammo_defense_layout_elements)
         }
       }
     }
