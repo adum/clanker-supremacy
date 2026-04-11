@@ -3,6 +3,7 @@ local goal_engine = require("scripts.goal_engine")
 local debug_commands = require("scripts.debug.commands")
 local debug_markers = require("scripts.debug.markers")
 local debug_overlay = require("scripts.debug.overlay")
+local default_maintenance_passes = require("scripts.maintenance.default_passes")
 local maintenance_runner = require("scripts.maintenance_runner")
 local task_executor = require("scripts.task_executor")
 local world_model = require("scripts.world_model")
@@ -13,6 +14,8 @@ local debug_prefix = "[enemy-builder] "
 local debug_command_context
 local debug_marker_context
 local debug_overlay_context
+local maintenance_pass_context
+local maintenance_passes
 local get_builder_state
 local get_active_task
 local get_item_count
@@ -1761,332 +1764,6 @@ local function find_layout_site_near_machine(builder_state, task)
   return nil, summary
 end
 
-local function collect_nearby_container_items(builder_state, tick)
-  local collection_settings = builder_data.logistics and builder_data.logistics.nearby_container_collection
-  if not collection_settings then
-    return {}
-  end
-
-  if tick < (builder_state.next_container_scan_tick or 0) then
-    return {}
-  end
-
-  builder_state.next_container_scan_tick = tick + collection_settings.interval_ticks
-
-  local builder = builder_state.entity
-  local filter = {
-    position = builder.position,
-    radius = collection_settings.radius
-  }
-
-  if collection_settings.entity_type then
-    filter.type = collection_settings.entity_type
-  elseif collection_settings.entity_types then
-    filter.type = collection_settings.entity_types
-  end
-
-  if collection_settings.own_force_only then
-    filter.force = builder.force
-  end
-
-  local containers = builder.surface.find_entities_filtered(filter)
-  table.sort(containers, function(left, right)
-    return square_distance(builder.position, left.position) < square_distance(builder.position, right.position)
-  end)
-
-  local containers_scanned = 0
-  local actions = {}
-
-  for _, container in ipairs(containers) do
-    if collection_settings.max_containers_per_scan and containers_scanned >= collection_settings.max_containers_per_scan then
-      break
-    end
-
-    if container.valid then
-      containers_scanned = containers_scanned + 1
-
-      local inventory = get_container_inventory(container)
-      if inventory and not inventory.is_empty() then
-        local moved_items = pull_inventory_contents_to_builder(
-          inventory,
-          builder,
-          "collected from " .. container.name .. " at " .. format_position(container.position)
-        )
-
-        if #moved_items > 0 then
-          actions[#actions + 1] = "collected from " .. container.name .. " at " .. format_position(container.position)
-        end
-      end
-    end
-  end
-
-  return actions
-end
-
-local function collect_nearby_machine_output_items(builder_state, tick)
-  local collection_settings = builder_data.logistics and builder_data.logistics.nearby_machine_output_collection
-  if not collection_settings then
-    return {}
-  end
-
-  if tick < (builder_state.next_machine_output_collection_tick or 0) then
-    return {}
-  end
-
-  builder_state.next_machine_output_collection_tick = tick + collection_settings.interval_ticks
-
-  local builder = builder_state.entity
-  local filter = {
-    position = builder.position,
-    radius = collection_settings.radius
-  }
-
-  if collection_settings.entity_type then
-    filter.type = collection_settings.entity_type
-  elseif collection_settings.entity_types then
-    filter.type = collection_settings.entity_types
-  end
-
-  if collection_settings.entity_name then
-    filter.name = collection_settings.entity_name
-  elseif collection_settings.entity_names then
-    filter.name = collection_settings.entity_names
-  end
-
-  if collection_settings.own_force_only then
-    filter.force = builder.force
-  end
-
-  local entities = builder.surface.find_entities_filtered(filter)
-  table.sort(entities, function(left, right)
-    return square_distance(builder.position, left.position) < square_distance(builder.position, right.position)
-  end)
-
-  local entities_scanned = 0
-  local actions = {}
-
-  for _, entity in ipairs(entities) do
-    if collection_settings.max_entities_per_scan and entities_scanned >= collection_settings.max_entities_per_scan then
-      break
-    end
-
-    if entity.valid and entity ~= builder then
-      entities_scanned = entities_scanned + 1
-
-      local output_inventory = entity.get_output_inventory and entity.get_output_inventory()
-      if output_inventory and not output_inventory.is_empty() then
-        local moved_items = pull_inventory_contents_to_builder(
-          output_inventory,
-          builder,
-          "collected from " .. entity.name .. " output at " .. format_position(entity.position)
-        )
-
-        if #moved_items > 0 then
-          actions[#actions + 1] = "collected output from " .. entity.name .. " at " .. format_position(entity.position)
-        end
-      end
-    end
-  end
-
-  return actions
-end
-
-local function refuel_nearby_machines(builder_state, tick)
-  local refuel_settings = builder_data.logistics and builder_data.logistics.nearby_machine_refuel
-  if not refuel_settings then
-    return {}
-  end
-
-  if tick < (builder_state.next_machine_refuel_tick or 0) then
-    return {}
-  end
-
-  builder_state.next_machine_refuel_tick = tick + refuel_settings.interval_ticks
-
-  local builder = builder_state.entity
-  local fuel_name = refuel_settings.fuel_name or "coal"
-  local available_fuel = get_item_count(builder, fuel_name)
-  if available_fuel <= 0 then
-    return {}
-  end
-
-  local filter = {
-    position = builder.position,
-    radius = refuel_settings.radius
-  }
-
-  if refuel_settings.own_force_only then
-    filter.force = builder.force
-  end
-
-  local entities = builder.surface.find_entities_filtered(filter)
-  table.sort(entities, function(left, right)
-    return square_distance(builder.position, left.position) < square_distance(builder.position, right.position)
-  end)
-
-  local entities_scanned = 0
-  local actions = {}
-
-  for _, entity in ipairs(entities) do
-    if refuel_settings.max_entities_per_scan and entities_scanned >= refuel_settings.max_entities_per_scan then
-      break
-    end
-
-    if entity.valid and entity ~= builder then
-      entities_scanned = entities_scanned + 1
-
-      local fuel_inventory = entity.get_fuel_inventory and entity.get_fuel_inventory()
-      if fuel_inventory then
-        local current_fuel_count = fuel_inventory.get_item_count(fuel_name)
-        local wanted_fuel_count = (refuel_settings.target_fuel_item_count or 20) - current_fuel_count
-        if wanted_fuel_count > 0 then
-          local insert_count = math.min(wanted_fuel_count, available_fuel)
-          if insert_count > 0 then
-            local inserted_count = fuel_inventory.insert{
-              name = fuel_name,
-              count = insert_count
-            }
-
-            if inserted_count > 0 then
-              local reason = "refueled " .. entity.name .. " at " .. format_position(entity.position)
-              local removed_count = remove_item(builder, fuel_name, inserted_count, reason)
-
-              if removed_count < inserted_count then
-                fuel_inventory.remove{
-                  name = fuel_name,
-                  count = inserted_count - removed_count
-                }
-                inserted_count = removed_count
-              end
-
-              if inserted_count > 0 then
-                available_fuel = available_fuel - inserted_count
-                debug_log(
-                  reason .. " with " .. inserted_count .. " " .. fuel_name ..
-                  "; machine now has " .. fuel_inventory.get_item_count(fuel_name)
-                )
-                actions[#actions + 1] = "refueled " .. entity.name .. " at " .. format_position(entity.position)
-              end
-
-              if available_fuel <= 0 then
-                break
-              end
-            end
-          end
-        end
-      end
-    end
-  end
-
-  return actions
-end
-
-local function supply_nearby_machine_inputs(builder_state, tick)
-  local supply_settings = builder_data.logistics and builder_data.logistics.nearby_machine_input_supply
-  if not supply_settings then
-    return {}
-  end
-
-  if tick < (builder_state.next_machine_input_supply_tick or 0) then
-    return {}
-  end
-
-  builder_state.next_machine_input_supply_tick = tick + supply_settings.interval_ticks
-
-  local builder = builder_state.entity
-  local filter = {
-    position = builder.position,
-    radius = supply_settings.radius
-  }
-
-  if supply_settings.entity_type then
-    filter.type = supply_settings.entity_type
-  elseif supply_settings.entity_types then
-    filter.type = supply_settings.entity_types
-  end
-
-  if supply_settings.entity_name then
-    filter.name = supply_settings.entity_name
-  elseif supply_settings.entity_names then
-    filter.name = supply_settings.entity_names
-  end
-
-  if supply_settings.own_force_only then
-    filter.force = builder.force
-  end
-
-  local entities = builder.surface.find_entities_filtered(filter)
-  table.sort(entities, function(left, right)
-    return square_distance(builder.position, left.position) < square_distance(builder.position, right.position)
-  end)
-
-  local entities_scanned = 0
-  local actions = {}
-
-  for _, entity in ipairs(entities) do
-    if supply_settings.max_entities_per_scan and entities_scanned >= supply_settings.max_entities_per_scan then
-      break
-    end
-
-    if entity.valid and entity ~= builder then
-      entities_scanned = entities_scanned + 1
-
-      local recipe = entity.get_recipe and entity.get_recipe()
-      local input_inventory = entity.get_inventory and entity.get_inventory(defines.inventory.assembling_machine_input)
-
-      if recipe and input_inventory then
-        for _, ingredient in ipairs(recipe.ingredients or {}) do
-          local ingredient_type = ingredient.type or "item"
-          local ingredient_name = ingredient.name
-
-          if ingredient_type == "item" and ingredient_name then
-            local current_count = input_inventory.get_item_count(ingredient_name)
-            local desired_count = (supply_settings.target_ingredient_item_count or 20) - current_count
-
-            if desired_count > 0 then
-              local available_count = get_item_count(builder, ingredient_name)
-              local transfer_count = math.min(desired_count, available_count)
-
-              if transfer_count > 0 then
-                local inserted_count = input_inventory.insert{
-                  name = ingredient_name,
-                  count = transfer_count
-                }
-
-                if inserted_count > 0 then
-                  local reason =
-                    "supplied " .. ingredient_name .. " to " .. entity.name ..
-                    " at " .. format_position(entity.position)
-                  local removed_count = remove_item(builder, ingredient_name, inserted_count, reason)
-
-                  if removed_count < inserted_count then
-                    input_inventory.remove{
-                      name = ingredient_name,
-                      count = inserted_count - removed_count
-                    }
-                    inserted_count = removed_count
-                  end
-
-                  if inserted_count > 0 then
-                    debug_log(
-                      reason .. " with " .. inserted_count ..
-                      "; machine now has " .. input_inventory.get_item_count(ingredient_name) ..
-                      " " .. ingredient_name
-                    )
-                    actions[#actions + 1] = "supplied " .. ingredient_name .. " to " .. entity.name .. " at " .. format_position(entity.position)
-                  end
-                end
-              end
-            end
-          end
-        end
-      end
-    end
-  end
-
-  return actions
-end
-
 local function register_smelting_site(task, miner, downstream_machine, output_container)
   local production_sites = ensure_production_sites()
   local task_id = (task and task.id) or (task and task.pattern_name) or "smelting-site"
@@ -3598,19 +3275,23 @@ debug_command_context = {
   update_goal_model = builder_runtime.update_goal_model
 }
 
+maintenance_pass_context = {
+  builder_data = builder_data,
+  debug_log = debug_log,
+  format_position = format_position,
+  get_container_inventory = get_container_inventory,
+  get_item_count = get_item_count,
+  pull_inventory_contents_to_builder = pull_inventory_contents_to_builder,
+  remove_item = remove_item,
+  square_distance = square_distance
+}
+
+maintenance_passes = default_maintenance_passes.build(maintenance_pass_context)
+
 local function advance_builder(builder_state, tick)
   configure_builder_entity(builder_state.entity)
   process_production_sites(tick)
-  maintenance_runner.run(
-    builder_state,
-    tick,
-    {
-      {name = "collect-containers", run = collect_nearby_container_items},
-      {name = "collect-machine-output", run = collect_nearby_machine_output_items},
-      {name = "refuel-machines", run = refuel_nearby_machines},
-      {name = "supply-machine-inputs", run = supply_nearby_machine_inputs}
-    }
-  )
+  maintenance_runner.run(builder_state, tick, maintenance_passes)
   goal_engine.advance(builder_data, builder_state, tick, goal_engine_adapters)
 end
 

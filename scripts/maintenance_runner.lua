@@ -53,4 +53,8 @@ function maintenance_runner.run(builder_state, tick, passes)
   end
 end
 
+function maintenance_runner.ensure_state(builder_state)
+  return ensure_state(builder_state)
+end
+
 return maintenance_runner
