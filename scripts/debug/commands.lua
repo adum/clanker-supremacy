@@ -144,8 +144,8 @@ local function describe_builder_state(builder_state, context)
   lines[#lines + 1] = "production-sites=" .. #context.ensure_production_sites()
   lines[#lines + 1] = "resource-sites=" .. #context.ensure_resource_sites()
 
-  if builder_state.goal_tree_root then
-    lines[#lines + 1] = "goal=" .. goal_tree.get_root_goal_line(builder_state.goal_tree_root)
+  if builder_state.goal_model_root then
+    lines[#lines + 1] = "goal=" .. goal_tree.get_root_goal_line(builder_state.goal_model_root)
     for _, path_line in ipairs(builder_state.goal_path_lines or {}) do
       lines[#lines + 1] = "goal-path=" .. path_line
     end
@@ -224,7 +224,7 @@ function commands_module.goals(command, context)
   end
 
   context.update_goal_model(builder_state, game.tick)
-  for _, line in ipairs(goal_tree.format_tree_lines(builder_state.goal_tree_root, false)) do
+  for _, line in ipairs(goal_tree.format_tree_lines(builder_state.goal_model_root, false)) do
     context.reply_to_command(command, line)
   end
 end

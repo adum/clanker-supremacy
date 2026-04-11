@@ -125,8 +125,8 @@ local function set_scaling_display_task(builder_state, task)
   state.scaling_display_task = task and common.deep_copy(task) or nil
 end
 
-local function sync_goal_model(builder_data, builder_state)
-  return model.sync(builder_data, builder_state)
+local function sync_goal_model(builder_data, builder_state, options)
+  return model.sync(builder_data, builder_state, options)
 end
 
 local function start_scaling_wait(builder_data, builder_state, tick, wait_reason, message, display_task, adapters)
@@ -725,21 +725,28 @@ function goal_engine.sync_model(builder_data, builder_state, tick, adapters)
   sync_goal_model(builder_data, builder_state)
 
   local snapshot = adapters.build_runtime_snapshot(builder_state, tick)
-  local root = goal_tree.build_runtime_tree(
+  local model_state = sync_goal_model(
     builder_data,
-    snapshot,
+    builder_state,
     {
-      get_item_count = adapters.get_item_count,
-      get_recipe = function(item_name)
-        return predicates.get_recipe(builder_data, item_name)
-      end
+      snapshot = snapshot,
+      adapter = {
+        get_item_count = adapters.get_item_count,
+        get_recipe = function(item_name)
+          return predicates.get_recipe(builder_data, item_name)
+        end
+      }
     }
   )
+  local root = model_state and model_state.root or nil
+  if not root then
+    return snapshot
+  end
 
   trace.sync_from_root(builder_state, root, tick, adapters.debug_log)
 
   builder_state.goal_tree_root = root
-  builder_state.goal_model_root = instances.ensure_state(builder_state).model and instances.ensure_state(builder_state).model.root or nil
+  builder_state.goal_model_root = root
   builder_state.goal_path_lines = goal_tree.get_active_path_lines(root)
   builder_state.goal_blockers = goal_tree.get_blockers(root)
   builder_state.goal_blocker_lines = goal_tree.get_blocker_lines(root)

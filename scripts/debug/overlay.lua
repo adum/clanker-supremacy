@@ -130,15 +130,14 @@ function overlay.get_goal_summary(builder_state, tick, context)
     return "Goal: inactive"
   end
 
-  local snapshot = context.build_runtime_snapshot(builder_state, tick)
-  local root = builder_state.goal_tree_root or goal_tree.build_runtime_tree(
-    context.builder_data,
-    snapshot,
-    {
-      get_item_count = context.get_item_count,
-      get_recipe = context.get_recipe
-    }
-  )
+  local root = builder_state.goal_model_root
+  if not root then
+    context.update_goal_model(builder_state, tick)
+    root = builder_state.goal_model_root
+  end
+  if not root then
+    return "Goal: inactive"
+  end
 
   return "Goal: " .. goal_tree.get_root_goal_line(root)
 end
