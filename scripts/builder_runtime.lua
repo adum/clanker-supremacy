@@ -1,4 +1,5 @@
 local builder_data = require("shared.builder_data")
+local goal_recovery = require("scripts.goal.recovery")
 local goal_engine = require("scripts.goal_engine")
 local debug_commands = require("scripts.debug.commands")
 local debug_markers = require("scripts.debug.markers")
@@ -307,6 +308,10 @@ local function ensure_builder_state_fields(builder_state)
     builder_state.goal_blocker_lines = {}
   end
 
+  if builder_state.goal_blockers == nil then
+    builder_state.goal_blockers = {}
+  end
+
   if builder_state.goal_engine == nil then
     builder_state.goal_engine = nil
   end
@@ -444,20 +449,11 @@ function builder_runtime.get_display_task(builder_state)
 end
 
 function builder_runtime.record_recovery(builder_state, message)
-  if not builder_state then
-    return
-  end
-
-  builder_state.last_recovery = {
-    tick = game and game.tick or nil,
-    message = message
-  }
+  return goal_recovery.record(builder_state, message)
 end
 
 function builder_runtime.clear_recovery(builder_state)
-  if builder_state then
-    builder_state.last_recovery = nil
-  end
+  goal_recovery.clear(builder_state)
 end
 
 function builder_runtime.get_inventory_contents(entity)
