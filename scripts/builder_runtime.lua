@@ -2,6 +2,7 @@ local builder_data = require("shared.builder_data")
 local goal_tree = require("scripts.goal_tree")
 local maintenance_runner = require("scripts.maintenance_runner")
 local task_executor = require("scripts.task_executor")
+local world_model = require("scripts.world_model")
 local world_snapshot = require("scripts.world_snapshot")
 
 local builder_runtime = {}
@@ -22,10 +23,24 @@ local get_active_task
 local get_item_count
 local get_recipe
 local get_builder_main_inventory
+local ensure_production_sites
+local ensure_resource_sites
 local get_pending_scaling_milestone
 local get_site_pattern
 local get_resource_site_counts
+local get_site_collect_inventory
+local get_site_collect_position
+local get_site_allowed_items
+local get_site_collect_count
 local pull_inventory_contents_to_builder
+local find_layout_site_near_machine
+local find_machine_site_near_resource_sites
+local find_resource_site
+local find_nearest_resource
+local register_assembler_defense_site
+local register_resource_site
+local register_smelting_site
+local register_steel_smelting_site
 local resolve_required_items
 local cleanup_resource_sites
 local discover_resource_sites
@@ -3991,6 +4006,108 @@ local function find_nearest_resource(surface, origin, task)
   end
 
   return nil
+end
+
+local world_model_context = {
+  builder_data = builder_data,
+  build_search_positions = build_search_positions,
+  clone_position = clone_position,
+  debug_log = debug_log,
+  direction_by_name = direction_by_name,
+  format_position = format_position,
+  get_container_inventory = get_container_inventory,
+  get_task_anchor_entity_names = get_task_anchor_entity_names,
+  point_in_area = point_in_area,
+  rotate_direction_name = rotate_direction_name,
+  rotate_offset = rotate_offset,
+  select_preferred_candidate = select_preferred_candidate,
+  square_distance = square_distance
+}
+
+ensure_production_sites = function()
+  return world_model.ensure_production_sites(world_model_context)
+end
+
+ensure_resource_sites = function()
+  return world_model.ensure_resource_sites(world_model_context)
+end
+
+get_site_pattern = function(pattern_name)
+  return world_model.get_site_pattern(pattern_name, world_model_context)
+end
+
+get_resource_site_counts = function()
+  return world_model.get_resource_site_counts(world_model_context)
+end
+
+cleanup_resource_sites = function()
+  return world_model.cleanup_resource_sites(world_model_context)
+end
+
+discover_resource_sites = function(builder_state)
+  return world_model.discover_resource_sites(builder_state, world_model_context)
+end
+
+find_machine_site_near_resource_sites = function(builder_state, task)
+  return world_model.find_machine_site_near_resource_sites(builder_state, task, world_model_context)
+end
+
+find_layout_site_near_machine = function(builder_state, task)
+  return world_model.find_layout_site_near_machine(builder_state, task, world_model_context)
+end
+
+register_assembler_defense_site = function(task, assembler, placed_layout_entities)
+  return world_model.register_assembler_defense_site(task, assembler, placed_layout_entities, world_model_context)
+end
+
+register_resource_site = function(task, miner, downstream_machine, output_container, extras)
+  return world_model.register_resource_site(
+    task,
+    miner,
+    downstream_machine,
+    output_container,
+    extras,
+    world_model_context
+  )
+end
+
+register_smelting_site = function(task, miner, downstream_machine, output_container)
+  return world_model.register_smelting_site(task, miner, downstream_machine, output_container, world_model_context)
+end
+
+register_steel_smelting_site = function(task, anchor_machine, feed_inserter, downstream_machine, miner)
+  return world_model.register_steel_smelting_site(
+    task,
+    anchor_machine,
+    feed_inserter,
+    downstream_machine,
+    miner,
+    world_model_context
+  )
+end
+
+get_site_collect_inventory = function(site)
+  return world_model.get_site_collect_inventory(site, world_model_context)
+end
+
+get_site_collect_position = function(site)
+  return world_model.get_site_collect_position(site, world_model_context)
+end
+
+get_site_allowed_items = function(site)
+  return world_model.get_site_allowed_items(site, world_model_context)
+end
+
+get_site_collect_count = function(site, item_name)
+  return world_model.get_site_collect_count(site, item_name, world_model_context)
+end
+
+find_resource_site = function(surface, force, origin, task)
+  return world_model.find_resource_site(surface, force, origin, task, world_model_context)
+end
+
+find_nearest_resource = function(surface, origin, task)
+  return world_model.find_nearest_resource(surface, origin, task, world_model_context)
 end
 
 local task_executor_context = {
