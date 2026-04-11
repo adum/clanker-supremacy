@@ -35,10 +35,16 @@ function status.derive_action_summary(snapshot)
   end
 
   if task_state.phase == "scaling-moving-to-site" and task_state.target_item_name then
+    if task_state.collection_mode == "wait-patrol" then
+      return "Patrol sites for " .. common.humanize_identifier(task_state.target_item_name)
+    end
     return "Move to collect " .. common.humanize_identifier(task_state.target_item_name)
   end
 
   if task_state.phase == "scaling-collecting-site" and task_state.target_item_name then
+    if task_state.collection_mode == "wait-patrol" then
+      return "Patrol collection for " .. common.humanize_identifier(task_state.target_item_name)
+    end
     return "Collect " .. common.humanize_identifier(task_state.target_item_name)
   end
 

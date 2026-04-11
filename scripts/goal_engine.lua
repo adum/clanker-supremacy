@@ -191,7 +191,80 @@ local function find_collectable_site(builder_state, item_name, allow_empty, adap
   return best_site
 end
 
-local function start_scaling_collection(builder_state, site, item_name, tick, allow_wait_for_items, display_task, adapters)
+local function get_wait_patrol_patterns(builder_data, item_name)
+  local wait_patrol = builder_data.scaling and builder_data.scaling.wait_patrol
+  if not wait_patrol then
+    return nil
+  end
+
+  if item_name and wait_patrol.item_site_patterns and wait_patrol.item_site_patterns[item_name] then
+    return wait_patrol.item_site_patterns[item_name]
+  end
+
+  return wait_patrol.fallback_site_patterns
+end
+
+local function site_matches_pattern_names(site, pattern_names)
+  if not (site and pattern_names and site.pattern_name) then
+    return false
+  end
+
+  for _, pattern_name in ipairs(pattern_names) do
+    if site.pattern_name == pattern_name then
+      return true
+    end
+  end
+
+  return false
+end
+
+local function find_wait_patrol_site(builder_data, builder_state, item_name, adapters)
+  local pattern_names = get_wait_patrol_patterns(builder_data, item_name)
+  if not (pattern_names and #pattern_names > 0) then
+    return nil
+  end
+
+  adapters.discover_resource_sites(builder_state)
+
+  local pattern_priority = {}
+  for index, pattern_name in ipairs(pattern_names) do
+    pattern_priority[pattern_name] = index
+  end
+
+  local candidates = {}
+  for _, site in ipairs(adapters.cleanup_resource_sites()) do
+    local collect_position = adapters.get_site_collect_position(site)
+    if collect_position and site_matches_pattern_names(site, pattern_names) then
+      candidates[#candidates + 1] = {
+        site = site,
+        collect_position = collect_position
+      }
+    end
+  end
+
+  if #candidates == 0 then
+    return nil
+  end
+
+  table.sort(candidates, function(left, right)
+    local left_priority = pattern_priority[left.site.pattern_name] or math.huge
+    local right_priority = pattern_priority[right.site.pattern_name] or math.huge
+    if left_priority ~= right_priority then
+      return left_priority < right_priority
+    end
+
+    if left.collect_position.x ~= right.collect_position.x then
+      return left.collect_position.x < right.collect_position.x
+    end
+
+    return left.collect_position.y < right.collect_position.y
+  end)
+
+  builder_state.scaling_wait_patrol_cursor = ((builder_state.scaling_wait_patrol_cursor or 0) % #candidates) + 1
+  return candidates[builder_state.scaling_wait_patrol_cursor].site
+end
+
+local function start_scaling_collection(builder_state, site, item_name, tick, allow_wait_for_items, display_task, adapters, options)
   local collect_position = adapters.get_site_collect_position(site)
   if not collect_position then
     start_scaling_wait(
@@ -221,16 +294,43 @@ local function start_scaling_collection(builder_state, site, item_name, tick, al
     target_item_name = item_name,
     allowed_item_names = adapters.get_site_allowed_items(site),
     allow_wait_for_items = allow_wait_for_items == true,
+    collection_mode = options and options.collection_mode or "collect",
     target_position = collect_position,
     approach_position = adapters.create_task_approach_position(nil, collect_position, 1.1),
     last_position = common.clone_position(builder_state.entity.position),
     last_progress_tick = tick
   }
 
-  adapters.debug_log(
-    "scaling: moving to " .. (site.pattern_name or "site") .. " at " ..
-    adapters.format_position(collect_position) .. " to collect " .. (item_name or "items")
+  if options and options.collection_mode == "wait-patrol" then
+    adapters.debug_log(
+      "scaling: patrolling " .. (site.pattern_name or "site") .. " at " ..
+      adapters.format_position(collect_position) .. " while waiting for " .. (item_name or "items")
+    )
+  else
+    adapters.debug_log(
+      "scaling: moving to " .. (site.pattern_name or "site") .. " at " ..
+      adapters.format_position(collect_position) .. " to collect " .. (item_name or "items")
+    )
+  end
+end
+
+local function start_scaling_wait_patrol(builder_data, builder_state, item_name, tick, display_task, adapters)
+  local site = find_wait_patrol_site(builder_data, builder_state, item_name, adapters)
+  if not site then
+    return false
+  end
+
+  start_scaling_collection(
+    builder_state,
+    site,
+    item_name,
+    tick,
+    false,
+    display_task,
+    adapters,
+    {collection_mode = "wait-patrol"}
   )
+  return true
 end
 
 local function start_scaling_craft(builder_data, builder_state, action, tick, display_task, adapters)
@@ -384,6 +484,10 @@ local function plan_scaling_required_items(builder_data, builder_state, required
       return true
     end
 
+    if start_scaling_wait_patrol(builder_data, builder_state, action.item_name, tick, display_task, adapters) then
+      return true
+    end
+
     start_scaling_wait(
       builder_data,
       builder_state,
@@ -448,6 +552,7 @@ local function plan_scaling(builder_data, builder_state, tick, adapters)
       local site = find_collectable_site(builder_state, reserve_item.name, false, adapters)
       if site then
         start_scaling_collection(builder_state, site, reserve_item.name, tick, false, reserve_task, adapters)
+      elseif start_scaling_wait_patrol(builder_data, builder_state, reserve_item.name, tick, reserve_task, adapters) then
       else
         start_scaling_wait(
           builder_data,

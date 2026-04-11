@@ -32,6 +32,15 @@ return {
   reserve_items = {
     {name = "coal", count = 20}
   },
+  wait_patrol = {
+    item_site_patterns = {
+      ["coal"] = {"coal_outpost"},
+      ["iron-plate"] = {"iron_smelting", "coal_outpost"},
+      ["copper-plate"] = {"copper_smelting", "coal_outpost"},
+      ["steel-plate"] = {"steel_smelting", "iron_smelting", "coal_outpost"}
+    },
+    fallback_site_patterns = {"coal_outpost", "iron_smelting", "steel_smelting", "copper_smelting", "stone_outpost"}
+  },
   collect_ingredient_producers = {
     ["steel-plate"] = {
       pattern_name = "steel_smelting",
