@@ -1,4 +1,5 @@
 local builder_data = require("shared.builder_data")
+local goal_engine = require("scripts.goal_engine")
 local goal_tree = require("scripts.goal_tree")
 local maintenance_runner = require("scripts.maintenance_runner")
 local task_executor = require("scripts.task_executor")
@@ -450,6 +451,10 @@ local function describe_builder_state(builder_state)
     lines[#lines + 1] = "maintenance=" .. maintenance_line
   end
 
+  for _, trace_line in ipairs(goal_engine.get_recent_trace_lines(builder_state, 4)) do
+    lines[#lines + 1] = "goal-trace=" .. trace_line
+  end
+
   return lines
 end
 
@@ -486,6 +491,10 @@ local function ensure_builder_state_fields(builder_state)
 
   if builder_state.goal_blocker_lines == nil then
     builder_state.goal_blocker_lines = {}
+  end
+
+  if builder_state.goal_engine == nil then
+    builder_state.goal_engine = nil
   end
 
   if builder_state.last_recovery == nil then
@@ -587,7 +596,13 @@ get_builder_state = function()
   end
 
   ensure_builder_state_fields(state)
-  normalize_scaling_active_task(state)
+  goal_engine.normalize_scaling_active_task(
+    builder_data,
+    state,
+    {
+      get_site_pattern = get_site_pattern
+    }
+  )
   normalize_builder_task_state(state)
   return state
 end
@@ -757,6 +772,9 @@ function builder_runtime.manual_build_command(command)
 
   builder_state.manual_goal_request = request
   builder_state.task_state = nil
+  if builder_state.goal_engine then
+    builder_state.goal_engine.scaling_display_task = nil
+  end
   set_idle(builder_state.entity)
   builder_runtime.record_recovery(builder_state, "manual goal injected for " .. request.display_name)
   debug_log("manual goal injected: " .. request.display_name .. (position and " at " .. format_position(position) or ""))
@@ -773,38 +791,20 @@ function builder_runtime.cancel_manual_command(command)
   local display_name = builder_state.manual_goal_request.display_name or builder_state.manual_goal_request.component_name or "manual goal"
   builder_state.manual_goal_request = nil
   builder_state.task_state = nil
+  if builder_state.goal_engine then
+    builder_state.goal_engine.scaling_display_task = nil
+  end
   set_idle(builder_state.entity)
   debug_log("manual goal cancelled: " .. display_name)
   reply_to_command(command, "cancelled " .. display_name)
 end
 
 get_active_task = function(builder_state)
-  if builder_state and builder_state.manual_goal_request and builder_state.manual_goal_request.tasks then
-    return builder_state.manual_goal_request.tasks[builder_state.manual_goal_request.current_task_index or 1]
-  end
-
-  local plan = builder_data.plans[builder_state.plan_name]
-  if not plan then
-    return nil
-  end
-
-  return plan.tasks[builder_state.task_index]
+  return goal_engine.get_active_task(builder_data, builder_state)
 end
 
 function builder_runtime.get_display_task(builder_state)
-  if not builder_state then
-    return nil
-  end
-
-  if builder_state.manual_goal_request and builder_state.manual_goal_request.tasks then
-    return builder_state.manual_goal_request.tasks[builder_state.manual_goal_request.current_task_index or 1]
-  end
-
-  if builder_state.scaling_active_task then
-    return builder_state.scaling_active_task
-  end
-
-  return get_active_task(builder_state)
+  return goal_engine.get_display_task(builder_data, builder_state)
 end
 
 function builder_runtime.record_recovery(builder_state, message)
@@ -855,20 +855,17 @@ function builder_runtime.update_goal_model(builder_state, tick)
     return nil
   end
 
-  local snapshot = builder_runtime.build_runtime_snapshot(builder_state, tick)
-  local root = goal_tree.build_runtime_tree(
+  return goal_engine.sync_model(
     builder_data,
-    snapshot,
+    builder_state,
+    tick,
     {
+      build_runtime_snapshot = builder_runtime.build_runtime_snapshot,
+      debug_log = debug_log,
       get_item_count = get_item_count,
       get_recipe = get_recipe
     }
   )
-
-  builder_state.goal_tree_root = root
-  builder_state.goal_path_lines = goal_tree.get_active_path_lines(root)
-  builder_state.goal_blocker_lines = goal_tree.get_blocker_lines(root)
-  return snapshot
 end
 
 function builder_runtime.get_task_retry_key(task)
@@ -956,6 +953,9 @@ function builder_runtime.handle_task_retry_exhausted(builder_state, task, tick, 
   if task and task.manual_goal_id and builder_state.manual_goal_request and builder_state.manual_goal_request.id == task.manual_goal_id then
     builder_state.manual_goal_request = nil
     builder_state.task_state = nil
+    if builder_state.goal_engine then
+      builder_state.goal_engine.scaling_display_task = nil
+    end
     set_idle(builder_state.entity)
     builder_runtime.enter_task_retry_cooldown(builder_state, task, tick, message)
     debug_log("task " .. task_name .. ": aborting manual goal after repeated failures: " .. message)
@@ -965,6 +965,9 @@ function builder_runtime.handle_task_retry_exhausted(builder_state, task, tick, 
   if task and task.no_advance then
     builder_state.scaling_active_task = nil
     builder_state.task_state = nil
+    if builder_state.goal_engine then
+      builder_state.goal_engine.scaling_display_task = nil
+    end
     set_idle(builder_state.entity)
     builder_runtime.enter_task_retry_cooldown(builder_state, task, tick, message)
     debug_log("task " .. task_name .. ": abandoning scaling subtask after repeated failures: " .. message)
@@ -3558,6 +3561,9 @@ local function complete_current_task(builder_state, task, completion_message)
     end
 
     builder_state.task_state = nil
+    if builder_state.goal_engine then
+      builder_state.goal_engine.scaling_display_task = nil
+    end
     set_idle(builder_state.entity)
     builder_runtime.clear_task_retry_state(builder_state, task)
     builder_runtime.clear_recovery(builder_state)
@@ -3592,6 +3598,9 @@ local function complete_current_task(builder_state, task, completion_message)
 
     builder_state.scaling_active_task = nil
     builder_state.task_state = nil
+    if builder_state.goal_engine then
+      builder_state.goal_engine.scaling_display_task = nil
+    end
     set_idle(builder_state.entity)
     builder_runtime.clear_task_retry_state(builder_state, task)
     builder_runtime.clear_recovery(builder_state)
@@ -3604,6 +3613,9 @@ local function complete_current_task(builder_state, task, completion_message)
 
   builder_state.task_index = builder_state.task_index + 1
   builder_state.task_state = nil
+  if builder_state.goal_engine then
+    builder_state.goal_engine.scaling_display_task = nil
+  end
   set_idle(builder_state.entity)
   builder_runtime.clear_task_retry_state(builder_state, task)
   builder_runtime.clear_recovery(builder_state)
@@ -4812,6 +4824,38 @@ local function advance_scaling(builder_state, tick)
   builder_state.task_state = nil
 end
 
+local goal_engine_adapters = {
+  advance_task_phase = advance_task_phase,
+  build_runtime_snapshot = builder_runtime.build_runtime_snapshot,
+  builder_data = builder_data,
+  cleanup_resource_sites = cleanup_resource_sites,
+  consume_recipe_ingredients = consume_recipe_ingredients,
+  create_task_approach_position = create_task_approach_position,
+  debug_log = debug_log,
+  direction_from_delta = direction_from_delta,
+  discover_resource_sites = discover_resource_sites,
+  find_layout_site_near_machine = find_layout_site_near_machine,
+  find_machine_site_near_resource_sites = find_machine_site_near_resource_sites,
+  format_position = format_position,
+  format_products = format_products,
+  get_item_count = get_item_count,
+  get_recipe = get_recipe,
+  get_resource_site_counts = get_resource_site_counts,
+  get_scaling_pattern_name = get_scaling_pattern_name,
+  get_site_allowed_items = get_site_allowed_items,
+  get_site_collect_count = get_site_collect_count,
+  get_site_collect_inventory = get_site_collect_inventory,
+  get_site_collect_position = get_site_collect_position,
+  get_site_pattern = get_site_pattern,
+  insert_item = insert_item,
+  is_goal_retry_blocked = builder_runtime.is_goal_retry_blocked,
+  pull_inventory_contents_to_builder = pull_inventory_contents_to_builder,
+  record_recovery = builder_runtime.record_recovery,
+  set_idle = set_idle,
+  square_distance = square_distance,
+  start_task = start_task
+}
+
 local function advance_builder(builder_state, tick)
   configure_builder_entity(builder_state.entity)
   process_production_sites(tick)
@@ -4825,23 +4869,7 @@ local function advance_builder(builder_state, tick)
       {name = "supply-machine-inputs", run = supply_nearby_machine_inputs}
     }
   )
-
-  local task = get_active_task(builder_state)
-  if not task then
-    if builder_data.scaling and builder_data.scaling.enabled then
-      advance_scaling(builder_state, tick)
-    else
-      set_idle(builder_state.entity)
-    end
-    return
-  end
-
-  if not builder_state.task_state then
-    start_task(builder_state, task, tick)
-    return
-  end
-
-  advance_task_phase(builder_state, task, tick)
+  goal_engine.advance(builder_data, builder_state, tick, goal_engine_adapters)
 end
 
 local function on_init()
