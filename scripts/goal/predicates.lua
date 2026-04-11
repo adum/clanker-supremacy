@@ -56,6 +56,7 @@ function predicates.list_component_names(builder_data)
   end
 
   names[#names + 1] = "firearm_magazine_site"
+  names[#names + 1] = "steel_smelting_site"
   table.sort(names)
   return names
 end
@@ -96,6 +97,22 @@ function predicates.get_component_spec(builder_data, component_name)
         tasks = {
           common.deep_copy(assembler_milestone.task),
           common.deep_copy(defense_milestone.task)
+        }
+      }
+    end
+  end
+
+  if component_name == "steel_smelting_site" then
+    local iron_pattern = predicates.get_pattern(builder_data, "iron_smelting")
+    local steel_pattern = predicates.get_pattern(builder_data, "steel_smelting")
+    if iron_pattern and iron_pattern.build_task and steel_pattern and steel_pattern.build_task then
+      return {
+        id = component_name,
+        display_name = "Steel Smelting Site",
+        required_items = predicates.merge_required_items(iron_pattern.required_items, steel_pattern.required_items),
+        tasks = {
+          common.deep_copy(iron_pattern.build_task),
+          common.deep_copy(steel_pattern.build_task)
         }
       }
     end

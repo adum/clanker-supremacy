@@ -12,9 +12,7 @@ temp_root="$(mktemp -d /tmp/enemy-builder-tests.XXXXXX)"
 write_data_dir="$temp_root/write-data"
 config_path="$temp_root/config.ini"
 server_settings_path="$temp_root/server-settings.json"
-output_path="$temp_root/factorio-output.log"
-fresh_save_path="$temp_root/firearm-outpost-test.zip"
-status_file_path="$write_data_dir/script-output/enemy-builder-tests/firearm_outpost_physical_feed.status"
+fresh_save_path="$temp_root/enemy-builder-test.zip"
 server_input_pipe="$temp_root/server-input.pipe"
 
 cleanup() {
@@ -66,6 +64,12 @@ run_factorio() {
   "$factorio_bin" --config "$config_path" --mod-directory "$mod_dir" "$@"
 }
 
+run_factorio_with_config() {
+  local selected_config_path="$1"
+  shift
+  "$factorio_bin" --config "$selected_config_path" --mod-directory "$mod_dir" "$@"
+}
+
 if [[ ! -x "$factorio_bin" ]]; then
   echo "Factorio binary not found or not executable: $factorio_bin" >&2
   exit 1
@@ -84,96 +88,134 @@ echo
 echo "-- create fresh save"
 run_factorio --create "$fresh_save_path"
 
-echo
-echo "-- start dedicated server"
-mkfifo "$server_input_pipe"
-exec 3<>"$server_input_pipe"
-server_input_fd_opened=1
+run_case() {
+  local case_name="$1"
+  local remote_setup_name="$2"
+  local server_port="$3"
+  local remote_setup_arg="${4:-}"
+  local case_write_data_dir="$temp_root/write-data-${case_name}"
+  local case_config_path="$temp_root/config-${case_name}.ini"
+  local status_file_path="$case_write_data_dir/script-output/enemy-builder-tests/${case_name}.status"
+  local output_path="$temp_root/${case_name}.log"
 
-set +e
-run_factorio --start-server "$fresh_save_path" --server-settings "$server_settings_path" <"$server_input_pipe" >"$output_path" 2>&1 &
-factorio_pid=$!
-set -e
+  mkdir -p "$case_write_data_dir"
+  cat >"$case_config_path" <<EOF
+[path]
+read-data=__PATH__system-read-data__
+write-data=$case_write_data_dir
+EOF
 
-server_ready=false
-for ((elapsed = 0; elapsed < 15; elapsed++)); do
-  if grep -Fq "changing state from(CreatingGame) to(InGame)" "$output_path" 2>/dev/null; then
-    server_ready=true
-    break
-  fi
+  rm -f "$status_file_path" "$output_path" "$server_input_pipe"
 
-  if ! kill -0 "$factorio_pid" 2>/dev/null; then
-    set +e
-    wait "$factorio_pid"
-    status=$?
-    set -e
+  echo
+  echo "-- start dedicated server for ${case_name}"
+  mkfifo "$server_input_pipe"
+  exec 3<>"$server_input_pipe"
+  server_input_fd_opened=1
+
+  set +e
+  run_factorio_with_config "$case_config_path" --start-server "$fresh_save_path" --server-settings "$server_settings_path" --port "$server_port" <"$server_input_pipe" >"$output_path" 2>&1 &
+  factorio_pid=$!
+  set -e
+
+  local server_ready=false
+  for ((elapsed = 0; elapsed < 15; elapsed++)); do
+    if grep -Fq "changing state from(CreatingGame) to(InGame)" "$output_path" 2>/dev/null; then
+      server_ready=true
+      break
+    fi
+
+    if ! kill -0 "$factorio_pid" 2>/dev/null; then
+      set +e
+      wait "$factorio_pid"
+      local status=$?
+      set -e
+      cat "$output_path"
+      echo
+      echo "Dedicated server exited before it became ready for ${case_name}." >&2
+      exit $status
+    fi
+
+    sleep 1
+  done
+
+  if [[ "$server_ready" != true ]]; then
     cat "$output_path"
     echo
-    echo "Dedicated server exited before it became ready." >&2
-    exit $status
+    echo "Dedicated server never reached InGame state for ${case_name}." >&2
+    exit 1
   fi
 
+  echo
+  echo "-- inject ${case_name} test case"
+  local remote_command
+  if [[ -n "$remote_setup_arg" ]]; then
+    remote_command=$(printf '/silent-command remote.call("enemy-builder-test", "%s", "%s")\n' "$remote_setup_name" "$remote_setup_arg")
+  else
+    remote_command=$(printf '/silent-command remote.call("enemy-builder-test", "%s")\n' "$remote_setup_name")
+  fi
+  printf '%s' "$remote_command" >&3
   sleep 1
-done
+  printf '%s' "$remote_command" >&3
 
-if [[ "$server_ready" != true ]]; then
+  local status_found=false
+  for ((elapsed = 0; elapsed < timeout_secs; elapsed++)); do
+    if [[ -f "$status_file_path" ]]; then
+      status_found=true
+      break
+    fi
+
+    if ! kill -0 "$factorio_pid" 2>/dev/null; then
+      set +e
+      wait "$factorio_pid"
+      local status=$?
+      set -e
+      cat "$output_path"
+      echo
+      echo "Dedicated server exited before producing a status file for ${case_name}." >&2
+      exit $status
+    fi
+
+    sleep 1
+  done
+
+  if [[ -n "${factorio_pid:-}" ]] && kill -0 "$factorio_pid" 2>/dev/null; then
+    kill "$factorio_pid" 2>/dev/null || true
+    wait "$factorio_pid" 2>/dev/null || true
+  fi
+  factorio_pid=""
+
+  if [[ -n "${server_input_fd_opened:-}" ]]; then
+    exec 3>&- || true
+    unset server_input_fd_opened
+  fi
+
   cat "$output_path"
-  echo
-  echo "Dedicated server never reached InGame state." >&2
-  exit 1
-fi
 
-echo
-echo "-- inject firearm outpost test case"
-printf '/silent-command remote.call("enemy-builder-test", "setup_firearm_outpost_test_case")\n' >&3
-sleep 1
-printf '/silent-command remote.call("enemy-builder-test", "setup_firearm_outpost_test_case")\n' >&3
-
-status_found=false
-for ((elapsed = 0; elapsed < timeout_secs; elapsed++)); do
-  if [[ -f "$status_file_path" ]]; then
-    status_found=true
-    break
-  fi
-
-  if ! kill -0 "$factorio_pid" 2>/dev/null; then
-    set +e
-    wait "$factorio_pid"
-    status=$?
-    set -e
-    cat "$output_path"
+  if [[ "$status_found" != true ]]; then
     echo
-    echo "Dedicated server exited before producing a status file." >&2
-    exit $status
+    echo "Headless test timed out before producing a status file for ${case_name}." >&2
+    echo
+    echo "-- factorio-current.log --" >&2
+    cat "$case_write_data_dir/factorio-current.log" >&2
+    exit 1
   fi
 
-  sleep 1
-done
+  if ! grep -Fq "PASS ${case_name}" "$status_file_path"; then
+    echo
+    echo "Headless test status did not report PASS for ${case_name}." >&2
+    echo
+    echo "-- status file --" >&2
+    cat "$status_file_path" >&2
+    exit 1
+  fi
+}
 
-if [[ -n "${factorio_pid:-}" ]] && kill -0 "$factorio_pid" 2>/dev/null; then
-  kill "$factorio_pid" 2>/dev/null || true
-  wait "$factorio_pid" 2>/dev/null || true
-fi
-
-cat "$output_path"
-
-if [[ "$status_found" != true ]]; then
-  echo
-  echo "Headless test timed out before producing a status file." >&2
-  echo
-  echo "-- factorio-current.log --" >&2
-  cat "$write_data_dir/factorio-current.log" >&2
-  exit 1
-fi
-
-if ! grep -Fq "PASS firearm_outpost_physical_feed" "$status_file_path"; then
-  echo
-  echo "Headless test status did not report PASS." >&2
-  echo
-  echo "-- status file --" >&2
-  cat "$status_file_path" >&2
-  exit 1
-fi
+run_case "firearm_outpost_physical_feed" "setup_firearm_outpost_test_case" "34197"
+run_case "steel_smelting_physical_feed_north" "setup_steel_smelting_test_case" "34198" "north"
+run_case "steel_smelting_physical_feed_east" "setup_steel_smelting_test_case" "34199" "east"
+run_case "steel_smelting_physical_feed_south" "setup_steel_smelting_test_case" "34200" "south"
+run_case "steel_smelting_physical_feed_west" "setup_steel_smelting_test_case" "34201" "west"
 
 echo
 echo "All requested headless tests passed."

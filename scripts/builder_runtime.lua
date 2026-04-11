@@ -1461,6 +1461,121 @@ local function clear_test_area(surface, area)
   surface.destroy_decoratives{area = area}
 end
 
+local function create_test_resource_patch(surface, resource_name, center, radius, amount)
+  local resources_created = 0
+
+  for dx = -radius, radius do
+    for dy = -radius, radius do
+      if (dx * dx) + (dy * dy) <= (radius * radius) then
+        local entity = surface.create_entity{
+          name = resource_name,
+          position = {
+            x = center.x + dx + 0.5,
+            y = center.y + dy + 0.5
+          },
+          amount = amount
+        }
+
+        if entity and entity.valid then
+          resources_created = resources_created + 1
+        end
+      end
+    end
+  end
+
+  return resources_created
+end
+
+local function get_orientation_miner_offset(layout_orientation)
+  if layout_orientation == "east" then
+    return {x = 0, y = -2}
+  end
+
+  if layout_orientation == "south" then
+    return {x = 2, y = 0}
+  end
+
+  if layout_orientation == "west" then
+    return {x = 0, y = 2}
+  end
+
+  return {x = -2, y = 0}
+end
+
+local function place_test_iron_smelting_anchor(surface, layout_orientation, anchor_position)
+  local miner_offset = get_orientation_miner_offset(layout_orientation)
+  local miner_position = {
+    x = anchor_position.x + miner_offset.x,
+    y = anchor_position.y + miner_offset.y
+  }
+
+  create_test_resource_patch(surface, "iron-ore", miner_position, 1, 5000)
+
+  local force = ensure_builder_force()
+  local anchor_furnace = surface.create_entity{
+    name = "stone-furnace",
+    position = anchor_position,
+    force = force,
+    create_build_effect_smoke = false
+  }
+
+  if not (anchor_furnace and anchor_furnace.valid) then
+    error("enemy-builder test: failed to create anchor furnace for steel layout " .. layout_orientation)
+  end
+
+  local miner_directions = {
+    {"north", direction_by_name.north},
+    {"east", direction_by_name.east},
+    {"south", direction_by_name.south},
+    {"west", direction_by_name.west}
+  }
+
+  local miner = nil
+  for _, direction_entry in ipairs(miner_directions) do
+    local candidate = surface.create_entity{
+      name = "burner-mining-drill",
+      position = miner_position,
+      direction = direction_entry[2],
+      force = force,
+      create_build_effect_smoke = false
+    }
+
+    if candidate and candidate.valid then
+      if point_in_area(candidate.drop_position, anchor_furnace.selection_box) then
+        miner = candidate
+        break
+      end
+
+      candidate.destroy()
+    end
+  end
+
+  if not (miner and miner.valid) then
+    anchor_furnace.destroy()
+    error("enemy-builder test: failed to create anchor miner for steel layout " .. layout_orientation)
+  end
+
+  insert_entity_fuel(miner, {name = "coal", count = 8})
+  insert_entity_fuel(anchor_furnace, {name = "coal", count = 8})
+
+  local iron_task = builder_data.site_patterns and builder_data.site_patterns.iron_smelting and
+    builder_data.site_patterns.iron_smelting.build_task or nil
+  if not iron_task then
+    miner.destroy()
+    anchor_furnace.destroy()
+    error("enemy-builder test: missing iron_smelting build task")
+  end
+
+  register_smelting_site(iron_task, miner, anchor_furnace, nil)
+  register_resource_site(iron_task, miner, anchor_furnace, nil)
+
+  return {
+    miner = miner,
+    anchor_furnace = anchor_furnace,
+    miner_position = miner_position
+  }
+end
+
 local function setup_manual_test(spec)
   spec = spec or {}
 
@@ -1540,6 +1655,10 @@ local function setup_manual_test(spec)
     error("enemy-builder test: " .. request_error)
   end
 
+  if spec.mutate_request then
+    spec.mutate_request(request)
+  end
+
   builder_state.manual_goal_request = request
   if builder_state.goal_engine then
     builder_state.goal_engine.scaling_display_task = nil
@@ -1610,6 +1729,70 @@ local function setup_firearm_outpost_test_case()
   }
 end
 
+local function setup_steel_smelting_test_case(layout_orientation)
+  local surface = game.surfaces["nauvis"] or game.surfaces[1]
+  if not surface then
+    error("enemy-builder test: nauvis surface is unavailable")
+  end
+
+  local allowed_orientations = {
+    north = true,
+    east = true,
+    south = true,
+    west = true
+  }
+  layout_orientation = layout_orientation or "north"
+  if not allowed_orientations[layout_orientation] then
+    error("enemy-builder test: unsupported steel layout orientation '" .. tostring(layout_orientation) .. "'")
+  end
+
+  local target_position = {x = 32, y = 0}
+  local builder_position = {x = 0, y = 0}
+  local area = make_test_area(target_position, 40, 24)
+
+  surface.always_day = true
+  clear_test_area(surface, area)
+  place_test_iron_smelting_anchor(surface, layout_orientation, target_position)
+
+  return setup_manual_test{
+    case_name = "steel_smelting_physical_feed_" .. layout_orientation,
+    component_name = "steel_smelting",
+    builder_position = builder_position,
+    target_position = target_position,
+    surface_name = surface.name,
+    suppress_player_autospawn = true,
+    mutate_request = function(request)
+      local steel_task = request.tasks and request.tasks[1]
+      if steel_task then
+        steel_task.layout_orientations = {layout_orientation}
+        steel_task.manual_anchor_position = clone_position(target_position)
+        steel_task.manual_anchor_search_radius = 3
+      end
+    end,
+    inventory = {
+      {name = "burner-inserter", count = 1},
+      {name = "coal", count = 80},
+      {name = "stone-furnace", count = 1}
+    },
+    assertion = {
+      case_name = "steel_smelting_physical_feed_" .. layout_orientation,
+      surface_name = surface.name,
+      area = area,
+      deadline_offset_ticks = 5400,
+      steel_layout_orientation = layout_orientation,
+      require_valid_steel_chain_geometry = true,
+      output_entity_names = {"stone-furnace"},
+      output_item_name = "steel-plate",
+      minimum_output_item_count = 1,
+      expected_counts = {
+        ["burner-inserter"] = 1,
+        ["burner-mining-drill"] = 1,
+        ["stone-furnace"] = 2
+      }
+    }
+  }
+end
+
 local function finish_manual_test()
   if storage.enemy_builder_test then
     storage.enemy_builder_test.finished = true
@@ -1662,6 +1845,65 @@ local function get_test_turret_ammo_count(surface, force, area, item_name)
   return ammo_count
 end
 
+local function get_test_output_item_count(surface, force, area, entity_names, item_name)
+  local total_count = 0
+
+  for _, entity in ipairs(surface.find_entities_filtered{
+    area = area,
+    force = force,
+    name = entity_names
+  }) do
+    local output_inventory = entity.get_output_inventory and entity.get_output_inventory()
+    if output_inventory then
+      total_count = total_count + output_inventory.get_item_count(item_name)
+    end
+  end
+
+  return total_count
+end
+
+local function find_test_resource_site_in_area(pattern_name, area)
+  for _, site in ipairs(storage.resource_sites or {}) do
+    if site.pattern_name == pattern_name and
+      site.miner and site.miner.valid and
+      point_in_area(site.miner.position, area)
+    then
+      return site
+    end
+  end
+
+  return nil
+end
+
+local function entity_contains_point(entity, point)
+  return entity and entity.valid and point and point_in_area(point, entity.selection_box)
+end
+
+local function steel_chain_geometry_passed(assertion)
+  local site = find_test_resource_site_in_area("steel_smelting", assertion.area)
+  if not site then
+    return false
+  end
+
+  local anchor_furnace = site.anchor_machine
+  local feed_inserter = site.feed_inserter
+  local steel_furnace = site.downstream_machine
+
+  if not (anchor_furnace and anchor_furnace.valid and feed_inserter and feed_inserter.valid and steel_furnace and steel_furnace.valid) then
+    return false
+  end
+
+  if not entity_contains_point(anchor_furnace, feed_inserter.pickup_position) then
+    return false
+  end
+
+  if not entity_contains_point(steel_furnace, feed_inserter.drop_position) then
+    return false
+  end
+
+  return true
+end
+
 local function get_test_entity_debug_details(surface, force, area)
   local details = {}
 
@@ -1704,6 +1946,55 @@ local function get_test_entity_debug_details(surface, force, area)
     )
   end
 
+  for _, furnace in ipairs(surface.find_entities_filtered{
+    area = area,
+    force = force,
+    name = "stone-furnace"
+  }) do
+    local source_inventory = furnace.get_inventory(defines.inventory.furnace_source)
+    local result_inventory = furnace.get_inventory(defines.inventory.furnace_result)
+    details[#details + 1] = string.format(
+      "furnace(pos=%s dir=%s source_iron=%d result_iron=%d result_steel=%d energy=%.3f)",
+      format_position(furnace.position),
+      tostring(furnace.direction),
+      source_inventory and source_inventory.get_item_count("iron-plate") or 0,
+      result_inventory and result_inventory.get_item_count("iron-plate") or 0,
+      result_inventory and result_inventory.get_item_count("steel-plate") or 0,
+      furnace.energy or 0
+    )
+  end
+
+  local steel_site = find_test_resource_site_in_area("steel_smelting", area)
+  if steel_site and steel_site.anchor_machine and steel_site.anchor_machine.valid and
+    steel_site.feed_inserter and steel_site.feed_inserter.valid and
+    steel_site.downstream_machine and steel_site.downstream_machine.valid
+  then
+    details[#details + 1] = string.format(
+      "steel-site(anchor=%s inserter=%s pickup=%s drop=%s steel=%s)",
+      format_position(steel_site.anchor_machine.position),
+      format_position(steel_site.feed_inserter.position),
+      format_position(steel_site.feed_inserter.pickup_position),
+      format_position(steel_site.feed_inserter.drop_position),
+      format_position(steel_site.downstream_machine.position)
+    )
+  end
+
+  for _, miner in ipairs(surface.find_entities_filtered{
+    area = area,
+    force = force,
+    name = "burner-mining-drill"
+  }) do
+    local output_inventory = miner.get_output_inventory and miner.get_output_inventory()
+    details[#details + 1] = string.format(
+      "miner(pos=%s dir=%s drop=%s output_iron=%d energy=%.3f)",
+      format_position(miner.position),
+      tostring(miner.direction),
+      format_position(miner.drop_position),
+      output_inventory and output_inventory.get_item_count("iron-ore") or 0,
+      miner.energy or 0
+    )
+  end
+
   return details
 end
 
@@ -1716,18 +2007,28 @@ local function format_test_failure_summary(surface, force, assertion)
       entity_name .. "=" .. count_test_entities(surface, force, area, entity_name) .. "/" .. expected_count
   end
 
-  local ammo_item_name = assertion.turret_ammo_item_name or "firearm-magazine"
-  parts[#parts + 1] = "turret-ammo=" .. get_test_turret_ammo_count(surface, force, area, ammo_item_name)
-
-  local assembler_name = assertion.primary_entity_name or builder_data.prototypes.firearm_magazine_assembler_name
-  local assembler = get_primary_test_assembler(surface, force, area, assembler_name)
-  if assembler and assembler.valid then
-    local recipe = assembler.get_recipe and assembler.get_recipe()
-    parts[#parts + 1] = "assembler-recipe=" .. (recipe and recipe.name or "nil")
-    local output_inventory = assembler.get_output_inventory and assembler.get_output_inventory()
-    parts[#parts + 1] = "assembler-output=" .. ((output_inventory and output_inventory.get_item_count(ammo_item_name)) or 0)
+  if assertion.output_item_name and assertion.output_entity_names then
+    parts[#parts + 1] =
+      "output-" .. assertion.output_item_name .. "=" ..
+      get_test_output_item_count(surface, force, area, assertion.output_entity_names, assertion.output_item_name)
   else
-    parts[#parts + 1] = "assembler=missing"
+    local ammo_item_name = assertion.turret_ammo_item_name or "firearm-magazine"
+    parts[#parts + 1] = "turret-ammo=" .. get_test_turret_ammo_count(surface, force, area, ammo_item_name)
+
+    local assembler_name = assertion.primary_entity_name or builder_data.prototypes.firearm_magazine_assembler_name
+    local assembler = get_primary_test_assembler(surface, force, area, assembler_name)
+    if assembler and assembler.valid then
+      local recipe = assembler.get_recipe and assembler.get_recipe()
+      parts[#parts + 1] = "assembler-recipe=" .. (recipe and recipe.name or "nil")
+      local output_inventory = assembler.get_output_inventory and assembler.get_output_inventory()
+      parts[#parts + 1] = "assembler-output=" .. ((output_inventory and output_inventory.get_item_count(ammo_item_name)) or 0)
+    else
+      parts[#parts + 1] = "assembler=missing"
+    end
+  end
+
+  if assertion.require_valid_steel_chain_geometry then
+    parts[#parts + 1] = "steel-chain-geometry=" .. tostring(steel_chain_geometry_passed(assertion))
   end
 
   for _, detail in ipairs(get_test_entity_debug_details(surface, force, area)) do
@@ -1746,17 +2047,33 @@ local function test_assertion_passed(surface, force, assertion)
     end
   end
 
-  local assembler_name = assertion.primary_entity_name or builder_data.prototypes.firearm_magazine_assembler_name
-  local assembler = get_primary_test_assembler(surface, force, area, assembler_name)
-  if not (assembler and assembler.valid) then
+  if assertion.require_valid_steel_chain_geometry and not steel_chain_geometry_passed(assertion) then
     return false
   end
 
-  if assertion.required_recipe_name then
-    local recipe = assembler.get_recipe and assembler.get_recipe()
-    if not (recipe and recipe.name == assertion.required_recipe_name) then
+  if assertion.primary_entity_name or assertion.required_recipe_name then
+    local assembler_name = assertion.primary_entity_name or builder_data.prototypes.firearm_magazine_assembler_name
+    local assembler = get_primary_test_assembler(surface, force, area, assembler_name)
+    if not (assembler and assembler.valid) then
       return false
     end
+
+    if assertion.required_recipe_name then
+      local recipe = assembler.get_recipe and assembler.get_recipe()
+      if not (recipe and recipe.name == assertion.required_recipe_name) then
+        return false
+      end
+    end
+  end
+
+  if assertion.output_item_name and assertion.output_entity_names then
+    return get_test_output_item_count(
+      surface,
+      force,
+      area,
+      assertion.output_entity_names,
+      assertion.output_item_name
+    ) >= (assertion.minimum_output_item_count or 1)
   end
 
   return get_test_turret_ammo_count(
@@ -1814,6 +2131,7 @@ end
 local test_remote_interface = {
   setup_manual_test = setup_manual_test,
   setup_firearm_outpost_test_case = setup_firearm_outpost_test_case,
+  setup_steel_smelting_test_case = setup_steel_smelting_test_case,
   finish_manual_test = finish_manual_test,
   clear_test_state = clear_test_state
 }
