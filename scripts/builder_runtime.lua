@@ -1,6 +1,8 @@
 local builder_data = require("shared.builder_data")
 local goal_engine = require("scripts.goal_engine")
-local goal_tree = require("scripts.goal_tree")
+local debug_commands = require("scripts.debug.commands")
+local debug_markers = require("scripts.debug.markers")
+local debug_overlay = require("scripts.debug.overlay")
 local maintenance_runner = require("scripts.maintenance_runner")
 local task_executor = require("scripts.task_executor")
 local world_model = require("scripts.world_model")
@@ -8,17 +10,9 @@ local world_snapshot = require("scripts.world_snapshot")
 
 local builder_runtime = {}
 local debug_prefix = "[enemy-builder] "
-local overlay_element_names = {
-  status_root = "enemy_builder_status_overlay_root",
-  goal_label = "enemy_builder_goal_overlay_label",
-  status_label = "enemy_builder_status_overlay_label",
-  path_label = "enemy_builder_path_overlay_label",
-  blockers_label = "enemy_builder_blockers_overlay_label",
-  maintenance_label = "enemy_builder_maintenance_overlay_label",
-  inventory_root = "enemy_builder_inventory_overlay_root",
-  inventory_title = "enemy_builder_inventory_overlay_title",
-  inventory_label = "enemy_builder_inventory_overlay_label"
-}
+local debug_command_context
+local debug_marker_context
+local debug_overlay_context
 local get_builder_state
 local get_active_task
 local get_item_count
@@ -256,11 +250,7 @@ local function ensure_resource_sites()
 end
 
 local function ensure_builder_map_markers()
-  if storage.builder_map_markers == nil then
-    storage.builder_map_markers = {}
-  end
-
-  return storage.builder_map_markers
+  return debug_markers.ensure_storage()
 end
 
 local function debug_enabled()
@@ -293,163 +283,6 @@ local function reply_to_command(command, message)
   end
 
   log(debug_prefix .. message)
-end
-
-local function get_overlay_settings()
-  return builder_data.ui and builder_data.ui.overlay or {}
-end
-
-local function overlay_enabled()
-  return get_overlay_settings().enabled ~= false
-end
-
-local function get_map_marker_settings()
-  return builder_data.ui and builder_data.ui.map_marker or {}
-end
-
-local function map_marker_enabled()
-  return get_map_marker_settings().enabled ~= false
-end
-
-local function describe_builder_state(builder_state)
-  if not builder_state then
-    return {
-      "builder: missing"
-    }
-  end
-
-  local entity = builder_state.entity
-  local lines = {
-    "debug=" .. tostring(debug_enabled()),
-    "builder-position=" .. format_position(entity.position),
-    "surface=" .. entity.surface.name
-  }
-
-  local walking_state = entity.walking_state
-  if walking_state then
-    lines[#lines + 1] = "walking=" .. tostring(walking_state.walking) .. " direction=" .. format_direction(walking_state.direction)
-  end
-
-  local task = get_active_task(builder_state)
-  if task then
-    lines[#lines + 1] = "task=" .. task.id .. " phase=" .. (builder_state.task_state and builder_state.task_state.phase or "uninitialized")
-  elseif builder_data.scaling and builder_data.scaling.enabled then
-    local scaling_phase = builder_state.task_state and builder_state.task_state.phase or "planning"
-    local cycle_pattern_names = builder_data.scaling.cycle_pattern_names or {}
-    local pattern_index = builder_state.scaling_pattern_index or 1
-    local pattern_name = cycle_pattern_names[pattern_index] or "none"
-    lines[#lines + 1] = "task=scaling phase=" .. scaling_phase
-    lines[#lines + 1] = "scaling-pattern=" .. pattern_name
-  else
-    lines[#lines + 1] = "task=complete"
-  end
-
-  local task_state = builder_state.task_state
-  if task_state then
-    if task_state.wait_reason then
-      lines[#lines + 1] = "wait-reason=" .. task_state.wait_reason
-    end
-
-    if task_state.resource_position then
-      lines[#lines + 1] = "resource-position=" .. format_position(task_state.resource_position)
-    end
-
-    if task_state.build_position then
-      lines[#lines + 1] = "build-position=" .. format_position(task_state.build_position)
-      lines[#lines + 1] = "build-direction=" .. format_direction(task_state.build_direction)
-    end
-
-    if task_state.downstream_machine_position then
-      lines[#lines + 1] = "downstream-machine-position=" .. format_position(task_state.downstream_machine_position)
-    end
-
-    if task_state.output_container_position then
-      lines[#lines + 1] = "output-container-position=" .. format_position(task_state.output_container_position)
-    end
-
-    if task_state.target_position then
-      lines[#lines + 1] = "target-position=" .. format_position(task_state.target_position)
-    end
-
-    if task_state.target_item_name then
-      lines[#lines + 1] = "target-item=" .. task_state.target_item_name
-    end
-
-    if task_state.source_id then
-      lines[#lines + 1] = "source-id=" .. task_state.source_id
-    end
-
-    if task_state.target_kind then
-      lines[#lines + 1] = "target-kind=" .. task_state.target_kind
-    end
-
-    if task_state.target_name then
-      lines[#lines + 1] = "target-name=" .. task_state.target_name
-    end
-
-    if task_state.harvest_complete_tick then
-      lines[#lines + 1] = "harvest-complete-tick=" .. task_state.harvest_complete_tick
-    end
-
-    if task_state.next_attempt_tick then
-      lines[#lines + 1] = "next-attempt-tick=" .. task_state.next_attempt_tick
-    end
-
-    if task_state.pause_until_tick then
-      lines[#lines + 1] = "pause-until-tick=" .. task_state.pause_until_tick
-    end
-
-    if task_state.next_phase then
-      lines[#lines + 1] = "next-phase=" .. task_state.next_phase
-    end
-
-    if task_state.pause_reason then
-      lines[#lines + 1] = "pause-reason=" .. task_state.pause_reason
-    end
-  end
-
-  if builder_state.next_container_scan_tick then
-    lines[#lines + 1] = "next-container-scan-tick=" .. builder_state.next_container_scan_tick
-  end
-
-  if builder_state.next_machine_refuel_tick then
-    lines[#lines + 1] = "next-machine-refuel-tick=" .. builder_state.next_machine_refuel_tick
-  end
-
-  if builder_state.next_machine_input_supply_tick then
-    lines[#lines + 1] = "next-machine-input-supply-tick=" .. builder_state.next_machine_input_supply_tick
-  end
-
-  if builder_state.next_machine_output_collection_tick then
-    lines[#lines + 1] = "next-machine-output-collection-tick=" .. builder_state.next_machine_output_collection_tick
-  end
-
-  if builder_state.completed_scaling_milestones then
-    lines[#lines + 1] = "completed-scaling-milestones=" .. count_table_entries(builder_state.completed_scaling_milestones)
-  end
-
-  lines[#lines + 1] = "production-sites=" .. #ensure_production_sites()
-  lines[#lines + 1] = "resource-sites=" .. #ensure_resource_sites()
-
-  if builder_state.goal_tree_root then
-    lines[#lines + 1] = "goal=" .. goal_tree.get_root_goal_line(builder_state.goal_tree_root)
-    for _, path_line in ipairs(builder_state.goal_path_lines or {}) do
-      lines[#lines + 1] = "goal-path=" .. path_line
-    end
-    for _, blocker_line in ipairs(builder_state.goal_blocker_lines or {}) do
-      lines[#lines + 1] = "goal-blocker=" .. blocker_line
-    end
-  end
-
-  for _, maintenance_line in ipairs(maintenance_runner.get_recent_action_lines(builder_state, 4)) do
-    lines[#lines + 1] = "maintenance=" .. maintenance_line
-  end
-
-  for _, trace_line in ipairs(goal_engine.get_recent_trace_lines(builder_state, 4)) do
-    lines[#lines + 1] = "goal-trace=" .. trace_line
-  end
-
-  return lines
 end
 
 local function ensure_builder_state_fields(builder_state)
@@ -601,53 +434,6 @@ get_builder_state = function()
   return state
 end
 
-function builder_runtime.debug_status_command(command)
-  ensure_debug_settings()
-
-  local builder_state = get_builder_state()
-  if builder_state then
-    builder_runtime.update_goal_model(builder_state, game.tick)
-  end
-
-  local lines = describe_builder_state(builder_state)
-  for _, line in ipairs(lines) do
-    reply_to_command(command, line)
-  end
-end
-
-function builder_runtime.debug_toggle_command(command)
-  ensure_debug_settings()
-
-  local parameter = command.parameter and string.lower(command.parameter) or nil
-  if parameter == "on" then
-    storage.debug_enabled = true
-    reply_to_command(command, "debug logging enabled")
-    return
-  end
-
-  if parameter == "off" then
-    storage.debug_enabled = false
-    reply_to_command(command, "debug logging disabled")
-    return
-  end
-
-  reply_to_command(command, "debug logging is " .. (debug_enabled() and "on" or "off") .. "; use /enemy-builder-debug on or /enemy-builder-debug off")
-end
-
-function builder_runtime.debug_retask_command(command)
-  local builder_state = get_builder_state()
-  if not builder_state then
-    reply_to_command(command, "no builder entity is active")
-    return
-  end
-
-  builder_state.task_state = nil
-  builder_state.scaling_active_task = nil
-  set_idle(builder_state.entity)
-  debug_log("manual retask requested at " .. format_position(builder_state.entity.position))
-  reply_to_command(command, "builder task state cleared; it will re-evaluate on the next tick")
-end
-
 function builder_runtime.ensure_builder_for_command(command)
   local builder_state = get_builder_state()
   if builder_state then
@@ -660,137 +446,6 @@ function builder_runtime.ensure_builder_for_command(command)
   end
 
   return nil
-end
-
-function builder_runtime.parse_manual_component_request(command, builder_state)
-  local parameter = command.parameter or ""
-  local tokens = {}
-  for token in string.gmatch(parameter, "%S+") do
-    tokens[#tokens + 1] = token
-  end
-
-  local component_name = tokens[1]
-  if not component_name then
-    return nil, nil, "usage: /" .. command.name .. " <component> [here|x y]"
-  end
-
-  local position = nil
-  if tokens[2] == "here" then
-    local player = get_command_player(command)
-    if player and player.valid then
-      position = clone_position(player.position)
-    elseif builder_state and builder_state.entity and builder_state.entity.valid then
-      position = clone_position(builder_state.entity.position)
-    end
-  elseif tokens[2] then
-    local x = tonumber(tokens[2])
-    local y = tonumber(tokens[3])
-    if not (x and y) then
-      return nil, nil, "expected coordinates as <x y> or the keyword 'here'"
-    end
-    position = {x = x, y = y}
-  end
-
-  return component_name, position
-end
-
-function builder_runtime.goals_command(command)
-  local builder_state = builder_runtime.ensure_builder_for_command(command)
-  if not builder_state then
-    reply_to_command(command, "no builder entity is active")
-    return
-  end
-
-  builder_runtime.update_goal_model(builder_state, game.tick)
-  for _, line in ipairs(goal_tree.format_tree_lines(builder_state.goal_tree_root, false)) do
-    reply_to_command(command, line)
-  end
-end
-
-function builder_runtime.manual_plan_command(command)
-  local builder_state = builder_runtime.ensure_builder_for_command(command)
-  local component_name, position, error_message = builder_runtime.parse_manual_component_request(command, builder_state)
-  if error_message then
-    reply_to_command(command, error_message)
-    reply_to_command(command, "components: " .. table.concat(goal_tree.list_component_names(builder_data), ", "))
-    return
-  end
-
-  if not builder_state then
-    reply_to_command(command, "no builder entity is active")
-    return
-  end
-
-  local lines, preview_error = goal_tree.describe_plan_preview(
-    builder_data,
-    builder_runtime.build_runtime_snapshot(builder_state, game.tick),
-    {
-      get_item_count = get_item_count,
-      get_recipe = get_recipe
-    },
-    component_name,
-    position
-  )
-
-  if preview_error then
-    reply_to_command(command, preview_error)
-    reply_to_command(command, "components: " .. table.concat(goal_tree.list_component_names(builder_data), ", "))
-    return
-  end
-
-  for _, line in ipairs(lines or {}) do
-    reply_to_command(command, line)
-  end
-end
-
-function builder_runtime.manual_build_command(command)
-  local builder_state = builder_runtime.ensure_builder_for_command(command)
-  local component_name, position, error_message = builder_runtime.parse_manual_component_request(command, builder_state)
-  if error_message then
-    reply_to_command(command, error_message)
-    reply_to_command(command, "components: " .. table.concat(goal_tree.list_component_names(builder_data), ", "))
-    return
-  end
-
-  if not builder_state then
-    reply_to_command(command, "no builder entity is active")
-    return
-  end
-
-  local request, request_error = goal_tree.instantiate_manual_request(builder_data, component_name, position)
-  if request_error then
-    reply_to_command(command, request_error)
-    reply_to_command(command, "components: " .. table.concat(goal_tree.list_component_names(builder_data), ", "))
-    return
-  end
-
-  builder_state.manual_goal_request = request
-  builder_state.task_state = nil
-  if builder_state.goal_engine then
-    builder_state.goal_engine.scaling_display_task = nil
-  end
-  set_idle(builder_state.entity)
-  builder_runtime.record_recovery(builder_state, "manual goal injected for " .. request.display_name)
-  debug_log("manual goal injected: " .. request.display_name .. (position and " at " .. format_position(position) or ""))
-  reply_to_command(command, "manual goal queued: " .. request.display_name)
-end
-
-function builder_runtime.cancel_manual_command(command)
-  local builder_state = get_builder_state()
-  if not builder_state or not builder_state.manual_goal_request then
-    reply_to_command(command, "no manual goal is active")
-    return
-  end
-
-  local display_name = builder_state.manual_goal_request.display_name or builder_state.manual_goal_request.component_name or "manual goal"
-  builder_state.manual_goal_request = nil
-  builder_state.task_state = nil
-  if builder_state.goal_engine then
-    builder_state.goal_engine.scaling_display_task = nil
-  end
-  set_idle(builder_state.entity)
-  debug_log("manual goal cancelled: " .. display_name)
-  reply_to_command(command, "cancelled " .. display_name)
 end
 
 get_active_task = function(builder_state)
@@ -2718,315 +2373,16 @@ pull_inventory_contents_to_builder = function(source_inventory, builder, reason,
   return moved_items
 end
 
-get_site_pattern = function(pattern_name)
-  return builder_data.site_patterns and builder_data.site_patterns[pattern_name] or nil
-end
-
-local function get_player_screen_size(player)
-  local resolution = player.display_resolution
-  local scale = player.display_scale or 1
-
-  if not resolution then
-    return {width = 1280, height = 720}
-  end
-
-  return {
-    width = math.floor(resolution.width / scale),
-    height = math.floor(resolution.height / scale)
-  }
-end
-
-local function ensure_overlay_label(parent, name, caption, font_color, maximal_width)
-  local label = parent[name]
-  if label and label.valid then
-    return label
-  end
-
-  label = parent.add{
-    type = "label",
-    name = name,
-    caption = caption or ""
-  }
-  label.style.single_line = false
-  label.style.font_color = font_color
-
-  if maximal_width then
-    label.style.maximal_width = maximal_width
-  end
-
-  return label
-end
-
-function builder_runtime.ensure_status_overlay(player)
-  local root = player.gui.screen[overlay_element_names.status_root]
-  if root and root.valid then
-    ensure_overlay_label(root, overlay_element_names.goal_label, "", {0.75, 0.9, 1, 0.82})
-    ensure_overlay_label(root, overlay_element_names.status_label, "", {1, 1, 1, 0.82})
-    ensure_overlay_label(root, overlay_element_names.path_label, "", {0.86, 0.94, 1, 0.72})
-    ensure_overlay_label(root, overlay_element_names.blockers_label, "", {1, 0.78, 0.78, 0.78})
-    ensure_overlay_label(root, overlay_element_names.maintenance_label, "", {0.86, 0.92, 0.86, 0.72})
-    return root
-  end
-
-  root = player.gui.screen.add{
-    type = "flow",
-    name = overlay_element_names.status_root,
-    direction = "vertical"
-  }
-  ensure_overlay_label(root, overlay_element_names.goal_label, "", {0.75, 0.9, 1, 0.82})
-  ensure_overlay_label(root, overlay_element_names.status_label, "", {1, 1, 1, 0.82})
-  ensure_overlay_label(root, overlay_element_names.path_label, "", {0.86, 0.94, 1, 0.72})
-  ensure_overlay_label(root, overlay_element_names.blockers_label, "", {1, 0.78, 0.78, 0.78})
-  ensure_overlay_label(root, overlay_element_names.maintenance_label, "", {0.86, 0.92, 0.86, 0.72})
-  return root
-end
-
-function builder_runtime.ensure_inventory_overlay(player)
-  local settings = get_overlay_settings()
-  local root = player.gui.screen[overlay_element_names.inventory_root]
-  if root and root.valid then
-    ensure_overlay_label(root, overlay_element_names.inventory_title, "", {0.75, 0.9, 1, 0.82}, settings.inventory_width)
-    ensure_overlay_label(root, overlay_element_names.inventory_label, "", {0.92, 0.92, 0.92, 0.72}, settings.inventory_width)
-    return root
-  end
-
-  root = player.gui.screen.add{
-    type = "flow",
-    name = overlay_element_names.inventory_root,
-    direction = "vertical"
-  }
-  ensure_overlay_label(root, overlay_element_names.inventory_title, "", {0.75, 0.9, 1, 0.82}, settings.inventory_width)
-  ensure_overlay_label(root, overlay_element_names.inventory_label, "", {0.92, 0.92, 0.92, 0.72}, settings.inventory_width)
-  return root
-end
-
-local function destroy_builder_overlay(player)
-  if not (player and player.valid) then
-    return
-  end
-
-  local status_root = player.gui.screen[overlay_element_names.status_root]
-  if status_root and status_root.valid then
-    status_root.destroy()
-  end
-
-  local inventory_root = player.gui.screen[overlay_element_names.inventory_root]
-  if inventory_root and inventory_root.valid then
-    inventory_root.destroy()
-  end
-end
-
-local function destroy_chart_tag_if_valid(tag)
-  if tag and tag.valid then
-    tag.destroy()
-  end
-end
-
-local function clear_builder_map_markers()
-  local markers = ensure_builder_map_markers()
-
-  for force_index, tag in pairs(markers) do
-    destroy_chart_tag_if_valid(tag)
-    markers[force_index] = nil
-  end
-end
-
-function builder_runtime.get_activity_summary(builder_state)
-  if not (builder_state and builder_state.entity and builder_state.entity.valid) then
-    return "Enemy Builder: inactive"
-  end
-
-  return "Activity: " .. goal_tree.get_activity_line(builder_runtime.build_runtime_snapshot(builder_state, game.tick))
-end
-
-function builder_runtime.get_goal_summary(builder_state)
-  if not (builder_state and builder_state.entity and builder_state.entity.valid) then
-    return "Goal: inactive"
-  end
-
-  local snapshot = builder_runtime.build_runtime_snapshot(builder_state, game.tick)
-  local root = builder_state.goal_tree_root or goal_tree.build_runtime_tree(
-    builder_data,
-    snapshot,
-    {
-      get_item_count = get_item_count,
-      get_recipe = get_recipe
-    }
-  )
-
-  return "Goal: " .. goal_tree.get_root_goal_line(root)
-end
-
-function builder_runtime.get_builder_inventory_lines(builder_state)
-  if not (builder_state and builder_state.entity and builder_state.entity.valid) then
-    return {"builder unavailable"}
-  end
-
-  local inventory = get_builder_main_inventory(builder_state.entity)
-  if not inventory then
-    return {"inventory unavailable"}
-  end
-
-  local item_stacks = get_sorted_item_stacks(inventory.get_contents())
-  if #item_stacks == 0 then
-    return {"(empty)"}
-  end
-
-  local settings = get_overlay_settings()
-  local max_lines = settings.max_inventory_lines or #item_stacks
-  local lines = {}
-
-  for index, item_stack in ipairs(item_stacks) do
-    if index > max_lines then
-      lines[#lines + 1] = "... +" .. (#item_stacks - max_lines) .. " more"
-      break
-    end
-
-    lines[#lines + 1] = format_item_stack_name(item_stack) .. ": " .. item_stack.count
-  end
-
-  return lines
-end
-
 function builder_runtime.update_builder_overlay_for_player(player, builder_state)
-  if not (player and player.valid and player.connected) then
-    return
-  end
-
-  if not overlay_enabled() then
-    destroy_builder_overlay(player)
-    return
-  end
-
-  local settings = get_overlay_settings()
-  local screen_size = get_player_screen_size(player)
-  local status_root = builder_runtime.ensure_status_overlay(player)
-  local inventory_root = builder_runtime.ensure_inventory_overlay(player)
-  local goal_label = status_root[overlay_element_names.goal_label]
-  local status_label = status_root[overlay_element_names.status_label]
-  local path_label = status_root[overlay_element_names.path_label]
-  local blockers_label = status_root[overlay_element_names.blockers_label]
-  local maintenance_label = status_root[overlay_element_names.maintenance_label]
-  local inventory_title = inventory_root[overlay_element_names.inventory_title]
-  local inventory_label = inventory_root[overlay_element_names.inventory_label]
-
-  status_root.location = {
-    x = settings.left_margin or 20,
-    y = settings.top_margin or 12
-  }
-  inventory_root.location = {
-    x = math.max(0, screen_size.width - (settings.inventory_width or 260) - (settings.right_margin or 20)),
-    y = (settings.top_margin or 12) + (settings.inventory_top_offset or 40)
-  }
-
-  goal_label.caption = builder_runtime.get_goal_summary(builder_state)
-  status_label.caption = builder_runtime.get_activity_summary(builder_state)
-  local path_lines = builder_state and builder_state.goal_path_lines or {}
-  local blocker_lines = builder_state and builder_state.goal_blocker_lines or {}
-  local maintenance_lines = maintenance_runner.get_recent_action_lines(builder_state or {}, 4)
-  path_label.caption = "Path:\n" .. (#path_lines > 0 and table.concat(path_lines, "\n") or "(none)")
-  blockers_label.caption = "Blockers:\n" .. (#blocker_lines > 0 and table.concat(blocker_lines, "\n") or "(none)")
-  maintenance_label.caption = "Maintenance:\n" .. (#maintenance_lines > 0 and table.concat(maintenance_lines, "\n") or "(none)")
-  inventory_title.caption = "Enemy Builder Inventory"
-  inventory_label.caption = table.concat(builder_runtime.get_builder_inventory_lines(builder_state), "\n")
+  debug_overlay.update_for_player(player, builder_state, game and game.tick or 0, debug_overlay_context)
 end
 
 function builder_runtime.update_builder_overlays(builder_state, tick, force_update)
-  if not overlay_enabled() then
-    for _, player in pairs(game.connected_players) do
-      destroy_builder_overlay(player)
-    end
-    return
-  end
-
-  local settings = get_overlay_settings()
-  local interval_ticks = settings.update_interval_ticks or 15
-  if not force_update and (tick % interval_ticks) ~= 0 then
-    return
-  end
-
-  if builder_state then
-    builder_runtime.update_goal_model(builder_state, tick)
-  end
-
-  for _, player in pairs(game.connected_players) do
-    builder_runtime.update_builder_overlay_for_player(player, builder_state)
-  end
-end
-
-local function get_builder_marker_forces(builder_force)
-  local forces = {}
-
-  for _, player in pairs(game.players) do
-    if player and player.valid and player.force and player.force.valid and player.force.index ~= builder_force.index then
-      forces[player.force.index] = player.force
-    end
-  end
-
-  return forces
+  debug_overlay.update_all(builder_state, tick, force_update, debug_overlay_context)
 end
 
 local function update_builder_map_markers(builder_state, tick, force_update)
-  if not map_marker_enabled() then
-    clear_builder_map_markers()
-    return
-  end
-
-  local settings = get_map_marker_settings()
-  local interval_ticks = settings.update_interval_ticks or 60
-  if not force_update and (tick % interval_ticks) ~= 0 then
-    return
-  end
-
-  if not (builder_state and builder_state.entity and builder_state.entity.valid) then
-    clear_builder_map_markers()
-    return
-  end
-
-  local builder = builder_state.entity
-  local markers = ensure_builder_map_markers()
-  local active_forces = get_builder_marker_forces(builder.force)
-  local refresh_distance = settings.refresh_distance or 1
-  local refresh_distance_squared = refresh_distance * refresh_distance
-
-  for force_index, force in pairs(active_forces) do
-    local existing_tag = markers[force_index]
-    local recreate_tag = true
-
-    force.chart(
-      builder.surface,
-      {
-        {builder.position.x - (settings.chart_radius or 16), builder.position.y - (settings.chart_radius or 16)},
-        {builder.position.x + (settings.chart_radius or 16), builder.position.y + (settings.chart_radius or 16)}
-      }
-    )
-
-    if existing_tag and existing_tag.valid then
-      local tag_position = existing_tag.position
-      if existing_tag.surface == builder.surface and tag_position and square_distance(tag_position, builder.position) <= refresh_distance_squared then
-        recreate_tag = false
-      else
-        destroy_chart_tag_if_valid(existing_tag)
-      end
-    end
-
-    if recreate_tag then
-      markers[force_index] = force.add_chart_tag(
-        builder.surface,
-        {
-          position = clone_position(builder.position),
-          text = settings.text or "Builder"
-        }
-      )
-    end
-  end
-
-  for force_index, tag in pairs(markers) do
-    if not active_forces[force_index] then
-      destroy_chart_tag_if_valid(tag)
-      markers[force_index] = nil
-    end
-  end
+  debug_markers.update(builder_state, tick, force_update, debug_marker_context)
 end
 
 local function get_site_collect_inventory(site)
@@ -4203,6 +3559,45 @@ local goal_engine_adapters = {
   start_task = start_task
 }
 
+debug_overlay_context = {
+  builder_data = builder_data,
+  build_runtime_snapshot = builder_runtime.build_runtime_snapshot,
+  format_item_stack_name = format_item_stack_name,
+  get_builder_main_inventory = get_builder_main_inventory,
+  get_item_count = get_item_count,
+  get_recipe = get_recipe,
+  get_sorted_item_stacks = get_sorted_item_stacks,
+  update_goal_model = builder_runtime.update_goal_model
+}
+
+debug_marker_context = {
+  builder_data = builder_data
+}
+
+debug_command_context = {
+  builder_data = builder_data,
+  build_runtime_snapshot = builder_runtime.build_runtime_snapshot,
+  clone_position = clone_position,
+  count_table_entries = count_table_entries,
+  debug_enabled = debug_enabled,
+  debug_log = debug_log,
+  ensure_builder_for_command = builder_runtime.ensure_builder_for_command,
+  ensure_debug_settings = ensure_debug_settings,
+  ensure_production_sites = ensure_production_sites,
+  ensure_resource_sites = ensure_resource_sites,
+  format_direction = format_direction,
+  format_position = format_position,
+  get_active_task = get_active_task,
+  get_builder_state = get_builder_state,
+  get_command_player = get_command_player,
+  get_item_count = get_item_count,
+  get_recipe = get_recipe,
+  record_recovery = builder_runtime.record_recovery,
+  reply_to_command = reply_to_command,
+  set_idle = set_idle,
+  update_goal_model = builder_runtime.update_goal_model
+}
+
 local function advance_builder(builder_state, tick)
   configure_builder_entity(builder_state.entity)
   process_production_sites(tick)
@@ -4303,41 +3698,7 @@ local function on_tick(event)
 end
 
 function builder_runtime.register_events()
-  if commands.commands["enemy-builder-status"] then
-    commands.remove_command("enemy-builder-status")
-  end
-  commands.add_command("enemy-builder-status", "Show the current Enemy Builder state.", builder_runtime.debug_status_command)
-
-  if commands.commands["enemy-builder-goals"] then
-    commands.remove_command("enemy-builder-goals")
-  end
-  commands.add_command("enemy-builder-goals", "Show the current Enemy Builder goal tree.", builder_runtime.goals_command)
-
-  if commands.commands["enemy-builder-debug"] then
-    commands.remove_command("enemy-builder-debug")
-  end
-  commands.add_command("enemy-builder-debug", "Toggle Enemy Builder debug logging. Use on or off.", builder_runtime.debug_toggle_command)
-
-  if commands.commands["enemy-builder-retask"] then
-    commands.remove_command("enemy-builder-retask")
-  end
-  commands.add_command("enemy-builder-retask", "Clear the current Enemy Builder task state and retry.", builder_runtime.debug_retask_command)
-
-  if commands.commands["enemy-builder-plan"] then
-    commands.remove_command("enemy-builder-plan")
-  end
-  commands.add_command("enemy-builder-plan", "Preview a manual Enemy Builder component plan.", builder_runtime.manual_plan_command)
-
-  if commands.commands["enemy-builder-build"] then
-    commands.remove_command("enemy-builder-build")
-  end
-  commands.add_command("enemy-builder-build", "Queue a manual Enemy Builder component build.", builder_runtime.manual_build_command)
-
-  if commands.commands["enemy-builder-cancel-manual"] then
-    commands.remove_command("enemy-builder-cancel-manual")
-  end
-  commands.add_command("enemy-builder-cancel-manual", "Cancel the active manual Enemy Builder goal.", builder_runtime.cancel_manual_command)
-
+  debug_commands.register(debug_command_context)
   script.on_init(on_init)
   script.on_configuration_changed(on_configuration_changed)
   script.on_event(defines.events.on_player_created, on_player_created)

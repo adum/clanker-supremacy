@@ -1,0 +1,29 @@
+local constants = require("shared.config.constants")
+
+return {
+  force_name = "enemy-builder",
+  force = {
+    unlock_all_technologies = true
+  },
+  prototypes = {
+    firearm_magazine_assembler_name = constants.firearm_magazine_assembler_name
+  },
+  default_plan = "bootstrap",
+  avatar = {
+    prototype_name = "enemy-builder-avatar",
+    spawn_offset = {x = 2, y = 0},
+    spawn_search_radius = 8,
+    spawn_precision = 0.5,
+    tint = {r = 0.42, g = 0.9, b = 1, a = 0.85}
+  },
+  build = {
+    post_place_pause_ticks = 90
+  },
+  recovery = {
+    max_task_retries = 6,
+    blocked_goal_cooldown_ticks = 15 * 60
+  },
+  movement = {
+    approach_randomness = 0.6
+  }
+}

@@ -1,0 +1,221 @@
+local constants = require("shared.config.constants")
+local deep_copy = require("shared.config.util").deep_copy
+
+local build_tasks = {}
+
+build_tasks.coal_outpost = {
+  type = "place-miner-on-resource",
+  pattern_name = "coal_outpost",
+  resource_name = "coal",
+  miner_name = "burner-mining-drill",
+  search_radii = {64, 128, 256, 512},
+  max_resource_candidates_per_radius = 48,
+  search_retry_ticks = 5 * 60,
+  placement_search_radius = 4,
+  placement_step = 0.5,
+  arrival_distance = 1.1,
+  stuck_retry_ticks = 3 * 60,
+  placement_directions = {"north", "east", "south", "west"},
+  site_selection = {
+    prefer_middle = true,
+    random_candidate_pool = 12
+  },
+  output_container = {
+    name = "wooden-chest"
+  },
+  fuel = {
+    name = "coal",
+    count = 8
+  }
+}
+
+build_tasks.iron_smelting = {
+  type = "place-miner-on-resource",
+  pattern_name = "iron_smelting",
+  resource_name = "iron-ore",
+  miner_name = "burner-mining-drill",
+  search_radii = {64, 128, 256, 512},
+  max_resource_candidates_per_radius = 48,
+  search_retry_ticks = 5 * 60,
+  placement_search_radius = 4,
+  placement_step = 0.5,
+  arrival_distance = 1.1,
+  stuck_retry_ticks = 3 * 60,
+  placement_directions = {"north", "east", "south", "west"},
+  site_selection = {
+    prefer_middle = true,
+    random_candidate_pool = 12
+  },
+  downstream_machine = {
+    name = "stone-furnace",
+    recipe = "iron-plate",
+    placement_search_radius = 2,
+    placement_step = 0.5,
+    cover_drop_position = true,
+    fuel = {
+      name = "coal",
+      count = 8
+    }
+  },
+  fuel = {
+    name = "coal",
+    count = 8
+  },
+  transfer = {
+    interval_ticks = 30
+  }
+}
+
+build_tasks.stone_outpost = {
+  type = "place-miner-on-resource",
+  pattern_name = "stone_outpost",
+  resource_name = "stone",
+  miner_name = "burner-mining-drill",
+  search_radii = {64, 128, 256, 512},
+  max_resource_candidates_per_radius = 48,
+  search_retry_ticks = 5 * 60,
+  placement_search_radius = 4,
+  placement_step = 0.5,
+  arrival_distance = 1.1,
+  stuck_retry_ticks = 3 * 60,
+  placement_directions = {"north", "east", "south", "west"},
+  site_selection = {
+    prefer_middle = true,
+    random_candidate_pool = 12
+  },
+  output_container = {
+    name = "wooden-chest"
+  },
+  fuel = {
+    name = "coal",
+    count = 8
+  }
+}
+
+build_tasks.copper_smelting = {
+  type = "place-miner-on-resource",
+  pattern_name = "copper_smelting",
+  resource_name = "copper-ore",
+  miner_name = "burner-mining-drill",
+  search_radii = {64, 128, 256, 512},
+  max_resource_candidates_per_radius = 48,
+  search_retry_ticks = 5 * 60,
+  placement_search_radius = 4,
+  placement_step = 0.5,
+  arrival_distance = 1.1,
+  stuck_retry_ticks = 3 * 60,
+  placement_directions = {"north", "east", "south", "west"},
+  site_selection = {
+    prefer_middle = true,
+    random_candidate_pool = 12
+  },
+  downstream_machine = {
+    name = "stone-furnace",
+    recipe = "copper-plate",
+    placement_search_radius = 2,
+    placement_step = 0.5,
+    cover_drop_position = true,
+    fuel = {
+      name = "coal",
+      count = 8
+    }
+  },
+  fuel = {
+    name = "coal",
+    count = 8
+  },
+  transfer = {
+    interval_ticks = 30
+  }
+}
+
+build_tasks.steel_smelting = {
+  type = "place-layout-near-machine",
+  pattern_name = "steel_smelting",
+  resource_name = "iron-ore",
+  anchor_pattern_names = {"iron_smelting"},
+  anchor_position_source = "downstream-machine",
+  max_anchor_entities = 12,
+  search_retry_ticks = 5 * 60,
+  arrival_distance = 1.6,
+  stuck_retry_ticks = 3 * 60,
+  layout_orientations = {"north", "east", "south", "west"},
+  require_missing_registered_site = {
+    site_type = "steel-smelting-chain",
+    entity_field = "anchor_machine"
+  },
+  layout_site_kind = "steel-smelting-chain",
+  layout_elements = {
+    {
+      id = "steel-feed-inserter",
+      site_role = "steel-feed-inserter",
+      entity_name = "burner-inserter",
+      offset = {x = 2, y = 0},
+      direction_name = "east",
+      placement_search_radius = 0.5,
+      placement_step = 0.5,
+      fuel = {
+        name = "coal",
+        count = 4
+      }
+    },
+    {
+      id = "steel-furnace",
+      site_role = "steel-furnace",
+      entity_name = "stone-furnace",
+      offset = {x = 4, y = 0},
+      placement_search_radius = 0.5,
+      placement_step = 0.5,
+      fuel = {
+        name = "coal",
+        count = 8
+      }
+    }
+  }
+}
+
+build_tasks.firearm_magazine_outpost = {
+  type = "place-machine-near-site",
+  pattern_name = "firearm_magazine_outpost",
+  entity_name = constants.firearm_magazine_assembler_name,
+  consume_item_name = "assembling-machine-1",
+  recipe_name = "firearm-magazine",
+  recipe_is_fixed = true,
+  anchor_pattern_names = {"coal_outpost", "iron_smelting", "stone_outpost", "copper_smelting"},
+  anchor_position_source = "miner",
+  max_anchor_sites = 12,
+  search_retry_ticks = 5 * 60,
+  placement_search_radius = 10,
+  placement_step = 1,
+  arrival_distance = 1.6,
+  stuck_retry_ticks = 3 * 60,
+  forbid_resource_overlap = true,
+  layout_reservation = {
+    layout_orientations = {"north", "east", "south", "west"},
+    forbid_resource_overlap = true,
+    layout_elements = deep_copy(constants.ammo_defense_layout_elements)
+  },
+  anchor_preference = {
+    fewer_registered_sites = {
+      site_type = "assembler-defense",
+      entity_field = "assembler",
+      radius = 24
+    }
+  }
+}
+
+build_tasks.bootstrap_gather = {
+  id = "gather-bootstrap-materials",
+  type = "gather-world-items",
+  search_retry_ticks = 5 * 60,
+  arrival_distance = 1.1,
+  stuck_retry_ticks = 3 * 60,
+  mining_duration_ticks = 45,
+  inventory_targets = {
+    {name = "wood", count = 20},
+    {name = "stone", count = 20}
+  },
+  sources = constants.gather_sources
+}
+
+return build_tasks
