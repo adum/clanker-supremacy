@@ -1,5 +1,6 @@
 local common = require("scripts.goal.common")
 local instances = require("scripts.goal.instances")
+local model = require("scripts.goal.model")
 local predicates = require("scripts.goal.predicates")
 local trace = require("scripts.goal.trace")
 local goal_tree = require("scripts.goal_tree")
@@ -124,6 +125,10 @@ local function set_scaling_display_task(builder_state, task)
   state.scaling_display_task = task and common.deep_copy(task) or nil
 end
 
+local function sync_goal_model(builder_data, builder_state)
+  return model.sync(builder_data, builder_state)
+end
+
 local function start_scaling_wait(builder_data, builder_state, tick, wait_reason, message, display_task, adapters)
   local idle_retry_ticks = (builder_data.scaling and builder_data.scaling.idle_retry_ticks) or (2 * 60)
   builder_state.task_state = {
@@ -133,6 +138,14 @@ local function start_scaling_wait(builder_data, builder_state, tick, wait_reason
   }
 
   set_scaling_display_task(builder_state, display_task)
+  model.set_scaling_focus(builder_data, builder_state, {
+    id = "scaling-wait-" .. tostring(wait_reason),
+    title = display_task and common.humanize_identifier(display_task.scaling_pattern_name or display_task.id or wait_reason) or "Scaling Wait",
+    display_task = display_task,
+    execution_kind = "scaling-phase",
+    focus_kind = "wait",
+    focus_name = wait_reason
+  })
   adapters.record_recovery(builder_state, {
     kind = "scaling-wait",
     message = message or ("scaling wait: " .. tostring(wait_reason)),
@@ -194,6 +207,14 @@ local function start_scaling_collection(builder_state, site, item_name, tick, al
   end
 
   set_scaling_display_task(builder_state, display_task)
+  model.set_scaling_focus(adapters.builder_data, builder_state, {
+    id = "scaling-collect-" .. tostring(item_name or "items"),
+    title = "Collect " .. common.humanize_identifier(item_name or "items"),
+    display_task = display_task,
+    execution_kind = "scaling-phase",
+    focus_kind = "collect",
+    focus_name = item_name
+  })
   builder_state.task_state = {
     phase = "scaling-moving-to-site",
     scaling_site = site,
@@ -231,6 +252,14 @@ local function start_scaling_craft(builder_data, builder_state, action, tick, di
   end
 
   set_scaling_display_task(builder_state, display_task)
+  model.set_scaling_focus(builder_data, builder_state, {
+    id = "scaling-craft-" .. tostring(action.item_name),
+    title = "Craft " .. common.humanize_identifier(action.item_name),
+    display_task = display_task,
+    execution_kind = "scaling-phase",
+    focus_kind = "craft",
+    focus_name = action.item_name
+  })
   builder_state.task_state = {
     phase = "scaling-crafting",
     craft_item_name = action.item_name,
@@ -260,14 +289,25 @@ local function finish_scaling_craft(builder_state, adapters)
   )
 
   builder_state.task_state = nil
+  model.clear_scaling_focus(adapters.builder_data, builder_state)
 end
 
 local function start_scaling_subtask(builder_state, task, tick, adapters)
   builder_state.scaling_active_task = task
   set_scaling_display_task(builder_state, task)
+  model.set_scaling_focus(adapters.builder_data, builder_state, {
+    id = "scaling-task-" .. tostring(task.id or task.type or "task"),
+    title = common.humanize_identifier(task.scaling_pattern_name or task.id or task.type or "task"),
+    task = task,
+    display_task = task,
+    execution_kind = "task",
+    focus_kind = "task",
+    focus_name = task.scaling_pattern_name or task.id or task.type
+  })
   adapters.start_task(builder_state, task, tick)
   if not builder_state.task_state then
     builder_state.scaling_active_task = nil
+    model.clear_scaling_focus(adapters.builder_data, builder_state)
   end
 end
 
@@ -643,55 +683,37 @@ local function advance_scaling(builder_data, builder_state, tick, adapters)
 end
 
 function goal_engine.get_active_task(builder_data, builder_state)
-  if not builder_state then
-    return nil
-  end
-
-  if builder_state.manual_goal_request and builder_state.manual_goal_request.tasks then
-    return builder_state.manual_goal_request.tasks[builder_state.manual_goal_request.current_task_index or 1]
-  end
-
-  if builder_state.scaling_active_task then
-    return builder_state.scaling_active_task
-  end
-
-  local plan = builder_data.plans[builder_state.plan_name]
-  if not plan then
-    return nil
-  end
-
-  return plan.tasks[builder_state.task_index]
+  sync_goal_model(builder_data, builder_state)
+  return model.get_active_task(builder_data, builder_state)
 end
 
 function goal_engine.get_display_task(builder_data, builder_state)
-  if not builder_state then
-    return nil
-  end
-
-  local active_task = goal_engine.get_active_task(builder_data, builder_state)
-  if active_task then
-    return active_task
-  end
-
-  local state = instances.ensure_state(builder_state)
-  return state and state.scaling_display_task or nil
+  sync_goal_model(builder_data, builder_state)
+  return model.get_display_task(builder_data, builder_state)
 end
 
 function goal_engine.advance(builder_data, builder_state, tick, adapters)
   instances.ensure_state(builder_state)
+  sync_goal_model(builder_data, builder_state)
 
-  local task = goal_engine.get_active_task(builder_data, builder_state)
-  if task then
+  local execution = model.get_active_execution(builder_data, builder_state)
+  if execution and execution.execution_kind == "task" and execution.task then
     if not builder_state.task_state then
-      adapters.start_task(builder_state, task, tick)
+      adapters.start_task(builder_state, execution.task, tick)
     else
-      adapters.advance_task_phase(builder_state, task, tick)
+      adapters.advance_task_phase(builder_state, execution.task, tick)
     end
+    sync_goal_model(builder_data, builder_state)
     return
   end
 
-  if builder_data.scaling and builder_data.scaling.enabled then
+  local model_state = sync_goal_model(builder_data, builder_state)
+  local root = model_state and model_state.root or nil
+  local active_branch = root and root.active_child_id or nil
+
+  if active_branch == "scaling" and builder_data.scaling and builder_data.scaling.enabled then
     advance_scaling(builder_data, builder_state, tick, adapters)
+    sync_goal_model(builder_data, builder_state)
   else
     set_scaling_display_task(builder_state, nil)
     adapters.set_idle(builder_state.entity)
@@ -700,6 +722,7 @@ end
 
 function goal_engine.sync_model(builder_data, builder_state, tick, adapters)
   instances.ensure_state(builder_state)
+  sync_goal_model(builder_data, builder_state)
 
   local snapshot = adapters.build_runtime_snapshot(builder_state, tick)
   local root = goal_tree.build_runtime_tree(
@@ -716,6 +739,7 @@ function goal_engine.sync_model(builder_data, builder_state, tick, adapters)
   trace.sync_from_root(builder_state, root, tick, adapters.debug_log)
 
   builder_state.goal_tree_root = root
+  builder_state.goal_model_root = instances.ensure_state(builder_state).model and instances.ensure_state(builder_state).model.root or nil
   builder_state.goal_path_lines = goal_tree.get_active_path_lines(root)
   builder_state.goal_blockers = goal_tree.get_blockers(root)
   builder_state.goal_blocker_lines = goal_tree.get_blocker_lines(root)
