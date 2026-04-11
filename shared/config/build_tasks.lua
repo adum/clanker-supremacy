@@ -151,7 +151,7 @@ build_tasks.steel_smelting = {
       site_role = "steel-feed-inserter",
       entity_name = "burner-inserter",
       offset = {x = 1, y = 0},
-      direction_name = "east",
+      direction_name = "west",
       placement_search_radius = 0.5,
       placement_step = 0.5,
       fuel = {
