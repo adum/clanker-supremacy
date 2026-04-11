@@ -60,10 +60,6 @@ function production.register_steel_smelting_site(task, anchor_machine, feed_inse
       site.anchor_machine = anchor_machine
       site.feed_inserter = feed_inserter
       site.downstream_machine = downstream_machine
-      site.input_item_names = {
-        ["iron-plate"] = true
-      }
-      site.transfer_interval_ticks = (ctx.builder_data.logistics and ctx.builder_data.logistics.production_transfer and ctx.builder_data.logistics.production_transfer.interval_ticks) or 30
       return site
     end
   end
@@ -74,12 +70,7 @@ function production.register_steel_smelting_site(task, anchor_machine, feed_inse
     miner = miner,
     anchor_machine = anchor_machine,
     feed_inserter = feed_inserter,
-    downstream_machine = downstream_machine,
-    input_item_names = {
-      ["iron-plate"] = true
-    },
-    transfer_interval_ticks = (ctx.builder_data.logistics and ctx.builder_data.logistics.production_transfer and ctx.builder_data.logistics.production_transfer.interval_ticks) or 30,
-    next_transfer_tick = 0
+    downstream_machine = downstream_machine
   }
 
   ctx.debug_log(
@@ -129,10 +120,6 @@ function production.register_assembler_defense_site(task, assembler, placed_layo
       site.inserters = inserters
       site.power_poles = poles
       site.solar_panels = solar_panels
-      site.ammo_item_name = (task.transfer and task.transfer.ammo_item_name) or "firearm-magazine"
-      site.turret_ammo_target_count = (task.transfer and task.transfer.turret_ammo_target_count) or 20
-      site.per_turret_transfer_limit = (task.transfer and task.transfer.per_turret_transfer_limit) or 1
-      site.transfer_interval_ticks = (task.transfer and task.transfer.interval_ticks) or 30
       return site
     end
   end
@@ -144,12 +131,7 @@ function production.register_assembler_defense_site(task, assembler, placed_layo
     turrets = turrets,
     inserters = inserters,
     power_poles = poles,
-    solar_panels = solar_panels,
-    ammo_item_name = (task.transfer and task.transfer.ammo_item_name) or "firearm-magazine",
-    turret_ammo_target_count = (task.transfer and task.transfer.turret_ammo_target_count) or 20,
-    per_turret_transfer_limit = (task.transfer and task.transfer.per_turret_transfer_limit) or 1,
-    transfer_interval_ticks = (task.transfer and task.transfer.interval_ticks) or 30,
-    next_transfer_tick = 0
+    solar_panels = solar_panels
   }
 
   ctx.debug_log(
@@ -168,6 +150,9 @@ function production.process_production_sites(tick, ctx)
   for _, site in ipairs(production_sites) do
     if site.site_type == "assembler-defense" then
       local valid_turrets = {}
+      local valid_inserters = {}
+      local valid_poles = {}
+      local valid_solar_panels = {}
 
       for _, turret in ipairs(site.turrets or {}) do
         if turret and turret.valid then
@@ -175,45 +160,30 @@ function production.process_production_sites(tick, ctx)
         end
       end
 
+      for _, inserter in ipairs(site.inserters or {}) do
+        if inserter and inserter.valid then
+          valid_inserters[#valid_inserters + 1] = inserter
+        end
+      end
+
+      for _, pole in ipairs(site.power_poles or {}) do
+        if pole and pole.valid then
+          valid_poles[#valid_poles + 1] = pole
+        end
+      end
+
+      for _, solar_panel in ipairs(site.solar_panels or {}) do
+        if solar_panel and solar_panel.valid then
+          valid_solar_panels[#valid_solar_panels + 1] = solar_panel
+        end
+      end
+
       site.turrets = valid_turrets
+      site.inserters = valid_inserters
+      site.power_poles = valid_poles
+      site.solar_panels = valid_solar_panels
 
       if site.assembler and site.assembler.valid and #site.turrets > 0 then
-        if tick >= (site.next_transfer_tick or 0) then
-          site.next_transfer_tick = tick + (site.transfer_interval_ticks or 30)
-
-          local output_inventory = site.assembler.get_output_inventory and site.assembler.get_output_inventory()
-          if output_inventory then
-            table.sort(site.turrets, function(left, right)
-              local left_inventory = left.get_inventory and left.get_inventory(defines.inventory.turret_ammo)
-              local right_inventory = right.get_inventory and right.get_inventory(defines.inventory.turret_ammo)
-              local left_count = left_inventory and left_inventory.get_item_count(site.ammo_item_name or "firearm-magazine") or 0
-              local right_count = right_inventory and right_inventory.get_item_count(site.ammo_item_name or "firearm-magazine") or 0
-
-              if left_count ~= right_count then
-                return left_count < right_count
-              end
-
-              return ctx.square_distance(site.assembler.position, left.position) < ctx.square_distance(site.assembler.position, right.position)
-            end)
-
-            for _, turret in ipairs(site.turrets) do
-              local ammo_inventory = turret.get_inventory and turret.get_inventory(defines.inventory.turret_ammo)
-              if ammo_inventory then
-                local desired_count = (site.turret_ammo_target_count or 20) - ammo_inventory.get_item_count(site.ammo_item_name or "firearm-magazine")
-                if desired_count > 0 then
-                  ctx.transfer_inventory_item(
-                    output_inventory,
-                    ammo_inventory,
-                    site.ammo_item_name or "firearm-magazine",
-                    math.min(desired_count, site.per_turret_transfer_limit or desired_count),
-                    "production site " .. site.task_id .. ": moved ammo into " .. turret.name .. " at " .. ctx.format_position(turret.position)
-                  )
-                end
-              end
-            end
-          end
-        end
-
         kept_sites[#kept_sites + 1] = site
       end
     elseif site.site_type == "steel-smelting-chain" then
@@ -222,17 +192,6 @@ function production.process_production_sites(tick, ctx)
         site.downstream_machine and site.downstream_machine.valid and
         site.miner and site.miner.valid
       then
-        if tick >= (site.next_transfer_tick or 0) then
-          site.next_transfer_tick = tick + (site.transfer_interval_ticks or 30)
-
-          ctx.transfer_inventory_contents(
-            site.anchor_machine.get_output_inventory and site.anchor_machine.get_output_inventory() or nil,
-            site.downstream_machine,
-            "production site " .. site.task_id .. ": transferred iron plates into " .. site.downstream_machine.name,
-            site.input_item_names
-          )
-        end
-
         kept_sites[#kept_sites + 1] = site
       end
     elseif site.miner and site.miner.valid and site.downstream_machine and site.downstream_machine.valid and (not site.output_container or site.output_container.valid) then

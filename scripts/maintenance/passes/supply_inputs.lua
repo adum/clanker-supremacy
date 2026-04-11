@@ -63,10 +63,15 @@ function pass.run(builder_state, tick, ctx)
             local desired_count = (supply_settings.target_ingredient_item_count or 20) - current_count
 
             if desired_count > 0 then
+              local minimum_transfer_count = supply_settings.minimum_item_transfer_count or 1
+              if desired_count < minimum_transfer_count then
+                goto next_ingredient
+              end
+
               local available_count = ctx.get_item_count(builder, ingredient_name)
               local transfer_count = math.min(desired_count, available_count)
 
-              if transfer_count > 0 then
+              if transfer_count >= minimum_transfer_count then
                 local inserted_count = input_inventory.insert{
                   name = ingredient_name,
                   count = transfer_count
@@ -98,6 +103,8 @@ function pass.run(builder_state, tick, ctx)
               end
             end
           end
+
+          ::next_ingredient::
         end
       end
     end

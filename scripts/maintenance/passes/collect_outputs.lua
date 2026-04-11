@@ -1,5 +1,17 @@
 local pass = {}
 
+local function get_total_item_count(inventory)
+  local total = 0
+
+  for item_name, count in pairs(inventory.get_contents()) do
+    if item_name and type(count) == "number" then
+      total = total + count
+    end
+  end
+
+  return total
+end
+
 function pass.run(builder_state, tick, ctx)
   local collection_settings = ctx.builder_data.logistics and ctx.builder_data.logistics.nearby_machine_output_collection
   if not collection_settings then
@@ -52,6 +64,11 @@ function pass.run(builder_state, tick, ctx)
 
       local output_inventory = entity.get_output_inventory and entity.get_output_inventory()
       if output_inventory and not output_inventory.is_empty() then
+        local minimum_total_items = collection_settings.minimum_total_items_to_collect or 1
+        if get_total_item_count(output_inventory) < minimum_total_items then
+          goto continue
+        end
+
         local moved_items = ctx.pull_inventory_contents_to_builder(
           output_inventory,
           builder,
@@ -63,6 +80,8 @@ function pass.run(builder_state, tick, ctx)
         end
       end
     end
+
+    ::continue::
   end
 
   return actions

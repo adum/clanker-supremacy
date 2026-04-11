@@ -88,12 +88,6 @@ return {
           entity_field = "assembler"
         },
         forbid_resource_overlap = true,
-        transfer = {
-          interval_ticks = 30,
-          ammo_item_name = "firearm-magazine",
-          turret_ammo_target_count = 20,
-          per_turret_transfer_limit = 1
-        },
         seed_anchor_items = {
           {name = "iron-plate", count = 80}
         },
