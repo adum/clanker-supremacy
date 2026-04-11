@@ -3,9 +3,11 @@ local pass = {}
 local function get_total_item_count(inventory)
   local total = 0
 
-  for item_name, count in pairs(inventory.get_contents()) do
-    if item_name and type(count) == "number" then
-      total = total + count
+  for _, item_stack in pairs(inventory.get_contents()) do
+    if type(item_stack) == "number" then
+      total = total + item_stack
+    elseif type(item_stack) == "table" then
+      total = total + (item_stack.count or 0)
     end
   end
 

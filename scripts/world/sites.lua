@@ -184,7 +184,11 @@ function sites.get_site_collect_count(site, item_name, ctx)
 
   local total_count = 0
   for _, item_stack in pairs(inventory.get_contents()) do
-    total_count = total_count + (item_stack.count or 0)
+    if type(item_stack) == "number" then
+      total_count = total_count + item_stack
+    elseif type(item_stack) == "table" then
+      total_count = total_count + (item_stack.count or 0)
+    end
   end
 
   return total_count
