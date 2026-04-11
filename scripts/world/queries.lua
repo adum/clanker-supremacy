@@ -337,6 +337,39 @@ local function get_anchor_site_entity(site, anchor_position_source)
   return nil
 end
 
+local function entity_contains_point(entity, point, ctx)
+  return entity and entity.valid and point and ctx.point_in_area(point, entity.selection_box)
+end
+
+local function steel_layout_geometry_is_valid(anchor_entity, probe_entities, ctx)
+  local feed_inserter = nil
+  local steel_furnace = nil
+
+  for _, probe_entity in ipairs(probe_entities or {}) do
+    if probe_entity and probe_entity.valid then
+      if probe_entity.name == "burner-inserter" then
+        feed_inserter = probe_entity
+      elseif probe_entity.name == "stone-furnace" and probe_entity ~= anchor_entity then
+        steel_furnace = probe_entity
+      end
+    end
+  end
+
+  if not (anchor_entity and anchor_entity.valid and feed_inserter and steel_furnace) then
+    return false
+  end
+
+  if not entity_contains_point(anchor_entity, feed_inserter.pickup_position, ctx) then
+    return false
+  end
+
+  if not entity_contains_point(steel_furnace, feed_inserter.drop_position, ctx) then
+    return false
+  end
+
+  return true
+end
+
 local function get_resource_position_key(resource)
   return string.format("%.2f:%.2f", resource.position.x, resource.position.y)
 end
@@ -958,6 +991,10 @@ function queries.find_layout_site_near_machine(builder_state, task, ctx)
                 build_direction = build_direction,
                 fuel = element.fuel
               }
+            end
+
+            if layout_valid and task.layout_site_kind == "steel-smelting-chain" then
+              layout_valid = steel_layout_geometry_is_valid(anchor_entity, probe_entities, ctx)
             end
 
             entity_refs.destroy_entities(probe_entities)

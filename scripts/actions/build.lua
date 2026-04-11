@@ -1,5 +1,9 @@
 local action_build = {}
 
+local function entity_contains_point(entity, point, ctx)
+  return entity and entity.valid and point and ctx.point_in_area(point, entity.selection_box)
+end
+
 local function begin_post_place_pause(builder_state, task, tick, next_phase, placed_entity, ctx)
   local task_state = builder_state.task_state
   local pause_ticks = ctx.get_post_place_pause_ticks(task)
@@ -159,6 +163,34 @@ function action_build.finish_place_layout_near_machine_task(builder_state, task,
 
     if not (feed_inserter and feed_inserter.valid and steel_furnace and steel_furnace.valid) then
       ctx.debug_log("task " .. task.id .. ": steel layout completed without valid inserter/furnace; refreshing task")
+      refresh_task(builder_state, task, tick, ctx)
+      return
+    end
+
+    if not entity_contains_point(anchor_entity, feed_inserter.pickup_position, ctx) then
+      for _, placement in ipairs(valid_entities) do
+        ctx.destroy_entity_if_valid(placement.entity)
+      end
+      ctx.debug_log(
+        "task " .. task.id .. ": steel feed inserter pickup " ..
+        ctx.format_position(feed_inserter.pickup_position) ..
+        " no longer points into anchor furnace at " .. ctx.format_position(anchor_entity.position) ..
+        "; refreshing task"
+      )
+      refresh_task(builder_state, task, tick, ctx)
+      return
+    end
+
+    if not entity_contains_point(steel_furnace, feed_inserter.drop_position, ctx) then
+      for _, placement in ipairs(valid_entities) do
+        ctx.destroy_entity_if_valid(placement.entity)
+      end
+      ctx.debug_log(
+        "task " .. task.id .. ": steel feed inserter drop " ..
+        ctx.format_position(feed_inserter.drop_position) ..
+        " no longer points into steel furnace at " .. ctx.format_position(steel_furnace.position) ..
+        "; refreshing task"
+      )
       refresh_task(builder_state, task, tick, ctx)
       return
     end
