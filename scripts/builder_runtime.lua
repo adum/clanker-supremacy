@@ -13,6 +13,7 @@ local overlay_element_names = {
 local get_builder_state
 local get_active_task
 local get_item_count
+local get_recipe
 local get_pending_scaling_milestone
 local get_site_pattern
 local pull_inventory_contents_to_builder
@@ -430,6 +431,18 @@ local function ensure_builder_state_fields(builder_state)
   return builder_state
 end
 
+local function normalize_builder_task_state(builder_state)
+  local task_state = builder_state and builder_state.task_state or nil
+  if not task_state then
+    return
+  end
+
+  if task_state.phase == "scaling-crafting" and task_state.craft_item_name == "steel-plate" and not get_recipe("steel-plate") then
+    builder_state.task_state = nil
+    debug_log("cleared legacy steel-plate crafting state so steel can be sourced from furnaces instead")
+  end
+end
+
 local function enable_force_recipe_if_available(force, recipe_name)
   if not (force and recipe_name and force.recipes and force.recipes[recipe_name]) then
     return
@@ -502,6 +515,7 @@ get_builder_state = function()
 
   ensure_builder_state_fields(state)
   normalize_scaling_active_task(state)
+  normalize_builder_task_state(state)
   return state
 end
 
@@ -1473,6 +1487,22 @@ local function get_anchor_site_position(site, anchor_position_source)
   return nil
 end
 
+local function get_anchor_site_entity(site, anchor_position_source)
+  if anchor_position_source == "downstream-machine" and site.downstream_machine and site.downstream_machine.valid then
+    return site.downstream_machine
+  end
+
+  if anchor_position_source == "output-container" and site.output_container and site.output_container.valid then
+    return site.output_container
+  end
+
+  if site.miner and site.miner.valid then
+    return site.miner
+  end
+
+  return nil
+end
+
 local function find_machine_site_near_resource_sites(builder_state, task)
   discover_resource_sites(builder_state)
 
@@ -1574,7 +1604,6 @@ end
 
 local function find_layout_site_near_machine(builder_state, task)
   local builder = builder_state.entity
-  local anchor_entity_names = get_task_anchor_entity_names(task)
   local summary = {
     anchor_entities_considered = 0,
     anchors_skipped_registered = 0,
@@ -1585,32 +1614,63 @@ local function find_layout_site_near_machine(builder_state, task)
     resource_overlap_rejections = 0
   }
 
-  if not anchor_entity_names then
-    return nil, summary
+  local anchor_candidates = {}
+
+  if task.anchor_pattern_names and #task.anchor_pattern_names > 0 then
+    discover_resource_sites(builder_state)
+
+    for _, site in ipairs(cleanup_resource_sites()) do
+      if site_matches_patterns(site, task.anchor_pattern_names) then
+        local anchor_entity = get_anchor_site_entity(site, task.anchor_position_source)
+        if anchor_entity then
+          local distance = square_distance(builder.position, anchor_entity.position)
+          if (not task.anchor_search_radius) or distance <= (task.anchor_search_radius * task.anchor_search_radius) then
+            anchor_candidates[#anchor_candidates + 1] = {
+              site = site,
+              anchor_entity = anchor_entity,
+              distance = distance
+            }
+          end
+        end
+      end
+    end
+  else
+    local anchor_entity_names = get_task_anchor_entity_names(task)
+    if not anchor_entity_names then
+      return nil, summary
+    end
+
+    local filter = {
+      force = builder.force,
+      name = anchor_entity_names
+    }
+
+    if task.anchor_search_radius then
+      filter.position = builder.position
+      filter.radius = task.anchor_search_radius
+    end
+
+    for _, anchor_entity in ipairs(builder.surface.find_entities_filtered(filter)) do
+      anchor_candidates[#anchor_candidates + 1] = {
+        site = nil,
+        anchor_entity = anchor_entity,
+        distance = square_distance(builder.position, anchor_entity.position)
+      }
+    end
   end
 
-  local filter = {
-    force = builder.force,
-    name = anchor_entity_names
-  }
-
-  if task.anchor_search_radius then
-    filter.position = builder.position
-    filter.radius = task.anchor_search_radius
-  end
-
-  local anchor_entities = builder.surface.find_entities_filtered(filter)
-  table.sort(anchor_entities, function(left, right)
-    return square_distance(builder.position, left.position) < square_distance(builder.position, right.position)
+  table.sort(anchor_candidates, function(left, right)
+    return left.distance < right.distance
   end)
 
-  local max_anchor_entities = task.max_anchor_entities or #anchor_entities
+  local max_anchor_entities = task.max_anchor_entities or #anchor_candidates
 
-  for _, anchor_entity in ipairs(anchor_entities) do
+  for _, anchor_candidate in ipairs(anchor_candidates) do
     if summary.anchor_entities_considered >= max_anchor_entities then
       break
     end
 
+    local anchor_entity = anchor_candidate.anchor_entity
     if anchor_entity.valid then
       if anchor_has_registered_site(anchor_entity, task.require_missing_registered_site) then
         summary.anchors_skipped_registered = summary.anchors_skipped_registered + 1
@@ -1691,6 +1751,7 @@ local function find_layout_site_near_machine(builder_state, task)
 
             if layout_valid then
               return {
+                site = anchor_candidate.site,
                 anchor_entity = anchor_entity,
                 anchor_position = clone_position(anchor_entity.position),
                 build_position = clone_position(anchor_entity.position),
@@ -2053,6 +2114,53 @@ local function register_smelting_site(task, miner, downstream_machine, output_co
   debug_log(message)
 end
 
+local function register_steel_smelting_site(task, anchor_machine, feed_inserter, downstream_machine, miner)
+  if not (task and anchor_machine and anchor_machine.valid and feed_inserter and feed_inserter.valid and downstream_machine and downstream_machine.valid) then
+    return nil
+  end
+
+  local production_sites = ensure_production_sites()
+  local task_id = (task and task.id) or (task and task.pattern_name) or "steel-smelting-site"
+
+  for _, site in ipairs(production_sites) do
+    if site.site_type == "steel-smelting-chain" and site.anchor_machine == anchor_machine then
+      site.task_id = task_id
+      site.miner = miner
+      site.anchor_machine = anchor_machine
+      site.feed_inserter = feed_inserter
+      site.downstream_machine = downstream_machine
+      site.input_item_names = {
+        ["iron-plate"] = true
+      }
+      site.transfer_interval_ticks = (builder_data.logistics and builder_data.logistics.production_transfer and builder_data.logistics.production_transfer.interval_ticks) or 30
+      return site
+    end
+  end
+
+  production_sites[#production_sites + 1] = {
+    task_id = task_id,
+    site_type = "steel-smelting-chain",
+    miner = miner,
+    anchor_machine = anchor_machine,
+    feed_inserter = feed_inserter,
+    downstream_machine = downstream_machine,
+    input_item_names = {
+      ["iron-plate"] = true
+    },
+    transfer_interval_ticks = (builder_data.logistics and builder_data.logistics.production_transfer and builder_data.logistics.production_transfer.interval_ticks) or 30,
+    next_transfer_tick = 0
+  }
+
+  debug_log(
+    "task " .. task_id .. ": registered steel smelting site with anchor furnace at " ..
+    format_position(anchor_machine.position) .. ", burner-inserter at " ..
+    format_position(feed_inserter.position) .. ", steel furnace at " ..
+    format_position(downstream_machine.position)
+  )
+
+  return production_sites[#production_sites]
+end
+
 local function register_assembler_defense_site(task, assembler, placed_layout_entities)
   if not (task and assembler and assembler.valid) then
     return nil
@@ -2173,6 +2281,25 @@ local function process_production_sites(tick)
               end
             end
           end
+        end
+
+        kept_sites[#kept_sites + 1] = site
+      end
+    elseif site.site_type == "steel-smelting-chain" then
+      if site.anchor_machine and site.anchor_machine.valid and
+        site.feed_inserter and site.feed_inserter.valid and
+        site.downstream_machine and site.downstream_machine.valid and
+        site.miner and site.miner.valid
+      then
+        if tick >= (site.next_transfer_tick or 0) then
+          site.next_transfer_tick = tick + (site.transfer_interval_ticks or 30)
+
+          transfer_inventory_contents(
+            site.anchor_machine.get_output_inventory and site.anchor_machine.get_output_inventory() or nil,
+            site.downstream_machine,
+            "production site " .. site.task_id .. ": transferred iron plates into " .. site.downstream_machine.name,
+            site.input_item_names
+          )
         end
 
         kept_sites[#kept_sites + 1] = site
@@ -2712,7 +2839,13 @@ cleanup_resource_sites = function()
   local kept_sites = {}
 
   for _, site in ipairs(ensure_resource_sites()) do
-    if site.miner and site.miner.valid and ((not site.downstream_machine) or site.downstream_machine.valid) and ((not site.output_container) or site.output_container.valid) then
+    if site.miner and site.miner.valid and
+      ((not site.downstream_machine) or site.downstream_machine.valid) and
+      ((not site.output_container) or site.output_container.valid) and
+      ((not site.identity_entity) or site.identity_entity.valid) and
+      ((not site.anchor_machine) or site.anchor_machine.valid) and
+      ((not site.feed_inserter) or site.feed_inserter.valid)
+    then
       kept_sites[#kept_sites + 1] = site
     end
   end
@@ -2733,18 +2866,25 @@ local function get_resource_site_counts()
   return counts
 end
 
-local function register_resource_site(task, miner, downstream_machine, output_container)
+local function register_resource_site(task, miner, downstream_machine, output_container, extras)
   if not (task and task.pattern_name and miner and miner.valid) then
     return nil
   end
 
+  extras = extras or {}
+  local identity_entity = extras.identity_entity or downstream_machine or output_container or miner
   local sites = cleanup_resource_sites()
   for _, site in ipairs(sites) do
-    if site.miner == miner then
+    local site_identity_entity = site.identity_entity or site.downstream_machine or site.output_container or site.miner
+    if site_identity_entity == identity_entity then
       site.pattern_name = task.pattern_name
       site.resource_name = task.resource_name
       site.downstream_machine = downstream_machine
       site.output_container = output_container
+      site.identity_entity = identity_entity
+      site.anchor_machine = extras.anchor_machine
+      site.feed_inserter = extras.feed_inserter
+      site.parent_pattern_name = extras.parent_pattern_name
       return site
     end
   end
@@ -2754,7 +2894,11 @@ local function register_resource_site(task, miner, downstream_machine, output_co
     resource_name = task.resource_name,
     miner = miner,
     downstream_machine = downstream_machine,
-    output_container = output_container
+    output_container = output_container,
+    identity_entity = identity_entity,
+    anchor_machine = extras.anchor_machine,
+    feed_inserter = extras.feed_inserter,
+    parent_pattern_name = extras.parent_pattern_name
   }
   sites[#sites + 1] = site
 
@@ -2770,6 +2914,14 @@ local function register_resource_site(task, miner, downstream_machine, output_co
     message = message .. ", " .. output_container.name .. " at " .. format_position(output_container.position)
   end
 
+  if extras.anchor_machine and extras.anchor_machine.valid then
+    message = message .. ", anchor " .. extras.anchor_machine.name .. " at " .. format_position(extras.anchor_machine.position)
+  end
+
+  if extras.feed_inserter and extras.feed_inserter.valid then
+    message = message .. ", " .. extras.feed_inserter.name .. " at " .. format_position(extras.feed_inserter.position)
+  end
+
   debug_log(message)
   return site
 end
@@ -2781,11 +2933,13 @@ local function reconcile_production_sites_from_resource_sites()
     local pattern = get_site_pattern(resource_site.pattern_name)
     local build_task = pattern and pattern.build_task or nil
 
-    if build_task and build_task.downstream_machine and resource_site.miner and resource_site.miner.valid and resource_site.downstream_machine and resource_site.downstream_machine.valid then
+    if build_task and resource_site.miner and resource_site.miner.valid and resource_site.downstream_machine and resource_site.downstream_machine.valid then
       local has_production_site = false
 
       for _, production_site in ipairs(production_sites) do
-        if production_site.miner == resource_site.miner then
+        if production_site.downstream_machine == resource_site.downstream_machine or
+          (resource_site.anchor_machine and production_site.anchor_machine == resource_site.anchor_machine)
+        then
           if production_site.output_container and production_site.output_container.valid then
             resource_site.output_container = production_site.output_container
           end
@@ -2795,7 +2949,17 @@ local function reconcile_production_sites_from_resource_sites()
       end
 
       if not has_production_site then
-        if build_task then
+        if resource_site.anchor_machine and resource_site.anchor_machine.valid and
+          resource_site.feed_inserter and resource_site.feed_inserter.valid
+        then
+          register_steel_smelting_site(
+            build_task or {id = "reconcile-" .. tostring(resource_site.pattern_name or "steel_smelting")},
+            resource_site.anchor_machine,
+            resource_site.feed_inserter,
+            resource_site.downstream_machine,
+            resource_site.miner
+          )
+        elseif build_task.downstream_machine then
           register_smelting_site(build_task, resource_site.miner, resource_site.downstream_machine, resource_site.output_container)
         end
       end
@@ -3655,9 +3819,12 @@ end
 
 local function start_place_layout_near_machine_task(builder_state, task, tick)
   local entity = builder_state.entity
+  local anchor_description = task.anchor_pattern_names and #task.anchor_pattern_names > 0 and
+    table.concat(task.anchor_pattern_names, ", ") or
+    table.concat(get_task_anchor_entity_names(task) or {}, ", ")
   debug_log(
     "task " .. task.id .. ": scanning for layout anchor " ..
-    table.concat(get_task_anchor_entity_names(task) or {}, ", ") ..
+    anchor_description ..
     " from " .. format_position(entity.position)
   )
 
@@ -3688,6 +3855,7 @@ local function start_place_layout_near_machine_task(builder_state, task, tick)
     approach_position = create_task_approach_position(task, site.build_position),
     anchor_position = clone_position(site.anchor_position),
     anchor_entity = site.anchor_entity,
+    anchor_site = site.site,
     layout_orientation = site.orientation,
     layout_placements = site.placements,
     layout_index = 1,
@@ -3971,6 +4139,56 @@ local function finish_place_layout_near_machine_task(builder_state, task, tick)
   if #valid_entities < #(task.layout_elements or {}) then
     debug_log("task " .. task.id .. ": layout completed with missing entities; refreshing task")
     refresh_task(builder_state, task, tick)
+    return
+  end
+
+  if task.layout_site_kind == "steel-smelting-chain" then
+    local anchor_site = task_state.anchor_site
+    local feed_inserter = nil
+    local steel_furnace = nil
+
+    for _, placement in ipairs(valid_entities) do
+      if placement.site_role == "steel-feed-inserter" then
+        feed_inserter = placement.entity
+      elseif placement.site_role == "steel-furnace" then
+        steel_furnace = placement.entity
+      end
+    end
+
+    if not (anchor_site and anchor_site.miner and anchor_site.miner.valid) then
+      debug_log("task " .. task.id .. ": anchor site disappeared before steel layout completion; refreshing task")
+      refresh_task(builder_state, task, tick)
+      return
+    end
+
+    if not (feed_inserter and feed_inserter.valid and steel_furnace and steel_furnace.valid) then
+      debug_log("task " .. task.id .. ": steel layout completed without valid inserter/furnace; refreshing task")
+      refresh_task(builder_state, task, tick)
+      return
+    end
+
+    register_steel_smelting_site(task, anchor_entity, feed_inserter, steel_furnace, anchor_site.miner)
+    register_resource_site(
+      task,
+      anchor_site.miner,
+      steel_furnace,
+      nil,
+      {
+        identity_entity = steel_furnace,
+        anchor_machine = anchor_entity,
+        feed_inserter = feed_inserter,
+        parent_pattern_name = anchor_site.pattern_name
+      }
+    )
+
+    complete_current_task(
+      builder_state,
+      task,
+      "extended " .. (anchor_site.pattern_name or "smelting line") ..
+      " at " .. format_position(anchor_entity.position) ..
+      " with burner-inserter at " .. format_position(feed_inserter.position) ..
+      " and steel furnace at " .. format_position(steel_furnace.position)
+    )
     return
   end
 
@@ -4571,7 +4789,7 @@ local function get_scaling_pattern_name(builder_state)
   return nil
 end
 
-local function get_recipe(item_name)
+get_recipe = function(item_name)
   return builder_data.crafting and builder_data.crafting.recipes and builder_data.crafting.recipes[item_name] or nil
 end
 
@@ -4826,6 +5044,29 @@ local function plan_scaling_required_items(builder_state, required_items, tick)
     if site then
       start_scaling_collection(builder_state, site, action.item_name, tick, false)
       return true
+    end
+
+    local producer = builder_data.scaling and builder_data.scaling.collect_ingredient_producers and
+      builder_data.scaling.collect_ingredient_producers[action.item_name]
+    if producer and producer.pattern_name then
+      local site_counts = get_resource_site_counts()
+      local current_site_count = site_counts[producer.pattern_name] or 0
+      local minimum_site_count = producer.minimum_site_count or 1
+
+      if current_site_count < minimum_site_count then
+        local producer_pattern = get_site_pattern(producer.pattern_name)
+        if producer_pattern and producer_pattern.required_items and
+          plan_scaling_required_items(builder_state, producer_pattern.required_items, tick)
+        then
+          return true
+        end
+
+        local build_task = create_scaling_build_task(producer.pattern_name)
+        if build_task then
+          start_scaling_subtask(builder_state, build_task, tick)
+          return true
+        end
+      end
     end
 
     if action.item_name == "wood" or action.item_name == "stone" then

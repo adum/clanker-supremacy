@@ -282,6 +282,51 @@ local copper_smelting_build_task = {
   }
 }
 
+local steel_smelting_build_task = {
+  type = "place-layout-near-machine",
+  pattern_name = "steel_smelting",
+  resource_name = "iron-ore",
+  anchor_pattern_names = {"iron_smelting"},
+  anchor_position_source = "downstream-machine",
+  max_anchor_entities = 12,
+  search_retry_ticks = 5 * 60,
+  arrival_distance = 1.6,
+  stuck_retry_ticks = 3 * 60,
+  layout_orientations = {"north", "east", "south", "west"},
+  require_missing_registered_site = {
+    site_type = "steel-smelting-chain",
+    entity_field = "anchor_machine"
+  },
+  layout_site_kind = "steel-smelting-chain",
+  layout_elements = {
+    {
+      id = "steel-feed-inserter",
+      site_role = "steel-feed-inserter",
+      entity_name = "burner-inserter",
+      offset = {x = 2, y = 0},
+      direction_name = "east",
+      placement_search_radius = 0.5,
+      placement_step = 0.5,
+      fuel = {
+        name = "coal",
+        count = 4
+      }
+    },
+    {
+      id = "steel-furnace",
+      site_role = "steel-furnace",
+      entity_name = "stone-furnace",
+      offset = {x = 4, y = 0},
+      placement_search_radius = 0.5,
+      placement_step = 0.5,
+      fuel = {
+        name = "coal",
+        count = 8
+      }
+    }
+  }
+}
+
 local firearm_magazine_outpost_build_task = {
   type = "place-machine-near-site",
   pattern_name = "firearm_magazine_outpost",
@@ -482,12 +527,6 @@ local builder_data = {
           {name = "copper-cable", count = 2}
         }
       },
-      ["steel-plate"] = {
-        craft_ticks = 960,
-        ingredients = {
-          {name = "iron-plate", count = 5}
-        }
-      },
       ["gun-turret"] = {
         craft_ticks = 480,
         ingredients = {
@@ -555,6 +594,18 @@ local builder_data = {
       },
       build_task = copper_smelting_build_task
     },
+    steel_smelting = {
+      display_name = "steel smelting line",
+      collect = {
+        source = "downstream-machine-output",
+        item_names = {"steel-plate"}
+      },
+      required_items = {
+        {name = "burner-inserter", count = 1},
+        {name = "stone-furnace", count = 1}
+      },
+      build_task = steel_smelting_build_task
+    },
     firearm_magazine_outpost = {
       display_name = "firearm magazine outpost",
       required_items = {
@@ -567,8 +618,13 @@ local builder_data = {
     enabled = true,
     idle_retry_ticks = 2 * 60,
     pursue_milestones_proactively = false,
-    cycle_pattern_names = {"coal_outpost", "iron_smelting", "stone_outpost", "copper_smelting", "firearm_magazine_outpost"},
+    cycle_pattern_names = {"coal_outpost", "iron_smelting", "steel_smelting", "stone_outpost", "copper_smelting", "firearm_magazine_outpost"},
     pattern_unlocks = {
+      steel_smelting = {
+        minimum_site_counts = {
+          iron_smelting = 5
+        }
+      },
       stone_outpost = {
         minimum_site_counts = {
           coal_outpost = 5,
@@ -587,6 +643,12 @@ local builder_data = {
     },
     reserve_items = {
       {name = "coal", count = 20}
+    },
+    collect_ingredient_producers = {
+      ["steel-plate"] = {
+        pattern_name = "steel_smelting",
+        minimum_site_count = 1
+      }
     },
     gather_source_set = "basic_materials",
     production_milestones = {
