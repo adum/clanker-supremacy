@@ -1,6 +1,7 @@
 local builder_data = require("shared.builder_data")
 local goal_recovery = require("scripts.goal.recovery")
 local goal_engine = require("scripts.goal_engine")
+local goal_tree = require("scripts.goal_tree")
 local debug_commands = require("scripts.debug.commands")
 local debug_markers = require("scripts.debug.markers")
 local debug_overlay = require("scripts.debug.overlay")
@@ -42,6 +43,7 @@ local register_steel_smelting_site
 local cleanup_resource_sites
 local discover_resource_sites
 local set_idle
+local configure_builder_entity
 
 local direction_by_name = {
   north = defines.direction.north,
@@ -253,6 +255,20 @@ end
 
 local function inventory_log(message)
   log(debug_prefix .. "inventory: " .. message)
+end
+
+local function get_test_state()
+  return storage.enemy_builder_test
+end
+
+local function autospawn_suppressed_for_test()
+  local test_state = get_test_state()
+  return test_state and test_state.suppress_player_autospawn == true
+end
+
+local function forbid_direct_turret_ammo_transfer()
+  local test_state = get_test_state()
+  return test_state and test_state.forbid_direct_turret_ammo_transfer == true
 end
 
 local function get_command_player(command)
@@ -623,7 +639,7 @@ set_idle = function(entity)
   end
 end
 
-local function configure_builder_entity(entity)
+configure_builder_entity = function(entity)
   entity.destructible = false
   entity.minable = false
   entity.operable = false
@@ -1063,6 +1079,10 @@ local function transfer_inventory_contents(source_inventory, destination, debug_
 
   for _, item_stack in ipairs(get_sorted_item_stacks(source_inventory.get_contents())) do
     if item_stack.count and item_stack.count > 0 and (not allowed_item_names or allowed_item_names[item_stack.name]) then
+      if forbid_direct_turret_ammo_transfer() and item_stack.name == "firearm-magazine" and debug_reason and string.find(string.lower(debug_reason), "turret", 1, true) then
+        error("enemy-builder test: scripted firearm-magazine transfer into turret path is forbidden: " .. debug_reason)
+      end
+
       local inserted_count = destination.insert(item_stack)
       if inserted_count > 0 then
         source_inventory.remove{
@@ -1088,6 +1108,10 @@ end
 local function transfer_inventory_item(source_inventory, destination_inventory, item_name, requested_count, debug_reason)
   if not (source_inventory and destination_inventory and item_name and requested_count and requested_count > 0) then
     return 0
+  end
+
+  if forbid_direct_turret_ammo_transfer() and item_name == "firearm-magazine" and debug_reason and string.find(string.lower(debug_reason), "turret", 1, true) then
+    error("enemy-builder test: scripted firearm-magazine transfer into turret path is forbidden: " .. debug_reason)
   end
 
   local available_count = source_inventory.get_item_count(item_name)
@@ -1248,37 +1272,27 @@ local function find_spawn_position(player)
   )
 end
 
-local function spawn_builder_for_player(player)
-  if get_builder_state() then
-    debug_log("spawn skipped because the builder already exists")
-    return get_builder_state()
-  end
-
-  if not (player and player.valid and player.character and player.character.valid) then
-    debug_log("spawn skipped because no valid player character is available")
+local function find_spawn_position_on_surface(surface, target, fallback)
+  if not (surface and target) then
     return nil
   end
 
-  local spawn_position = find_spawn_position(player)
-  if not spawn_position then
-    debug_log("spawn failed because no non-colliding position was found near " .. format_position(player.character.position))
-    return nil
-  end
+  local prototype_name = builder_data.avatar.prototype_name
+  return surface.find_non_colliding_position(
+    prototype_name,
+    target,
+    builder_data.avatar.spawn_search_radius,
+    builder_data.avatar.spawn_precision
+  ) or (fallback and surface.find_non_colliding_position(
+    prototype_name,
+    fallback,
+    builder_data.avatar.spawn_search_radius,
+    builder_data.avatar.spawn_precision
+  )) or clone_position(target)
+end
 
-  local force = ensure_builder_force()
-  local entity = player.surface.create_entity{
-    name = builder_data.avatar.prototype_name,
-    position = spawn_position,
-    force = force,
-    create_build_effect_smoke = false
-  }
-
-  if not entity then
-    return nil
-  end
-
+local function initialize_builder_state(entity)
   configure_builder_entity(entity)
-  debug_log("spawned builder at " .. format_position(entity.position) .. " near player " .. player.name .. " at " .. format_position(player.character.position))
 
   storage.builder_state = {
     entity = entity,
@@ -1292,6 +1306,517 @@ local function spawn_builder_for_player(player)
 
   return ensure_builder_state_fields(storage.builder_state)
 end
+
+local function destroy_active_builder()
+  local builder_state = storage.builder_state
+  if builder_state and builder_state.entity and builder_state.entity.valid then
+    builder_state.entity.destroy()
+  end
+
+  storage.builder_state = nil
+end
+
+local function spawn_builder_at_position(surface, requested_position, debug_context, fallback_position)
+  if get_builder_state() then
+    debug_log("spawn skipped because the builder already exists")
+    return get_builder_state()
+  end
+
+  if not (surface and requested_position) then
+    debug_log("spawn skipped because no valid surface or position was provided")
+    return nil
+  end
+
+  local spawn_position = find_spawn_position_on_surface(surface, requested_position, fallback_position)
+  if not spawn_position then
+    debug_log("spawn failed because no non-colliding position was found near " .. format_position(requested_position))
+    return nil
+  end
+
+  local force = ensure_builder_force()
+  local entity = surface.create_entity{
+    name = builder_data.avatar.prototype_name,
+    position = spawn_position,
+    force = force,
+    create_build_effect_smoke = false
+  }
+
+  if not entity then
+    debug_log("spawn failed because the builder entity could not be created at " .. format_position(spawn_position))
+    return nil
+  end
+
+  local builder_state = initialize_builder_state(entity)
+  debug_log("spawned builder at " .. format_position(entity.position) .. (debug_context and (" " .. debug_context) or ""))
+  return builder_state
+end
+
+local function spawn_builder_for_player(player)
+  if not (player and player.valid and player.character and player.character.valid) then
+    debug_log("spawn skipped because no valid player character is available")
+    return nil
+  end
+
+  local spawn_position = find_spawn_position(player)
+  return spawn_builder_at_position(
+    player.surface,
+    spawn_position,
+    "near player " .. player.name .. " at " .. format_position(player.character.position),
+    player.character.position
+  )
+end
+
+local function normalize_test_inventory(inventory)
+  local stacks = {}
+
+  if type(inventory) ~= "table" then
+    return stacks
+  end
+
+  if inventory[1] ~= nil then
+    for _, stack in ipairs(inventory) do
+      if stack and stack.name and stack.count and stack.count > 0 then
+        stacks[#stacks + 1] = {
+          name = stack.name,
+          count = stack.count
+        }
+      end
+    end
+  else
+    for item_name, count in pairs(inventory) do
+      if count and count > 0 then
+        stacks[#stacks + 1] = {
+          name = item_name,
+          count = count
+        }
+      end
+    end
+  end
+
+  table.sort(stacks, function(left, right)
+    return left.name < right.name
+  end)
+
+  return stacks
+end
+
+local function get_test_surface(spec)
+  if spec and spec.surface_name and game.surfaces[spec.surface_name] then
+    return game.surfaces[spec.surface_name]
+  end
+
+  if spec and spec.surface_index and game.surfaces[spec.surface_index] then
+    return game.surfaces[spec.surface_index]
+  end
+
+  return game.surfaces["nauvis"] or game.surfaces[1]
+end
+
+local function sanitize_test_file_name(name)
+  return string.gsub(name or "manual-test", "[^%w%-_]+", "_")
+end
+
+local function make_test_area(center, half_width, half_height)
+  return {
+    left_top = {
+      x = center.x - half_width,
+      y = center.y - half_height
+    },
+    right_bottom = {
+      x = center.x + half_width,
+      y = center.y + half_height
+    }
+  }
+end
+
+local function build_test_area_tiles(area, tile_name)
+  local tiles = {}
+
+  for x = math.floor(area.left_top.x), math.ceil(area.right_bottom.x) do
+    for y = math.floor(area.left_top.y), math.ceil(area.right_bottom.y) do
+      tiles[#tiles + 1] = {
+        name = tile_name or "grass-1",
+        position = {x = x, y = y}
+      }
+    end
+  end
+
+  return tiles
+end
+
+local function clear_test_area(surface, area)
+  surface.request_to_generate_chunks({
+    x = (area.left_top.x + area.right_bottom.x) * 0.5,
+    y = (area.left_top.y + area.right_bottom.y) * 0.5
+  }, 3)
+  surface.force_generate_chunk_requests()
+  surface.set_tiles(build_test_area_tiles(area, "grass-1"), true)
+
+  for _, entity in ipairs(surface.find_entities_filtered{area = area}) do
+    if entity.valid and entity.name ~= "character" and entity.type ~= "player-port" then
+      entity.destroy()
+    end
+  end
+
+  surface.destroy_decoratives{area = area}
+end
+
+local function setup_manual_test(spec)
+  spec = spec or {}
+
+  ensure_debug_settings()
+  ensure_production_sites()
+  ensure_resource_sites()
+  ensure_builder_map_markers()
+  ensure_builder_force()
+
+  storage.enemy_builder_test = {
+    case_name = spec.case_name or "manual-test",
+    suppress_player_autospawn = spec.suppress_player_autospawn ~= false,
+    forbid_direct_turret_ammo_transfer = spec.forbid_direct_turret_ammo_transfer == true
+  }
+
+  if spec.assertion then
+    storage.enemy_builder_test.assertion = deep_copy(spec.assertion)
+    storage.enemy_builder_test.assertion.case_name =
+      storage.enemy_builder_test.assertion.case_name or storage.enemy_builder_test.case_name
+    storage.enemy_builder_test.assertion.surface_name =
+      storage.enemy_builder_test.assertion.surface_name or spec.surface_name
+    storage.enemy_builder_test.assertion.surface_index =
+      storage.enemy_builder_test.assertion.surface_index or spec.surface_index
+    storage.enemy_builder_test.assertion.deadline_tick =
+      game.tick + (storage.enemy_builder_test.assertion.deadline_offset_ticks or 0)
+    storage.enemy_builder_test.assertion.result_file =
+      storage.enemy_builder_test.assertion.result_file or
+      ("enemy-builder-tests/" .. sanitize_test_file_name(storage.enemy_builder_test.assertion.case_name) .. ".status")
+  end
+
+  debug_markers.clear()
+  destroy_active_builder()
+  storage.production_sites = {}
+  storage.resource_sites = {}
+
+  local surface = get_test_surface(spec)
+  if not surface then
+    error("enemy-builder test: no valid surface available for setup")
+  end
+
+  local builder_position = clone_position(spec.builder_position or {x = 0, y = 0})
+  local builder_state = spawn_builder_at_position(
+    surface,
+    builder_position,
+    "for test " .. storage.enemy_builder_test.case_name
+  )
+
+  if not builder_state then
+    error("enemy-builder test: failed to spawn builder for test setup")
+  end
+
+  builder_state.task_state = nil
+  builder_state.scaling_active_task = nil
+  builder_state.task_retry_state = {
+    counts = {},
+    cooldowns = {}
+  }
+  builder_state.completed_scaling_milestones = deep_copy(spec.completed_scaling_milestones or {})
+
+  for _, stack in ipairs(normalize_test_inventory(spec.inventory)) do
+    local inserted_count = insert_item(builder_state.entity, stack.name, stack.count, "test setup inventory")
+    if inserted_count < stack.count then
+      error(
+        "enemy-builder test: failed to seed " .. stack.name ..
+        " x" .. stack.count .. "; inserted " .. inserted_count
+      )
+    end
+  end
+
+  local request, request_error = goal_tree.instantiate_manual_request(
+    builder_data,
+    spec.component_name or "firearm_magazine_site",
+    spec.target_position and clone_position(spec.target_position) or nil
+  )
+
+  if request_error then
+    error("enemy-builder test: " .. request_error)
+  end
+
+  builder_state.manual_goal_request = request
+  if builder_state.goal_engine then
+    builder_state.goal_engine.scaling_display_task = nil
+  end
+  set_idle(builder_state.entity)
+  builder_runtime.clear_recovery(builder_state)
+  builder_runtime.update_goal_model(builder_state, game.tick)
+  builder_runtime.update_builder_overlays(builder_state, game.tick, true)
+  update_builder_map_markers(builder_state, game.tick, true)
+  debug_log(
+    "test setup " .. storage.enemy_builder_test.case_name ..
+    ": queued manual goal " .. request.display_name ..
+    (spec.target_position and (" at " .. format_position(spec.target_position)) or "")
+  )
+
+  return {
+    builder_position = clone_position(builder_state.entity.position),
+    target_position = spec.target_position and clone_position(spec.target_position) or nil,
+    manual_goal_id = request.id
+  }
+end
+
+local function setup_firearm_outpost_test_case()
+  local surface = game.surfaces["nauvis"] or game.surfaces[1]
+  if not surface then
+    error("enemy-builder test: nauvis surface is unavailable")
+  end
+
+  local target_position = {x = 32, y = 0}
+  local builder_position = {x = 0, y = 0}
+  local area = make_test_area(target_position, 40, 24)
+
+  surface.always_day = true
+  clear_test_area(surface, area)
+
+  return setup_manual_test{
+    case_name = "firearm_outpost_physical_feed",
+    component_name = "firearm_magazine_site",
+    builder_position = builder_position,
+    target_position = target_position,
+    surface_name = surface.name,
+    suppress_player_autospawn = true,
+    forbid_direct_turret_ammo_transfer = true,
+    inventory = {
+      {name = "coal", count = 20},
+      {name = "copper-plate", count = 250},
+      {name = "iron-plate", count = 400},
+      {name = "steel-plate", count = 30},
+      {name = "wood", count = 20}
+    },
+    assertion = {
+      case_name = "firearm_outpost_physical_feed",
+      surface_name = surface.name,
+      area = area,
+      deadline_offset_ticks = 3600,
+      primary_entity_name = builder_data.prototypes.firearm_magazine_assembler_name,
+      required_recipe_name = "firearm-magazine",
+      turret_ammo_item_name = "firearm-magazine",
+      minimum_turret_ammo_count = 1,
+      expected_counts = {
+        [builder_data.prototypes.firearm_magazine_assembler_name] = 1,
+        ["gun-turret"] = 2,
+        ["burner-inserter"] = 2,
+        ["small-electric-pole"] = 4,
+        ["solar-panel"] = 4
+      }
+    }
+  }
+end
+
+local function finish_manual_test()
+  if storage.enemy_builder_test then
+    storage.enemy_builder_test.finished = true
+  end
+
+  debug_markers.clear()
+  destroy_active_builder()
+  storage.production_sites = {}
+  storage.resource_sites = {}
+  builder_runtime.update_builder_overlays(nil, game.tick, true)
+  update_builder_map_markers(nil, game.tick, true)
+end
+
+local function clear_test_state()
+  finish_manual_test()
+  storage.enemy_builder_test = nil
+end
+
+local function count_test_entities(surface, force, area, entity_name)
+  return #surface.find_entities_filtered{
+    area = area,
+    force = force,
+    name = entity_name
+  }
+end
+
+local function get_primary_test_assembler(surface, force, area, entity_name)
+  return surface.find_entities_filtered{
+    area = area,
+    force = force,
+    name = entity_name,
+    limit = 1
+  }[1]
+end
+
+local function get_test_turret_ammo_count(surface, force, area, item_name)
+  local ammo_count = 0
+
+  for _, turret in ipairs(surface.find_entities_filtered{
+    area = area,
+    force = force,
+    name = "gun-turret"
+  }) do
+    local ammo_inventory = turret.get_inventory(defines.inventory.turret_ammo)
+    if ammo_inventory then
+      ammo_count = ammo_count + ammo_inventory.get_item_count(item_name)
+    end
+  end
+
+  return ammo_count
+end
+
+local function get_test_entity_debug_details(surface, force, area)
+  local details = {}
+
+  for _, inserter in ipairs(surface.find_entities_filtered{
+    area = area,
+    force = force,
+    name = "burner-inserter"
+  }) do
+    local held_name = nil
+    local held_count = 0
+    if inserter.held_stack and inserter.held_stack.valid_for_read then
+      held_name = inserter.held_stack.name
+      held_count = inserter.held_stack.count
+    end
+
+    details[#details + 1] = string.format(
+      "inserter(pos=%s dir=%s pickup=%s drop=%s held=%s:%d energy=%.3f)",
+      format_position(inserter.position),
+      tostring(inserter.direction),
+      format_position(inserter.pickup_position),
+      format_position(inserter.drop_position),
+      tostring(held_name or "nil"),
+      held_count,
+      inserter.energy or 0
+    )
+  end
+
+  for _, turret in ipairs(surface.find_entities_filtered{
+    area = area,
+    force = force,
+    name = "gun-turret"
+  }) do
+    local ammo_inventory = turret.get_inventory(defines.inventory.turret_ammo)
+    local ammo_count = ammo_inventory and ammo_inventory.get_contents()["firearm-magazine"] or 0
+    details[#details + 1] = string.format(
+      "turret(pos=%s dir=%s ammo=%d)",
+      format_position(turret.position),
+      tostring(turret.direction),
+      ammo_count or 0
+    )
+  end
+
+  return details
+end
+
+local function format_test_failure_summary(surface, force, assertion)
+  local area = assertion.area
+  local parts = {}
+
+  for entity_name, expected_count in pairs(assertion.expected_counts or {}) do
+    parts[#parts + 1] =
+      entity_name .. "=" .. count_test_entities(surface, force, area, entity_name) .. "/" .. expected_count
+  end
+
+  local ammo_item_name = assertion.turret_ammo_item_name or "firearm-magazine"
+  parts[#parts + 1] = "turret-ammo=" .. get_test_turret_ammo_count(surface, force, area, ammo_item_name)
+
+  local assembler_name = assertion.primary_entity_name or builder_data.prototypes.firearm_magazine_assembler_name
+  local assembler = get_primary_test_assembler(surface, force, area, assembler_name)
+  if assembler and assembler.valid then
+    local recipe = assembler.get_recipe and assembler.get_recipe()
+    parts[#parts + 1] = "assembler-recipe=" .. (recipe and recipe.name or "nil")
+    local output_inventory = assembler.get_output_inventory and assembler.get_output_inventory()
+    parts[#parts + 1] = "assembler-output=" .. ((output_inventory and output_inventory.get_item_count(ammo_item_name)) or 0)
+  else
+    parts[#parts + 1] = "assembler=missing"
+  end
+
+  for _, detail in ipairs(get_test_entity_debug_details(surface, force, area)) do
+    parts[#parts + 1] = detail
+  end
+
+  return table.concat(parts, ", ")
+end
+
+local function test_assertion_passed(surface, force, assertion)
+  local area = assertion.area
+
+  for entity_name, expected_count in pairs(assertion.expected_counts or {}) do
+    if count_test_entities(surface, force, area, entity_name) < expected_count then
+      return false
+    end
+  end
+
+  local assembler_name = assertion.primary_entity_name or builder_data.prototypes.firearm_magazine_assembler_name
+  local assembler = get_primary_test_assembler(surface, force, area, assembler_name)
+  if not (assembler and assembler.valid) then
+    return false
+  end
+
+  if assertion.required_recipe_name then
+    local recipe = assembler.get_recipe and assembler.get_recipe()
+    if not (recipe and recipe.name == assertion.required_recipe_name) then
+      return false
+    end
+  end
+
+  return get_test_turret_ammo_count(
+    surface,
+    force,
+    area,
+    assertion.turret_ammo_item_name or "firearm-magazine"
+  ) >= (assertion.minimum_turret_ammo_count or 1)
+end
+
+local function run_active_test_assertion(tick)
+  local test_state = get_test_state()
+  local assertion = test_state and test_state.assertion or nil
+  if not assertion or assertion.completed then
+    return
+  end
+
+  local surface = get_test_surface(assertion)
+  local force = game.forces[builder_data.force_name]
+  if not (surface and force) then
+    error("enemy-builder test: missing surface or builder force while running assertion")
+  end
+
+  if test_assertion_passed(surface, force, assertion) then
+    if assertion.result_file then
+      helpers.write_file(
+        assertion.result_file,
+        "PASS " .. (assertion.case_name or test_state.case_name or "manual-test") .. " tick=" .. tick .. "\n",
+        false
+      )
+    end
+    log(
+      debug_prefix .. "test: PASS " ..
+      (assertion.case_name or test_state.case_name or "manual-test") ..
+      " at tick " .. tick
+    )
+    assertion.completed = true
+    finish_manual_test()
+    return
+  end
+
+  if tick >= (assertion.deadline_tick or tick) then
+    local failure_message =
+      "FAIL " .. (assertion.case_name or test_state.case_name or "manual-test") ..
+      " tick=" .. tick .. " " .. format_test_failure_summary(surface, force, assertion)
+    if assertion.result_file then
+      helpers.write_file(assertion.result_file, failure_message .. "\n", false)
+    end
+    error(
+      "enemy-builder test: " .. failure_message
+    )
+  end
+end
+
+local test_remote_interface = {
+  setup_manual_test = setup_manual_test,
+  setup_firearm_outpost_test_case = setup_firearm_outpost_test_case,
+  finish_manual_test = finish_manual_test,
+  clear_test_state = clear_test_state
+}
 
 local function complete_current_task(builder_state, task, completion_message)
   if task and task.manual_goal_id and builder_state.manual_goal_request and builder_state.manual_goal_request.id == task.manual_goal_id then
@@ -1694,14 +2219,16 @@ local function on_init()
   ensure_builder_map_markers()
   ensure_builder_force()
 
-  local player = get_first_valid_player()
-  if player then
-    local builder_state = spawn_builder_for_player(player)
-    if builder_state then
-      discover_resource_sites(builder_state)
+  if not autospawn_suppressed_for_test() then
+    local player = get_first_valid_player()
+    if player then
+      local builder_state = spawn_builder_for_player(player)
+      if builder_state then
+        discover_resource_sites(builder_state)
+      end
+    else
+      debug_log("on_init: no player character available yet")
     end
-  else
-    debug_log("on_init: no player character available yet")
   end
 
   if get_builder_state() then
@@ -1719,14 +2246,16 @@ local function on_configuration_changed()
   ensure_builder_force()
 
   if not get_builder_state() then
-    local player = get_first_valid_player()
-    if player then
-      local builder_state = spawn_builder_for_player(player)
-      if builder_state then
-        discover_resource_sites(builder_state)
+    if not autospawn_suppressed_for_test() then
+      local player = get_first_valid_player()
+      if player then
+        local builder_state = spawn_builder_for_player(player)
+        if builder_state then
+          discover_resource_sites(builder_state)
+        end
+      else
+        debug_log("on_configuration_changed: no player character available yet")
       end
-    else
-      debug_log("on_configuration_changed: no player character available yet")
     end
   else
     discover_resource_sites(get_builder_state())
@@ -1743,7 +2272,9 @@ local function on_player_created(event)
   local player = game.get_player(event.player_index)
   if player then
     debug_log("on_player_created: player " .. player.name)
-    spawn_builder_for_player(player)
+    if not autospawn_suppressed_for_test() then
+      spawn_builder_for_player(player)
+    end
     if get_builder_state() then
       builder_runtime.update_goal_model(get_builder_state(), game.tick)
     end
@@ -1754,7 +2285,7 @@ end
 
 local function on_tick(event)
   local builder_state = get_builder_state()
-  if not builder_state then
+  if not builder_state and not autospawn_suppressed_for_test() then
     local player = get_first_valid_player()
     if player then
       builder_state = spawn_builder_for_player(player)
@@ -1766,12 +2297,19 @@ local function on_tick(event)
     builder_runtime.update_goal_model(builder_state, event.tick)
   end
 
+  run_active_test_assertion(event.tick)
+  builder_state = get_builder_state()
+
   builder_runtime.update_builder_overlays(builder_state, event.tick, false)
   update_builder_map_markers(builder_state, event.tick, false)
 end
 
 function builder_runtime.register_events()
   debug_commands.register(debug_command_context)
+  if remote.interfaces["enemy-builder-test"] then
+    remote.remove_interface("enemy-builder-test")
+  end
+  remote.add_interface("enemy-builder-test", test_remote_interface)
   script.on_init(on_init)
   script.on_configuration_changed(on_configuration_changed)
   script.on_event(defines.events.on_player_created, on_player_created)

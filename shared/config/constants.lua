@@ -44,7 +44,7 @@ constants.ammo_defense_layout_elements = {
     site_role = "burner-inserter",
     entity_name = "burner-inserter",
     offset = {x = -2, y = 0},
-    direction_name = "west",
+    direction_name = "east",
     placement_search_radius = 0.5,
     placement_step = 0.5,
     fuel = {
@@ -57,7 +57,7 @@ constants.ammo_defense_layout_elements = {
     site_role = "burner-inserter",
     entity_name = "burner-inserter",
     offset = {x = 2, y = 0},
-    direction_name = "east",
+    direction_name = "west",
     placement_search_radius = 0.5,
     placement_step = 0.5,
     fuel = {
@@ -69,7 +69,7 @@ constants.ammo_defense_layout_elements = {
     id = "left-turret",
     site_role = "turret",
     entity_name = "gun-turret",
-    offset = {x = -4, y = 0},
+    offset = {x = -3, y = 0},
     placement_search_radius = 0.5,
     placement_step = 0.5
   },
@@ -77,7 +77,7 @@ constants.ammo_defense_layout_elements = {
     id = "right-turret",
     site_role = "turret",
     entity_name = "gun-turret",
-    offset = {x = 4, y = 0},
+    offset = {x = 3, y = 0},
     placement_search_radius = 0.5,
     placement_step = 0.5
   },
