@@ -1,4 +1,7 @@
 local builder_data = require("shared.builder_data")
+local goal_tree = require("scripts.goal_tree")
+local maintenance_runner = require("scripts.maintenance_runner")
+local world_snapshot = require("scripts.world_snapshot")
 
 local builder_runtime = {}
 local debug_prefix = "[enemy-builder] "
@@ -6,6 +9,9 @@ local overlay_element_names = {
   status_root = "enemy_builder_status_overlay_root",
   goal_label = "enemy_builder_goal_overlay_label",
   status_label = "enemy_builder_status_overlay_label",
+  path_label = "enemy_builder_path_overlay_label",
+  blockers_label = "enemy_builder_blockers_overlay_label",
+  maintenance_label = "enemy_builder_maintenance_overlay_label",
   inventory_root = "enemy_builder_inventory_overlay_root",
   inventory_title = "enemy_builder_inventory_overlay_title",
   inventory_label = "enemy_builder_inventory_overlay_label"
@@ -14,8 +20,10 @@ local get_builder_state
 local get_active_task
 local get_item_count
 local get_recipe
+local get_builder_main_inventory
 local get_pending_scaling_milestone
 local get_site_pattern
+local get_resource_site_counts
 local pull_inventory_contents_to_builder
 local resolve_required_items
 local cleanup_resource_sites
@@ -412,6 +420,20 @@ local function describe_builder_state(builder_state)
   lines[#lines + 1] = "production-sites=" .. #ensure_production_sites()
   lines[#lines + 1] = "resource-sites=" .. #ensure_resource_sites()
 
+  if builder_state.goal_tree_root then
+    lines[#lines + 1] = "goal=" .. goal_tree.get_root_goal_line(builder_state.goal_tree_root)
+    for _, path_line in ipairs(builder_state.goal_path_lines or {}) do
+      lines[#lines + 1] = "goal-path=" .. path_line
+    end
+    for _, blocker_line in ipairs(builder_state.goal_blocker_lines or {}) do
+      lines[#lines + 1] = "goal-blocker=" .. blocker_line
+    end
+  end
+
+  for _, maintenance_line in ipairs(maintenance_runner.get_recent_action_lines(builder_state, 4)) do
+    lines[#lines + 1] = "maintenance=" .. maintenance_line
+  end
+
   return lines
 end
 
@@ -426,6 +448,39 @@ local function ensure_builder_state_fields(builder_state)
 
   if builder_state.completed_scaling_milestones == nil then
     builder_state.completed_scaling_milestones = {}
+  end
+
+  if builder_state.manual_goal_request == nil then
+    builder_state.manual_goal_request = nil
+  end
+
+  if builder_state.maintenance_state == nil then
+    builder_state.maintenance_state = {
+      recent_actions = {}
+    }
+  end
+
+  if builder_state.goal_tree_root == nil then
+    builder_state.goal_tree_root = nil
+  end
+
+  if builder_state.goal_path_lines == nil then
+    builder_state.goal_path_lines = {}
+  end
+
+  if builder_state.goal_blocker_lines == nil then
+    builder_state.goal_blocker_lines = {}
+  end
+
+  if builder_state.last_recovery == nil then
+    builder_state.last_recovery = nil
+  end
+
+  if builder_state.task_retry_state == nil then
+    builder_state.task_retry_state = {
+      counts = {},
+      cooldowns = {}
+    }
   end
 
   return builder_state
@@ -519,16 +574,21 @@ get_builder_state = function()
   return state
 end
 
-local function debug_status_command(command)
+function builder_runtime.debug_status_command(command)
   ensure_debug_settings()
 
-  local lines = describe_builder_state(get_builder_state())
+  local builder_state = get_builder_state()
+  if builder_state then
+    builder_runtime.update_goal_model(builder_state, game.tick)
+  end
+
+  local lines = describe_builder_state(builder_state)
   for _, line in ipairs(lines) do
     reply_to_command(command, line)
   end
 end
 
-local function debug_toggle_command(command)
+function builder_runtime.debug_toggle_command(command)
   ensure_debug_settings()
 
   local parameter = command.parameter and string.lower(command.parameter) or nil
@@ -547,7 +607,7 @@ local function debug_toggle_command(command)
   reply_to_command(command, "debug logging is " .. (debug_enabled() and "on" or "off") .. "; use /enemy-builder-debug on or /enemy-builder-debug off")
 end
 
-local function debug_retask_command(command)
+function builder_runtime.debug_retask_command(command)
   local builder_state = get_builder_state()
   if not builder_state then
     reply_to_command(command, "no builder entity is active")
@@ -561,7 +621,150 @@ local function debug_retask_command(command)
   reply_to_command(command, "builder task state cleared; it will re-evaluate on the next tick")
 end
 
+function builder_runtime.ensure_builder_for_command(command)
+  local builder_state = get_builder_state()
+  if builder_state then
+    return builder_state
+  end
+
+  local player = get_command_player(command) or get_first_valid_player()
+  if player then
+    return spawn_builder_for_player(player)
+  end
+
+  return nil
+end
+
+function builder_runtime.parse_manual_component_request(command, builder_state)
+  local parameter = command.parameter or ""
+  local tokens = {}
+  for token in string.gmatch(parameter, "%S+") do
+    tokens[#tokens + 1] = token
+  end
+
+  local component_name = tokens[1]
+  if not component_name then
+    return nil, nil, "usage: /" .. command.name .. " <component> [here|x y]"
+  end
+
+  local position = nil
+  if tokens[2] == "here" then
+    local player = get_command_player(command)
+    if player and player.valid then
+      position = clone_position(player.position)
+    elseif builder_state and builder_state.entity and builder_state.entity.valid then
+      position = clone_position(builder_state.entity.position)
+    end
+  elseif tokens[2] then
+    local x = tonumber(tokens[2])
+    local y = tonumber(tokens[3])
+    if not (x and y) then
+      return nil, nil, "expected coordinates as <x y> or the keyword 'here'"
+    end
+    position = {x = x, y = y}
+  end
+
+  return component_name, position
+end
+
+function builder_runtime.goals_command(command)
+  local builder_state = builder_runtime.ensure_builder_for_command(command)
+  if not builder_state then
+    reply_to_command(command, "no builder entity is active")
+    return
+  end
+
+  builder_runtime.update_goal_model(builder_state, game.tick)
+  for _, line in ipairs(goal_tree.format_tree_lines(builder_state.goal_tree_root, false)) do
+    reply_to_command(command, line)
+  end
+end
+
+function builder_runtime.manual_plan_command(command)
+  local builder_state = builder_runtime.ensure_builder_for_command(command)
+  local component_name, position, error_message = builder_runtime.parse_manual_component_request(command, builder_state)
+  if error_message then
+    reply_to_command(command, error_message)
+    reply_to_command(command, "components: " .. table.concat(goal_tree.list_component_names(builder_data), ", "))
+    return
+  end
+
+  if not builder_state then
+    reply_to_command(command, "no builder entity is active")
+    return
+  end
+
+  local lines, preview_error = goal_tree.describe_plan_preview(
+    builder_data,
+    builder_runtime.build_runtime_snapshot(builder_state, game.tick),
+    {
+      get_item_count = get_item_count,
+      get_recipe = get_recipe
+    },
+    component_name,
+    position
+  )
+
+  if preview_error then
+    reply_to_command(command, preview_error)
+    reply_to_command(command, "components: " .. table.concat(goal_tree.list_component_names(builder_data), ", "))
+    return
+  end
+
+  for _, line in ipairs(lines or {}) do
+    reply_to_command(command, line)
+  end
+end
+
+function builder_runtime.manual_build_command(command)
+  local builder_state = builder_runtime.ensure_builder_for_command(command)
+  local component_name, position, error_message = builder_runtime.parse_manual_component_request(command, builder_state)
+  if error_message then
+    reply_to_command(command, error_message)
+    reply_to_command(command, "components: " .. table.concat(goal_tree.list_component_names(builder_data), ", "))
+    return
+  end
+
+  if not builder_state then
+    reply_to_command(command, "no builder entity is active")
+    return
+  end
+
+  local request, request_error = goal_tree.instantiate_manual_request(builder_data, component_name, position)
+  if request_error then
+    reply_to_command(command, request_error)
+    reply_to_command(command, "components: " .. table.concat(goal_tree.list_component_names(builder_data), ", "))
+    return
+  end
+
+  builder_state.manual_goal_request = request
+  builder_state.task_state = nil
+  set_idle(builder_state.entity)
+  builder_runtime.record_recovery(builder_state, "manual goal injected for " .. request.display_name)
+  debug_log("manual goal injected: " .. request.display_name .. (position and " at " .. format_position(position) or ""))
+  reply_to_command(command, "manual goal queued: " .. request.display_name)
+end
+
+function builder_runtime.cancel_manual_command(command)
+  local builder_state = get_builder_state()
+  if not builder_state or not builder_state.manual_goal_request then
+    reply_to_command(command, "no manual goal is active")
+    return
+  end
+
+  local display_name = builder_state.manual_goal_request.display_name or builder_state.manual_goal_request.component_name or "manual goal"
+  builder_state.manual_goal_request = nil
+  builder_state.task_state = nil
+  set_idle(builder_state.entity)
+  debug_log("manual goal cancelled: " .. display_name)
+  reply_to_command(command, "cancelled " .. display_name)
+end
+
 get_active_task = function(builder_state)
+  if builder_state and builder_state.manual_goal_request and builder_state.manual_goal_request.tasks then
+    return builder_state.manual_goal_request.tasks[builder_state.manual_goal_request.current_task_index or 1]
+  end
+
   local plan = builder_data.plans[builder_state.plan_name]
   if not plan then
     return nil
@@ -570,9 +773,13 @@ get_active_task = function(builder_state)
   return plan.tasks[builder_state.task_index]
 end
 
-local function get_display_task(builder_state)
+function builder_runtime.get_display_task(builder_state)
   if not builder_state then
     return nil
+  end
+
+  if builder_state.manual_goal_request and builder_state.manual_goal_request.tasks then
+    return builder_state.manual_goal_request.tasks[builder_state.manual_goal_request.current_task_index or 1]
   end
 
   if builder_state.scaling_active_task then
@@ -580,6 +787,181 @@ local function get_display_task(builder_state)
   end
 
   return get_active_task(builder_state)
+end
+
+function builder_runtime.record_recovery(builder_state, message)
+  if not builder_state then
+    return
+  end
+
+  builder_state.last_recovery = {
+    tick = game and game.tick or nil,
+    message = message
+  }
+end
+
+function builder_runtime.clear_recovery(builder_state)
+  if builder_state then
+    builder_state.last_recovery = nil
+  end
+end
+
+function builder_runtime.get_inventory_contents(entity)
+  local inventory = get_builder_main_inventory(entity)
+  return inventory and inventory.get_contents() or {}
+end
+
+function builder_runtime.build_runtime_snapshot(builder_state, tick)
+  return world_snapshot.build(
+    builder_data,
+    builder_state,
+    tick,
+    {
+      get_active_task = get_active_task,
+      get_display_task = builder_runtime.get_display_task,
+      get_production_site_count = function()
+        return #ensure_production_sites()
+      end,
+      get_resource_site_count = function()
+        return #cleanup_resource_sites()
+      end,
+      get_resource_site_counts = get_resource_site_counts,
+      get_item_count = get_item_count,
+      get_inventory_contents = builder_runtime.get_inventory_contents
+    }
+  )
+end
+
+function builder_runtime.update_goal_model(builder_state, tick)
+  if not builder_state then
+    return nil
+  end
+
+  local snapshot = builder_runtime.build_runtime_snapshot(builder_state, tick)
+  local root = goal_tree.build_runtime_tree(
+    builder_data,
+    snapshot,
+    {
+      get_item_count = get_item_count,
+      get_recipe = get_recipe
+    }
+  )
+
+  builder_state.goal_tree_root = root
+  builder_state.goal_path_lines = goal_tree.get_active_path_lines(root)
+  builder_state.goal_blocker_lines = goal_tree.get_blocker_lines(root)
+  return snapshot
+end
+
+function builder_runtime.get_task_retry_key(task)
+  if not task then
+    return "task:unknown"
+  end
+
+  if task.repeatable_scaling_milestone_name then
+    return "repeatable-milestone:" .. task.repeatable_scaling_milestone_name
+  end
+
+  if task.completed_scaling_milestone_name then
+    return "milestone:" .. task.completed_scaling_milestone_name
+  end
+
+  if task.scaling_pattern_name then
+    return "pattern:" .. task.scaling_pattern_name
+  end
+
+  return "task:" .. tostring(task.id or task.type or "unknown")
+end
+
+function builder_runtime.get_retry_state(builder_state)
+  ensure_builder_state_fields(builder_state)
+  return builder_state.task_retry_state
+end
+
+function builder_runtime.get_retry_cooldown_ticks()
+  return (builder_data.recovery and builder_data.recovery.blocked_goal_cooldown_ticks) or (15 * 60)
+end
+
+function builder_runtime.get_retry_limit()
+  return (builder_data.recovery and builder_data.recovery.max_task_retries) or 6
+end
+
+function builder_runtime.prune_retry_cooldowns(builder_state, tick)
+  local retry_state = builder_runtime.get_retry_state(builder_state)
+  for key, until_tick in pairs(retry_state.cooldowns) do
+    if tick >= until_tick then
+      retry_state.cooldowns[key] = nil
+    end
+  end
+end
+
+function builder_runtime.is_goal_retry_blocked(builder_state, key, tick)
+  if not builder_state or not key then
+    return false
+  end
+
+  builder_runtime.prune_retry_cooldowns(builder_state, tick)
+  local retry_state = builder_runtime.get_retry_state(builder_state)
+  return retry_state.cooldowns[key] ~= nil
+end
+
+function builder_runtime.clear_task_retry_state(builder_state, task)
+  if not (builder_state and task) then
+    return
+  end
+
+  local retry_state = builder_runtime.get_retry_state(builder_state)
+  retry_state.counts[builder_runtime.get_task_retry_key(task)] = nil
+end
+
+function builder_runtime.enter_task_retry_cooldown(builder_state, task, tick, reason)
+  if not (builder_state and task) then
+    return
+  end
+
+  local retry_key = builder_runtime.get_task_retry_key(task)
+  local retry_state = builder_runtime.get_retry_state(builder_state)
+  retry_state.counts[retry_key] = nil
+  retry_state.cooldowns[retry_key] = tick + builder_runtime.get_retry_cooldown_ticks()
+
+  builder_runtime.record_recovery(
+    builder_state,
+    (reason or ("blocked " .. retry_key)) ..
+      "; cooling down until tick " .. retry_state.cooldowns[retry_key]
+  )
+end
+
+function builder_runtime.handle_task_retry_exhausted(builder_state, task, tick, reason)
+  local task_name = task and (task.id or task.type) or "task"
+  local message = (reason or ("retry limit reached for " .. task_name))
+
+  if task and task.manual_goal_id and builder_state.manual_goal_request and builder_state.manual_goal_request.id == task.manual_goal_id then
+    builder_state.manual_goal_request = nil
+    builder_state.task_state = nil
+    set_idle(builder_state.entity)
+    builder_runtime.enter_task_retry_cooldown(builder_state, task, tick, message)
+    debug_log("task " .. task_name .. ": aborting manual goal after repeated failures: " .. message)
+    return
+  end
+
+  if task and task.no_advance then
+    builder_state.scaling_active_task = nil
+    builder_state.task_state = nil
+    set_idle(builder_state.entity)
+    builder_runtime.enter_task_retry_cooldown(builder_state, task, tick, message)
+    debug_log("task " .. task_name .. ": abandoning scaling subtask after repeated failures: " .. message)
+    return
+  end
+
+  builder_runtime.clear_task_retry_state(builder_state, task)
+  builder_state.task_state = {
+    phase = "waiting-for-resource",
+    wait_reason = "retry-exhausted",
+    next_attempt_tick = tick + builder_runtime.get_retry_cooldown_ticks()
+  }
+  set_idle(builder_state.entity)
+  builder_runtime.record_recovery(builder_state, message)
+  debug_log("task " .. task_name .. ": delaying retry after repeated failures: " .. message)
 end
 
 local function get_milestone_by_name(milestone_name)
@@ -725,7 +1107,7 @@ get_item_count = function(entity, item_name)
   return entity.get_item_count(item_name)
 end
 
-local function get_builder_main_inventory(entity)
+get_builder_main_inventory = function(entity)
   if not (entity and entity.valid) then
     return nil
   end
@@ -1507,6 +1889,7 @@ local function find_machine_site_near_resource_sites(builder_state, task)
   discover_resource_sites(builder_state)
 
   local builder = builder_state.entity
+  local origin = task.manual_search_origin or builder.position
   local anchor_candidates = {}
   local anchor_preference = task.anchor_preference and task.anchor_preference.fewer_registered_sites or nil
 
@@ -1517,7 +1900,7 @@ local function find_machine_site_near_resource_sites(builder_state, task)
         anchor_candidates[#anchor_candidates + 1] = {
           site = site,
           anchor_position = anchor_position,
-          distance = square_distance(builder.position, anchor_position),
+          distance = square_distance(origin, anchor_position),
           nearby_registered_site_count = count_registered_sites_near_position(anchor_preference, anchor_position)
         }
       end
@@ -1604,6 +1987,7 @@ end
 
 local function find_layout_site_near_machine(builder_state, task)
   local builder = builder_state.entity
+  local anchor_origin = task.manual_anchor_position or builder.position
   local summary = {
     anchor_entities_considered = 0,
     anchors_skipped_registered = 0,
@@ -1623,8 +2007,9 @@ local function find_layout_site_near_machine(builder_state, task)
       if site_matches_patterns(site, task.anchor_pattern_names) then
         local anchor_entity = get_anchor_site_entity(site, task.anchor_position_source)
         if anchor_entity then
-          local distance = square_distance(builder.position, anchor_entity.position)
-          if (not task.anchor_search_radius) or distance <= (task.anchor_search_radius * task.anchor_search_radius) then
+          local distance = square_distance(anchor_origin, anchor_entity.position)
+          local anchor_search_radius = task.manual_anchor_search_radius or task.anchor_search_radius
+          if (not anchor_search_radius) or distance <= (anchor_search_radius * anchor_search_radius) then
             anchor_candidates[#anchor_candidates + 1] = {
               site = site,
               anchor_entity = anchor_entity,
@@ -1646,15 +2031,15 @@ local function find_layout_site_near_machine(builder_state, task)
     }
 
     if task.anchor_search_radius then
-      filter.position = builder.position
-      filter.radius = task.anchor_search_radius
+      filter.position = anchor_origin
+      filter.radius = task.manual_anchor_search_radius or task.anchor_search_radius
     end
 
     for _, anchor_entity in ipairs(builder.surface.find_entities_filtered(filter)) do
       anchor_candidates[#anchor_candidates + 1] = {
         site = nil,
         anchor_entity = anchor_entity,
-        distance = square_distance(builder.position, anchor_entity.position)
+        distance = square_distance(anchor_origin, anchor_entity.position)
       }
     end
   end
@@ -1772,11 +2157,11 @@ end
 local function collect_nearby_container_items(builder_state, tick)
   local collection_settings = builder_data.logistics and builder_data.logistics.nearby_container_collection
   if not collection_settings then
-    return
+    return {}
   end
 
   if tick < (builder_state.next_container_scan_tick or 0) then
-    return
+    return {}
   end
 
   builder_state.next_container_scan_tick = tick + collection_settings.interval_ticks
@@ -1803,6 +2188,7 @@ local function collect_nearby_container_items(builder_state, tick)
   end)
 
   local containers_scanned = 0
+  local actions = {}
 
   for _, container in ipairs(containers) do
     if collection_settings.max_containers_per_scan and containers_scanned >= collection_settings.max_containers_per_scan then
@@ -1814,24 +2200,30 @@ local function collect_nearby_container_items(builder_state, tick)
 
       local inventory = get_container_inventory(container)
       if inventory and not inventory.is_empty() then
-        pull_inventory_contents_to_builder(
+        local moved_items = pull_inventory_contents_to_builder(
           inventory,
           builder,
           "collected from " .. container.name .. " at " .. format_position(container.position)
         )
+
+        if #moved_items > 0 then
+          actions[#actions + 1] = "collected from " .. container.name .. " at " .. format_position(container.position)
+        end
       end
     end
   end
+
+  return actions
 end
 
 local function collect_nearby_machine_output_items(builder_state, tick)
   local collection_settings = builder_data.logistics and builder_data.logistics.nearby_machine_output_collection
   if not collection_settings then
-    return
+    return {}
   end
 
   if tick < (builder_state.next_machine_output_collection_tick or 0) then
-    return
+    return {}
   end
 
   builder_state.next_machine_output_collection_tick = tick + collection_settings.interval_ticks
@@ -1864,6 +2256,7 @@ local function collect_nearby_machine_output_items(builder_state, tick)
   end)
 
   local entities_scanned = 0
+  local actions = {}
 
   for _, entity in ipairs(entities) do
     if collection_settings.max_entities_per_scan and entities_scanned >= collection_settings.max_entities_per_scan then
@@ -1875,24 +2268,30 @@ local function collect_nearby_machine_output_items(builder_state, tick)
 
       local output_inventory = entity.get_output_inventory and entity.get_output_inventory()
       if output_inventory and not output_inventory.is_empty() then
-        pull_inventory_contents_to_builder(
+        local moved_items = pull_inventory_contents_to_builder(
           output_inventory,
           builder,
           "collected from " .. entity.name .. " output at " .. format_position(entity.position)
         )
+
+        if #moved_items > 0 then
+          actions[#actions + 1] = "collected output from " .. entity.name .. " at " .. format_position(entity.position)
+        end
       end
     end
   end
+
+  return actions
 end
 
 local function refuel_nearby_machines(builder_state, tick)
   local refuel_settings = builder_data.logistics and builder_data.logistics.nearby_machine_refuel
   if not refuel_settings then
-    return
+    return {}
   end
 
   if tick < (builder_state.next_machine_refuel_tick or 0) then
-    return
+    return {}
   end
 
   builder_state.next_machine_refuel_tick = tick + refuel_settings.interval_ticks
@@ -1901,7 +2300,7 @@ local function refuel_nearby_machines(builder_state, tick)
   local fuel_name = refuel_settings.fuel_name or "coal"
   local available_fuel = get_item_count(builder, fuel_name)
   if available_fuel <= 0 then
-    return
+    return {}
   end
 
   local filter = {
@@ -1919,6 +2318,7 @@ local function refuel_nearby_machines(builder_state, tick)
   end)
 
   local entities_scanned = 0
+  local actions = {}
 
   for _, entity in ipairs(entities) do
     if refuel_settings.max_entities_per_scan and entities_scanned >= refuel_settings.max_entities_per_scan then
@@ -1958,6 +2358,7 @@ local function refuel_nearby_machines(builder_state, tick)
                   reason .. " with " .. inserted_count .. " " .. fuel_name ..
                   "; machine now has " .. fuel_inventory.get_item_count(fuel_name)
                 )
+                actions[#actions + 1] = "refueled " .. entity.name .. " at " .. format_position(entity.position)
               end
 
               if available_fuel <= 0 then
@@ -1969,16 +2370,18 @@ local function refuel_nearby_machines(builder_state, tick)
       end
     end
   end
+
+  return actions
 end
 
 local function supply_nearby_machine_inputs(builder_state, tick)
   local supply_settings = builder_data.logistics and builder_data.logistics.nearby_machine_input_supply
   if not supply_settings then
-    return
+    return {}
   end
 
   if tick < (builder_state.next_machine_input_supply_tick or 0) then
-    return
+    return {}
   end
 
   builder_state.next_machine_input_supply_tick = tick + supply_settings.interval_ticks
@@ -2011,6 +2414,7 @@ local function supply_nearby_machine_inputs(builder_state, tick)
   end)
 
   local entities_scanned = 0
+  local actions = {}
 
   for _, entity in ipairs(entities) do
     if supply_settings.max_entities_per_scan and entities_scanned >= supply_settings.max_entities_per_scan then
@@ -2062,6 +2466,7 @@ local function supply_nearby_machine_inputs(builder_state, tick)
                       "; machine now has " .. input_inventory.get_item_count(ingredient_name) ..
                       " " .. ingredient_name
                     )
+                    actions[#actions + 1] = "supplied " .. ingredient_name .. " to " .. entity.name .. " at " .. format_position(entity.position)
                   end
                 end
               end
@@ -2071,6 +2476,8 @@ local function supply_nearby_machine_inputs(builder_state, tick)
       end
     end
   end
+
+  return actions
 end
 
 local function register_smelting_site(task, miner, downstream_machine, output_container)
@@ -2398,11 +2805,14 @@ local function ensure_overlay_label(parent, name, caption, font_color, maximal_w
   return label
 end
 
-local function ensure_status_overlay(player)
+function builder_runtime.ensure_status_overlay(player)
   local root = player.gui.screen[overlay_element_names.status_root]
   if root and root.valid then
     ensure_overlay_label(root, overlay_element_names.goal_label, "", {0.75, 0.9, 1, 0.82})
     ensure_overlay_label(root, overlay_element_names.status_label, "", {1, 1, 1, 0.82})
+    ensure_overlay_label(root, overlay_element_names.path_label, "", {0.86, 0.94, 1, 0.72})
+    ensure_overlay_label(root, overlay_element_names.blockers_label, "", {1, 0.78, 0.78, 0.78})
+    ensure_overlay_label(root, overlay_element_names.maintenance_label, "", {0.86, 0.92, 0.86, 0.72})
     return root
   end
 
@@ -2413,10 +2823,13 @@ local function ensure_status_overlay(player)
   }
   ensure_overlay_label(root, overlay_element_names.goal_label, "", {0.75, 0.9, 1, 0.82})
   ensure_overlay_label(root, overlay_element_names.status_label, "", {1, 1, 1, 0.82})
+  ensure_overlay_label(root, overlay_element_names.path_label, "", {0.86, 0.94, 1, 0.72})
+  ensure_overlay_label(root, overlay_element_names.blockers_label, "", {1, 0.78, 0.78, 0.78})
+  ensure_overlay_label(root, overlay_element_names.maintenance_label, "", {0.86, 0.92, 0.86, 0.72})
   return root
 end
 
-local function ensure_inventory_overlay(player)
+function builder_runtime.ensure_inventory_overlay(player)
   local settings = get_overlay_settings()
   local root = player.gui.screen[overlay_element_names.inventory_root]
   if root and root.valid then
@@ -2466,126 +2879,33 @@ local function clear_builder_map_markers()
   end
 end
 
-local function get_activity_summary(builder_state)
+function builder_runtime.get_activity_summary(builder_state)
   if not (builder_state and builder_state.entity and builder_state.entity.valid) then
     return "Enemy Builder: inactive"
   end
 
-  local task_state = builder_state.task_state
-  local task = get_display_task(builder_state)
-
-  if task_state and task_state.phase == "scaling-crafting" then
-    return
-      "Enemy Builder: crafting " .. (task_state.craft_item_name or "item") ..
-      " x" .. tostring(task_state.craft_count or 0)
-  end
-
-  if task_state and task_state.phase == "scaling-collecting-site" then
-    local site = task_state.scaling_site and task_state.scaling_site.pattern_name or "site"
-    return "Enemy Builder: collecting " .. (task_state.target_item_name or "items") .. " from " .. site
-  end
-
-  if task_state and task_state.phase == "scaling-moving-to-site" then
-    local site = task_state.scaling_site and task_state.scaling_site.pattern_name or "site"
-    return
-      "Enemy Builder: moving to collect " .. (task_state.target_item_name or "items") ..
-      " from " .. site .. " at " .. format_position(task_state.target_position)
-  end
-
-  local task_label = task and task.id or ((builder_data.scaling and builder_data.scaling.enabled) and "scaling" or "idle")
-  local phase = task_state and task_state.phase or (task and "planning" or "idle")
-  local summary = "Enemy Builder: " .. task_label .. " [" .. phase .. "]"
-
-  if task_state then
-    if task_state.pause_reason then
-      summary = summary .. " " .. task_state.pause_reason
-    elseif task_state.wait_reason then
-      summary = summary .. " waiting for " .. task_state.wait_reason
-    elseif task_state.target_item_name then
-      summary = summary .. " " .. task_state.target_item_name
-    elseif task_state.source_id then
-      summary = summary .. " " .. task_state.source_id
-    elseif task_state.target_name then
-      summary = summary .. " " .. task_state.target_name
-    end
-
-    if task_state.target_position then
-      summary = summary .. " -> " .. format_position(task_state.target_position)
-    elseif task_state.build_position then
-      summary = summary .. " -> " .. format_position(task_state.build_position)
-    elseif task_state.resource_position then
-      summary = summary .. " -> " .. format_position(task_state.resource_position)
-    end
-  end
-
-  return summary
+  return "Activity: " .. goal_tree.get_activity_line(builder_runtime.build_runtime_snapshot(builder_state, game.tick))
 end
 
-local function get_goal_summary(builder_state)
+function builder_runtime.get_goal_summary(builder_state)
   if not (builder_state and builder_state.entity and builder_state.entity.valid) then
     return "Goal: inactive"
   end
 
-  local pending_milestone = get_pending_scaling_milestone(builder_state)
-  if pending_milestone and should_pursue_milestone(builder_state, pending_milestone) then
-    return "Goal: " .. get_milestone_display_name(pending_milestone.name)
-  end
+  local snapshot = builder_runtime.build_runtime_snapshot(builder_state, game.tick)
+  local root = builder_state.goal_tree_root or goal_tree.build_runtime_tree(
+    builder_data,
+    snapshot,
+    {
+      get_item_count = get_item_count,
+      get_recipe = get_recipe
+    }
+  )
 
-  local task = get_display_task(builder_state)
-  if task and task.repeatable_scaling_milestone_name then
-    return "Goal: " .. get_milestone_display_name(task.repeatable_scaling_milestone_name)
-  end
-
-  if task and task.scaling_pattern_name then
-    return "Goal: Expand " .. get_pattern_display_name(task.scaling_pattern_name)
-  end
-
-  if task and task.pattern_name then
-    local plan = builder_data.plans and builder_data.plans[builder_state.plan_name] or nil
-    if plan and plan.display_name then
-      return "Goal: " .. plan.display_name
-    end
-
-    return "Goal: Build " .. get_pattern_display_name(task.pattern_name)
-  end
-
-  if task and task.type == "gather-world-items" then
-    local plan = builder_data.plans and builder_data.plans[builder_state.plan_name] or nil
-    if plan and plan.display_name then
-      return "Goal: " .. plan.display_name
-    end
-
-    return "Goal: Gather materials"
-  end
-
-  if task and task.type == "move-to-resource" then
-    local plan = builder_data.plans and builder_data.plans[builder_state.plan_name] or nil
-    if plan and plan.display_name then
-      return "Goal: " .. plan.display_name
-    end
-
-    return "Goal: Move to " .. humanize_identifier(task.resource_name)
-  end
-
-  if builder_data.scaling and builder_data.scaling.enabled then
-    local cycle_pattern_names = builder_data.scaling.cycle_pattern_names or {}
-    local pattern_name = cycle_pattern_names[builder_state.scaling_pattern_index or 1]
-    if pattern_name then
-      return "Goal: Expand " .. get_pattern_display_name(pattern_name)
-    end
-
-    return "Goal: Scale production"
-  end
-
-  local plan = builder_data.plans and builder_data.plans[builder_state.plan_name] or nil
-  if plan and plan.display_name then
-    return "Goal: " .. plan.display_name
-  end
-
-  return "Goal: idle"
+  return "Goal: " .. goal_tree.get_root_goal_line(root)
 end
 
-local function get_builder_inventory_lines(builder_state)
+function builder_runtime.get_builder_inventory_lines(builder_state)
   if not (builder_state and builder_state.entity and builder_state.entity.valid) then
     return {"builder unavailable"}
   end
@@ -2616,7 +2936,7 @@ local function get_builder_inventory_lines(builder_state)
   return lines
 end
 
-local function update_builder_overlay_for_player(player, builder_state)
+function builder_runtime.update_builder_overlay_for_player(player, builder_state)
   if not (player and player.valid and player.connected) then
     return
   end
@@ -2628,10 +2948,13 @@ local function update_builder_overlay_for_player(player, builder_state)
 
   local settings = get_overlay_settings()
   local screen_size = get_player_screen_size(player)
-  local status_root = ensure_status_overlay(player)
-  local inventory_root = ensure_inventory_overlay(player)
+  local status_root = builder_runtime.ensure_status_overlay(player)
+  local inventory_root = builder_runtime.ensure_inventory_overlay(player)
   local goal_label = status_root[overlay_element_names.goal_label]
   local status_label = status_root[overlay_element_names.status_label]
+  local path_label = status_root[overlay_element_names.path_label]
+  local blockers_label = status_root[overlay_element_names.blockers_label]
+  local maintenance_label = status_root[overlay_element_names.maintenance_label]
   local inventory_title = inventory_root[overlay_element_names.inventory_title]
   local inventory_label = inventory_root[overlay_element_names.inventory_label]
 
@@ -2644,13 +2967,19 @@ local function update_builder_overlay_for_player(player, builder_state)
     y = (settings.top_margin or 12) + (settings.inventory_top_offset or 40)
   }
 
-  goal_label.caption = get_goal_summary(builder_state)
-  status_label.caption = get_activity_summary(builder_state)
+  goal_label.caption = builder_runtime.get_goal_summary(builder_state)
+  status_label.caption = builder_runtime.get_activity_summary(builder_state)
+  local path_lines = builder_state and builder_state.goal_path_lines or {}
+  local blocker_lines = builder_state and builder_state.goal_blocker_lines or {}
+  local maintenance_lines = maintenance_runner.get_recent_action_lines(builder_state or {}, 4)
+  path_label.caption = "Path:\n" .. (#path_lines > 0 and table.concat(path_lines, "\n") or "(none)")
+  blockers_label.caption = "Blockers:\n" .. (#blocker_lines > 0 and table.concat(blocker_lines, "\n") or "(none)")
+  maintenance_label.caption = "Maintenance:\n" .. (#maintenance_lines > 0 and table.concat(maintenance_lines, "\n") or "(none)")
   inventory_title.caption = "Enemy Builder Inventory"
-  inventory_label.caption = table.concat(get_builder_inventory_lines(builder_state), "\n")
+  inventory_label.caption = table.concat(builder_runtime.get_builder_inventory_lines(builder_state), "\n")
 end
 
-local function update_builder_overlays(builder_state, tick, force_update)
+function builder_runtime.update_builder_overlays(builder_state, tick, force_update)
   if not overlay_enabled() then
     for _, player in pairs(game.connected_players) do
       destroy_builder_overlay(player)
@@ -2664,8 +2993,12 @@ local function update_builder_overlays(builder_state, tick, force_update)
     return
   end
 
+  if builder_state then
+    builder_runtime.update_goal_model(builder_state, tick)
+  end
+
   for _, player in pairs(game.connected_players) do
-    update_builder_overlay_for_player(player, builder_state)
+    builder_runtime.update_builder_overlay_for_player(player, builder_state)
   end
 end
 
@@ -2854,7 +3187,7 @@ cleanup_resource_sites = function()
   return kept_sites
 end
 
-local function get_resource_site_counts()
+get_resource_site_counts = function()
   local counts = {}
 
   for _, site in ipairs(cleanup_resource_sites()) do
@@ -3195,6 +3528,35 @@ local function spawn_builder_for_player(player)
 end
 
 local function complete_current_task(builder_state, task, completion_message)
+  if task and task.manual_goal_id and builder_state.manual_goal_request and builder_state.manual_goal_request.id == task.manual_goal_id then
+    local request = builder_state.manual_goal_request
+    local completed_task_state = builder_state.task_state
+    local next_task_index = (request.current_task_index or 1) + 1
+
+    if completed_task_state and completed_task_state.placed_entity and completed_task_state.placed_entity.valid and request.tasks[next_task_index] then
+      local next_task = request.tasks[next_task_index]
+      next_task.manual_anchor_position = clone_position(completed_task_state.placed_entity.position)
+      next_task.manual_anchor_search_radius = next_task.manual_anchor_search_radius or 16
+    end
+
+    builder_state.task_state = nil
+    set_idle(builder_state.entity)
+    builder_runtime.clear_task_retry_state(builder_state, task)
+    builder_runtime.clear_recovery(builder_state)
+
+    if completion_message then
+      debug_log("task " .. task.id .. ": " .. completion_message)
+    end
+
+    if request.tasks[next_task_index] then
+      request.current_task_index = next_task_index
+    else
+      debug_log("manual goal " .. (request.display_name or request.component_name or "request") .. ": complete")
+      builder_state.manual_goal_request = nil
+    end
+    return
+  end
+
   if task and task.no_advance then
     if task.scaling_pattern_name and builder_data.scaling and builder_data.scaling.cycle_pattern_names then
       local cycle_pattern_names = builder_data.scaling.cycle_pattern_names
@@ -3213,6 +3575,8 @@ local function complete_current_task(builder_state, task, completion_message)
     builder_state.scaling_active_task = nil
     builder_state.task_state = nil
     set_idle(builder_state.entity)
+    builder_runtime.clear_task_retry_state(builder_state, task)
+    builder_runtime.clear_recovery(builder_state)
 
     if completion_message then
       debug_log("task " .. task.id .. ": " .. completion_message)
@@ -3223,6 +3587,8 @@ local function complete_current_task(builder_state, task, completion_message)
   builder_state.task_index = builder_state.task_index + 1
   builder_state.task_state = nil
   set_idle(builder_state.entity)
+  builder_runtime.clear_task_retry_state(builder_state, task)
+  builder_runtime.clear_recovery(builder_state)
 
   if completion_message then
     debug_log("task " .. task.id .. ": " .. completion_message)
@@ -3626,8 +3992,9 @@ end
 
 local function start_place_miner_task(builder_state, task, tick)
   local entity = builder_state.entity
-  debug_log("task " .. task.id .. ": scanning for " .. task.resource_name .. " from " .. format_position(entity.position))
-  local site, search_summary = find_resource_site(entity.surface, entity.force, entity.position, task)
+  local search_origin = task.manual_search_origin or entity.position
+  debug_log("task " .. task.id .. ": scanning for " .. task.resource_name .. " from " .. format_position(search_origin))
+  local site, search_summary = find_resource_site(entity.surface, entity.force, search_origin, task)
 
   if not site then
     builder_state.task_state = {
@@ -3668,6 +4035,7 @@ local function start_place_miner_task(builder_state, task, tick)
     last_position = clone_position(entity.position),
     last_progress_tick = tick
   }
+  builder_runtime.clear_task_retry_state(builder_state, task)
   debug_log(
     "task " .. task.id .. ": found build site for " .. task.resource_name .. " at " ..
     format_position((site.selected_from_patch_center and site.anchor_position) or resource.position) ..
@@ -3684,6 +4052,7 @@ end
 
 local function start_gather_world_items_task(builder_state, task, tick)
   local entity = builder_state.entity
+  local search_origin = task.manual_search_origin or entity.position
   local inventory_target, current_count = get_missing_inventory_target(entity, task.inventory_targets)
 
   if not inventory_target then
@@ -3700,7 +4069,7 @@ local function start_gather_world_items_task(builder_state, task, tick)
     current_count .. "/" .. inventory_target.count
   )
 
-  local gather_site = find_gather_site(entity.surface, entity.position, task, inventory_target.name)
+  local gather_site = find_gather_site(entity.surface, search_origin, task, inventory_target.name)
   if not gather_site then
     builder_state.task_state = {
       phase = "waiting-for-source",
@@ -3730,6 +4099,7 @@ local function start_gather_world_items_task(builder_state, task, tick)
     last_position = clone_position(entity.position),
     last_progress_tick = tick
   }
+  builder_runtime.clear_task_retry_state(builder_state, task)
 
   debug_log(
     "task " .. task.id .. ": moving to " .. gather_site.source.id .. " at " ..
@@ -3741,9 +4111,10 @@ end
 
 local function start_move_to_resource_task(builder_state, task, tick)
   local entity = builder_state.entity
-  debug_log("task " .. task.id .. ": scanning for " .. task.resource_name .. " from " .. format_position(entity.position))
+  local search_origin = task.manual_search_origin or entity.position
+  debug_log("task " .. task.id .. ": scanning for " .. task.resource_name .. " from " .. format_position(search_origin))
 
-  local resource = find_nearest_resource(entity.surface, entity.position, task)
+  local resource = find_nearest_resource(entity.surface, search_origin, task)
   if not resource then
     builder_state.task_state = {
       phase = "waiting-for-resource",
@@ -3765,6 +4136,7 @@ local function start_move_to_resource_task(builder_state, task, tick)
     last_position = clone_position(entity.position),
     last_progress_tick = tick
   }
+  builder_runtime.clear_task_retry_state(builder_state, task)
   debug_log(
     "task " .. task.id .. ": moving to " .. task.resource_name ..
     " at " .. format_position(resource.position)
@@ -3773,6 +4145,27 @@ end
 
 local function start_place_machine_near_site_task(builder_state, task, tick)
   local entity = builder_state.entity
+
+  if task.manual_target_position then
+    builder_state.task_state = {
+      phase = "moving",
+      build_position = clone_position(task.manual_target_position),
+      approach_position = create_task_approach_position(task, task.manual_target_position),
+      build_direction = task.manual_direction,
+      anchor_position = clone_position(task.manual_target_position),
+      anchor_pattern_name = task.manual_component_name or task.scaling_pattern_name or task.pattern_name,
+      last_position = clone_position(entity.position),
+      last_progress_tick = tick
+    }
+    builder_runtime.clear_task_retry_state(builder_state, task)
+
+    debug_log(
+      "task " .. task.id .. ": using manual build position for " .. task.entity_name ..
+      " at " .. format_position(task.manual_target_position)
+    )
+    return
+  end
+
   debug_log(
     "task " .. task.id .. ": scanning for " .. task.entity_name ..
     " placement near " .. table.concat(task.anchor_pattern_names or {}, ", ") ..
@@ -3808,6 +4201,7 @@ local function start_place_machine_near_site_task(builder_state, task, tick)
     last_position = clone_position(entity.position),
     last_progress_tick = tick
   }
+  builder_runtime.clear_task_retry_state(builder_state, task)
 
   debug_log(
     "task " .. task.id .. ": found build site for " .. task.entity_name ..
@@ -3863,6 +4257,7 @@ local function start_place_layout_near_machine_task(builder_state, task, tick)
     last_position = clone_position(entity.position),
     last_progress_tick = tick
   }
+  builder_runtime.clear_task_retry_state(builder_state, task)
 
   debug_log(
     "task " .. task.id .. ": found layout near " .. site.anchor_entity.name ..
@@ -3902,7 +4297,22 @@ local function start_task(builder_state, task, tick)
 end
 
 local function refresh_task(builder_state, task, tick)
+  local retry_key = builder_runtime.get_task_retry_key(task)
+  local retry_state = builder_runtime.get_retry_state(builder_state)
+  retry_state.counts[retry_key] = (retry_state.counts[retry_key] or 0) + 1
+
+  if retry_state.counts[retry_key] > builder_runtime.get_retry_limit() then
+    builder_runtime.handle_task_retry_exhausted(
+      builder_state,
+      task,
+      tick,
+      "retry limit reached for " .. retry_key
+    )
+    return
+  end
+
   builder_state.task_state = nil
+  builder_runtime.record_recovery(builder_state, "retrying " .. (task and (task.id or task.type) or "task"))
   debug_log("task " .. task.id .. ": retrying from " .. format_position(builder_state.entity.position))
   start_task(builder_state, task, tick)
 end
@@ -3915,6 +4325,7 @@ local function move_builder_to_position(builder_state, task, tick, destination_p
   if square_distance(entity.position, destination_position) <= (task.arrival_distance * task.arrival_distance) then
     set_idle(entity)
     task_state.phase = next_phase
+    builder_runtime.clear_recovery(builder_state)
     debug_log("task " .. task.id .. ": reached target position " .. format_position(destination_position))
     return
   end
@@ -4746,6 +5157,7 @@ local function get_scaling_pattern_name(builder_state)
     return nil
   end
 
+  builder_runtime.prune_retry_cooldowns(builder_state, game and game.tick or 0)
   local site_counts = get_resource_site_counts()
   local pattern_unlocks = scaling.pattern_unlocks or {}
   local pattern_index = builder_state.scaling_pattern_index or 1
@@ -4758,7 +5170,7 @@ local function get_scaling_pattern_name(builder_state)
     local candidate_index = ((pattern_index - 1 + offset) % #scaling.cycle_pattern_names) + 1
     local pattern_name = scaling.cycle_pattern_names[candidate_index]
     local unlock = pattern_unlocks[pattern_name]
-    local unlocked = true
+    local unlocked = not builder_runtime.is_goal_retry_blocked(builder_state, "pattern:" .. pattern_name, game and game.tick or 0)
 
     if unlock and unlock.minimum_site_counts then
       for dependency_pattern_name, dependency_count in pairs(unlock.minimum_site_counts) do
@@ -4889,7 +5301,10 @@ get_pending_scaling_milestone = function(builder_state)
   ensure_builder_state_fields(builder_state)
 
   for _, milestone in ipairs((builder_data.scaling and builder_data.scaling.production_milestones) or {}) do
-    if not builder_state.completed_scaling_milestones[milestone.name] then
+    if
+      not builder_runtime.is_goal_retry_blocked(builder_state, "milestone:" .. milestone.name, game and game.tick or 0) and
+      not builder_state.completed_scaling_milestones[milestone.name]
+    then
       return milestone
     end
   end
@@ -4977,6 +5392,8 @@ local function start_scaling_wait(builder_state, tick, wait_reason, message)
     wait_reason = wait_reason,
     next_attempt_tick = tick + idle_retry_ticks
   }
+
+  builder_runtime.record_recovery(builder_state, message or ("scaling wait: " .. tostring(wait_reason)))
 
   if message then
     debug_log(message .. "; retry at tick " .. builder_state.task_state.next_attempt_tick)
@@ -5141,14 +5558,16 @@ local function plan_repeatable_scaling_milestones(builder_state, tick)
 
   for _, milestone in ipairs((builder_data.scaling and builder_data.scaling.production_milestones) or {}) do
     if milestone.repeat_when_eligible and builder_state.completed_scaling_milestones[milestone.name] then
-      local task = create_scaling_repeatable_milestone_task(milestone)
-      if task and repeatable_scaling_task_has_site(builder_state, task) then
-        if plan_scaling_required_items(builder_state, milestone.required_items, tick) then
+      if not builder_runtime.is_goal_retry_blocked(builder_state, "repeatable-milestone:" .. milestone.name, tick) then
+        local task = create_scaling_repeatable_milestone_task(milestone)
+        if task and repeatable_scaling_task_has_site(builder_state, task) then
+          if plan_scaling_required_items(builder_state, milestone.required_items, tick) then
+            return true
+          end
+
+          start_scaling_subtask(builder_state, task, tick)
           return true
         end
-
-        start_scaling_subtask(builder_state, task, tick)
-        return true
       end
     end
   end
@@ -5474,10 +5893,16 @@ end
 local function advance_builder(builder_state, tick)
   configure_builder_entity(builder_state.entity)
   process_production_sites(tick)
-  collect_nearby_container_items(builder_state, tick)
-  collect_nearby_machine_output_items(builder_state, tick)
-  refuel_nearby_machines(builder_state, tick)
-  supply_nearby_machine_inputs(builder_state, tick)
+  maintenance_runner.run(
+    builder_state,
+    tick,
+    {
+      {name = "collect-containers", run = collect_nearby_container_items},
+      {name = "collect-machine-output", run = collect_nearby_machine_output_items},
+      {name = "refuel-machines", run = refuel_nearby_machines},
+      {name = "supply-machine-inputs", run = supply_nearby_machine_inputs}
+    }
+  )
 
   local task = get_active_task(builder_state)
   if not task then
@@ -5514,7 +5939,10 @@ local function on_init()
     debug_log("on_init: no player character available yet")
   end
 
-  update_builder_overlays(get_builder_state(), game.tick, true)
+  if get_builder_state() then
+    builder_runtime.update_goal_model(get_builder_state(), game.tick)
+  end
+  builder_runtime.update_builder_overlays(get_builder_state(), game.tick, true)
   update_builder_map_markers(get_builder_state(), game.tick, true)
 end
 
@@ -5539,7 +5967,10 @@ local function on_configuration_changed()
     discover_resource_sites(get_builder_state())
   end
 
-  update_builder_overlays(get_builder_state(), game.tick, true)
+  if get_builder_state() then
+    builder_runtime.update_goal_model(get_builder_state(), game.tick)
+  end
+  builder_runtime.update_builder_overlays(get_builder_state(), game.tick, true)
   update_builder_map_markers(get_builder_state(), game.tick, true)
 end
 
@@ -5548,7 +5979,10 @@ local function on_player_created(event)
   if player then
     debug_log("on_player_created: player " .. player.name)
     spawn_builder_for_player(player)
-    update_builder_overlay_for_player(player, get_builder_state())
+    if get_builder_state() then
+      builder_runtime.update_goal_model(get_builder_state(), game.tick)
+    end
+    builder_runtime.update_builder_overlay_for_player(player, get_builder_state())
     update_builder_map_markers(get_builder_state(), game.tick, true)
   end
 end
@@ -5564,9 +5998,10 @@ local function on_tick(event)
 
   if builder_state then
     advance_builder(builder_state, event.tick)
+    builder_runtime.update_goal_model(builder_state, event.tick)
   end
 
-  update_builder_overlays(builder_state, event.tick, false)
+  builder_runtime.update_builder_overlays(builder_state, event.tick, false)
   update_builder_map_markers(builder_state, event.tick, false)
 end
 
@@ -5574,17 +6009,37 @@ function builder_runtime.register_events()
   if commands.commands["enemy-builder-status"] then
     commands.remove_command("enemy-builder-status")
   end
-  commands.add_command("enemy-builder-status", "Show the current Enemy Builder state.", debug_status_command)
+  commands.add_command("enemy-builder-status", "Show the current Enemy Builder state.", builder_runtime.debug_status_command)
+
+  if commands.commands["enemy-builder-goals"] then
+    commands.remove_command("enemy-builder-goals")
+  end
+  commands.add_command("enemy-builder-goals", "Show the current Enemy Builder goal tree.", builder_runtime.goals_command)
 
   if commands.commands["enemy-builder-debug"] then
     commands.remove_command("enemy-builder-debug")
   end
-  commands.add_command("enemy-builder-debug", "Toggle Enemy Builder debug logging. Use on or off.", debug_toggle_command)
+  commands.add_command("enemy-builder-debug", "Toggle Enemy Builder debug logging. Use on or off.", builder_runtime.debug_toggle_command)
 
   if commands.commands["enemy-builder-retask"] then
     commands.remove_command("enemy-builder-retask")
   end
-  commands.add_command("enemy-builder-retask", "Clear the current Enemy Builder task state and retry.", debug_retask_command)
+  commands.add_command("enemy-builder-retask", "Clear the current Enemy Builder task state and retry.", builder_runtime.debug_retask_command)
+
+  if commands.commands["enemy-builder-plan"] then
+    commands.remove_command("enemy-builder-plan")
+  end
+  commands.add_command("enemy-builder-plan", "Preview a manual Enemy Builder component plan.", builder_runtime.manual_plan_command)
+
+  if commands.commands["enemy-builder-build"] then
+    commands.remove_command("enemy-builder-build")
+  end
+  commands.add_command("enemy-builder-build", "Queue a manual Enemy Builder component build.", builder_runtime.manual_build_command)
+
+  if commands.commands["enemy-builder-cancel-manual"] then
+    commands.remove_command("enemy-builder-cancel-manual")
+  end
+  commands.add_command("enemy-builder-cancel-manual", "Cancel the active manual Enemy Builder goal.", builder_runtime.cancel_manual_command)
 
   script.on_init(on_init)
   script.on_configuration_changed(on_configuration_changed)

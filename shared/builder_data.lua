@@ -390,6 +390,10 @@ local builder_data = {
   build = {
     post_place_pause_ticks = 90
   },
+  recovery = {
+    max_task_retries = 6,
+    blocked_goal_cooldown_ticks = 15 * 60
+  },
   movement = {
     approach_randomness = 0.6
   },
