@@ -343,6 +343,10 @@ local function ensure_builder_state_fields(builder_state)
     }
   end
 
+  if builder_state.blocked_layout_anchors == nil then
+    builder_state.blocked_layout_anchors = {}
+  end
+
   return builder_state
 end
 
@@ -388,13 +392,17 @@ local function enable_configured_force_recipes(force)
     force.research_all_technologies()
   end
 
+  force.reset_technology_effects()
+
+  for _, recipe_name in ipairs((builder_data.force and builder_data.force.enabled_recipes) or {}) do
+    enable_force_recipe_if_available(force, recipe_name)
+  end
+
   for _, milestone in ipairs((builder_data.scaling and builder_data.scaling.production_milestones) or {}) do
     if milestone.task and milestone.task.recipe_name then
       enable_force_recipe_if_available(force, milestone.task.recipe_name)
     end
   end
-
-  force.reset_technology_effects()
 end
 
 local function ensure_builder_force()
@@ -577,6 +585,43 @@ function builder_runtime.clear_task_retry_state(builder_state, task)
   retry_state.counts[builder_runtime.get_task_retry_key(task)] = nil
 end
 
+local function get_layout_anchor_block_group(task)
+  if task and task.require_missing_registered_site and task.require_missing_registered_site.site_type then
+    return task.require_missing_registered_site.site_type
+  end
+
+  return task and (task.id or task.type) or "layout"
+end
+
+local function get_layout_anchor_block_key(anchor_entity)
+  if not (anchor_entity and anchor_entity.valid) then
+    return nil
+  end
+
+  if anchor_entity.unit_number then
+    return tostring(anchor_entity.unit_number)
+  end
+
+  return string.format("%.2f:%.2f:%s", anchor_entity.position.x, anchor_entity.position.y, anchor_entity.name)
+end
+
+local function mark_layout_anchor_blocked(builder_state, task, anchor_entity)
+  ensure_builder_state_fields(builder_state)
+
+  local block_group = get_layout_anchor_block_group(task)
+  local block_key = get_layout_anchor_block_key(anchor_entity)
+  if not block_key then
+    return false
+  end
+
+  if builder_state.blocked_layout_anchors[block_group] == nil then
+    builder_state.blocked_layout_anchors[block_group] = {}
+  end
+
+  builder_state.blocked_layout_anchors[block_group][block_key] = true
+  return true
+end
+
 function builder_runtime.enter_task_retry_cooldown(builder_state, task, tick, reason)
   if not (builder_state and task) then
     return
@@ -597,6 +642,32 @@ end
 function builder_runtime.handle_task_retry_exhausted(builder_state, task, tick, reason)
   local task_name = task and (task.id or task.type) or "task"
   local message = (reason or ("retry limit reached for " .. task_name))
+
+  if task and task.type == "place-layout-near-machine" and task.completed_scaling_milestone_name == "firearm-magazine-defense" then
+    local failed_anchor_entity = builder_state and builder_state.task_state and builder_state.task_state.failed_layout_anchor_entity or nil
+    if failed_anchor_entity and failed_anchor_entity.valid then
+      local blocked = mark_layout_anchor_blocked(builder_state, task, failed_anchor_entity)
+      builder_state.completed_scaling_milestones["firearm-magazine-assembler"] = nil
+      builder_state.scaling_active_task = nil
+      builder_state.task_state = nil
+      if builder_state.goal_engine then
+        builder_state.goal_engine.scaling_display_task = nil
+      end
+      set_idle(builder_state.entity)
+      builder_runtime.record_recovery(
+        builder_state,
+        "abandoned firearm magazine defense at " .. format_position(failed_anchor_entity.position) ..
+          "; assembler site blocked for defense and assembler milestone reopened"
+      )
+      debug_log(
+        "task " .. task_name .. ": " .. message ..
+        "; " .. (blocked and "blocked" or "could not block") ..
+        " assembler at " .. format_position(failed_anchor_entity.position) ..
+        " and reopened firearm-magazine-assembler milestone"
+      )
+      return
+    end
+  end
 
   if task and task.manual_goal_id and builder_state.manual_goal_request and builder_state.manual_goal_request.id == task.manual_goal_id then
     builder_state.manual_goal_request = nil
@@ -905,6 +976,120 @@ local function find_matching_targets(surface, origin, radius, source)
   end
 
   return targets
+end
+
+local function get_basic_world_item_source(source_id)
+  local basic_materials = builder_data.world_item_sources and builder_data.world_item_sources.basic_materials or nil
+  local sources = basic_materials and basic_materials.sources or nil
+  if not sources then
+    return nil
+  end
+
+  for _, source in ipairs(sources) do
+    if source.id == source_id then
+      return source
+    end
+  end
+
+  return nil
+end
+
+local function build_entity_placement_area(entity_name, position)
+  local prototype = prototypes and prototypes.entity and prototypes.entity[entity_name] or nil
+  local collision_box = prototype and (prototype.collision_box or prototype.selection_box) or nil
+
+  if not collision_box then
+    return {
+      left_top = {x = position.x - 0.5, y = position.y - 0.5},
+      right_bottom = {x = position.x + 0.5, y = position.y + 0.5}
+    }
+  end
+
+  return {
+    left_top = {
+      x = position.x + collision_box.left_top.x,
+      y = position.y + collision_box.left_top.y
+    },
+    right_bottom = {
+      x = position.x + collision_box.right_bottom.x,
+      y = position.y + collision_box.right_bottom.y
+    }
+  }
+end
+
+local function expand_area(area, padding)
+  return {
+    left_top = {
+      x = area.left_top.x - padding,
+      y = area.left_top.y - padding
+    },
+    right_bottom = {
+      x = area.right_bottom.x + padding,
+      y = area.right_bottom.y + padding
+    }
+  }
+end
+
+local function find_clearable_build_obstacle(surface, entity_name, position)
+  if not (surface and entity_name and position) then
+    return nil
+  end
+
+  local search_area = expand_area(build_entity_placement_area(entity_name, position), 0.05)
+  local candidates = {}
+  local tree_source = get_basic_world_item_source("trees")
+  local rock_source = get_basic_world_item_source("rocks")
+  local default_mining_duration =
+    builder_data.world_item_sources and
+    builder_data.world_item_sources.basic_materials and
+    builder_data.world_item_sources.basic_materials.mining_duration_ticks or 45
+
+  for _, obstacle_entity in ipairs(surface.find_entities_filtered{area = search_area, type = "tree"}) do
+    if obstacle_entity.valid then
+      candidates[#candidates + 1] = {
+        source_id = tree_source and tree_source.id or "trees",
+        display_name = "tree",
+        target_kind = "entity",
+        target_name = obstacle_entity.name,
+        target_position = clone_position(obstacle_entity.position),
+        entity = obstacle_entity,
+        yields = deep_copy(tree_source and tree_source.yields or {}),
+        mining_duration_ticks = (tree_source and tree_source.mining_duration_ticks) or default_mining_duration
+      }
+    end
+  end
+
+  local decorative_names = rock_source and get_valid_source_names(rock_source, "decorative_names", "decorative") or nil
+  if decorative_names and #decorative_names > 0 then
+    for _, decorative in ipairs(surface.find_decoratives_filtered{
+      area = {
+        {search_area.left_top.x, search_area.left_top.y},
+        {search_area.right_bottom.x, search_area.right_bottom.y}
+      },
+      name = decorative_names
+    }) do
+      candidates[#candidates + 1] = {
+        source_id = rock_source and rock_source.id or "rocks",
+        display_name = "rock",
+        target_kind = "decorative",
+        target_name = decorative.decorative.name,
+        target_position = tile_position_to_world_center(decorative.position),
+        decorative_position = clone_position(decorative.position),
+        yields = deep_copy(rock_source and rock_source.yields or {}),
+        mining_duration_ticks = (rock_source and rock_source.mining_duration_ticks) or default_mining_duration
+      }
+    end
+  end
+
+  if #candidates == 0 then
+    return nil
+  end
+
+  table.sort(candidates, function(left, right)
+    return square_distance(position, left.target_position) < square_distance(position, right.target_position)
+  end)
+
+  return candidates[1]
 end
 
 local function decorative_target_exists(surface, decorative_position, decorative_name)
@@ -1729,6 +1914,109 @@ local function setup_firearm_outpost_test_case()
   }
 end
 
+local function setup_firearm_outpost_anchored_test_case()
+  local surface = game.surfaces["nauvis"] or game.surfaces[1]
+  if not surface then
+    error("enemy-builder test: nauvis surface is unavailable")
+  end
+
+  local anchor_position = {x = 32, y = 0}
+  local builder_position = {x = 0, y = 0}
+  local area = make_test_area(anchor_position, 56, 40)
+
+  surface.always_day = true
+  clear_test_area(surface, area)
+  local anchor_site = place_test_iron_smelting_anchor(surface, "north", anchor_position)
+
+  return setup_manual_test{
+    case_name = "firearm_outpost_anchor_clearance",
+    component_name = "firearm_magazine_site",
+    builder_position = builder_position,
+    surface_name = surface.name,
+    suppress_player_autospawn = true,
+    forbid_direct_turret_ammo_transfer = true,
+    inventory = {
+      {name = "coal", count = 20},
+      {name = "copper-plate", count = 250},
+      {name = "iron-plate", count = 400},
+      {name = "steel-plate", count = 30},
+      {name = "wood", count = 20}
+    },
+    assertion = {
+      case_name = "firearm_outpost_anchor_clearance",
+      surface_name = surface.name,
+      area = area,
+      deadline_offset_ticks = 5400,
+      primary_entity_name = builder_data.prototypes.firearm_magazine_assembler_name,
+      required_recipe_name = "firearm-magazine",
+      turret_ammo_item_name = "firearm-magazine",
+      minimum_turret_ammo_count = 1,
+      minimum_primary_distance_from_position = {
+        position = anchor_site.miner_position,
+        distance = 10
+      },
+      expected_counts = {
+        [builder_data.prototypes.firearm_magazine_assembler_name] = 1,
+        ["gun-turret"] = 2,
+        ["burner-inserter"] = 2,
+        ["small-electric-pole"] = 4,
+        ["solar-panel"] = 4
+      }
+    }
+  }
+end
+
+local function setup_tree_blocked_assembler_test_case()
+  local surface = game.surfaces["nauvis"] or game.surfaces[1]
+  if not surface then
+    error("enemy-builder test: nauvis surface is unavailable")
+  end
+
+  local target_position = {x = 32, y = 0}
+  local builder_position = {x = 0, y = 0}
+  local area = make_test_area(target_position, 12, 12)
+
+  surface.always_day = true
+  clear_test_area(surface, area)
+
+  local tree = surface.create_entity{
+    name = "tree-08",
+    position = {x = target_position.x + 0.5, y = target_position.y + 0.5}
+  }
+
+  if not (tree and tree.valid) then
+    error("enemy-builder test: failed to place blocking tree at manual build target")
+  end
+
+  return setup_manual_test{
+    case_name = "tree_blocked_machine_placement",
+    component_name = "firearm-magazine-assembler",
+    builder_position = builder_position,
+    target_position = target_position,
+    surface_name = surface.name,
+    suppress_player_autospawn = true,
+    inventory = {
+      {name = "assembling-machine-1", count = 1},
+      {name = "iron-plate", count = 40}
+    },
+    assertion = {
+      case_name = "tree_blocked_machine_placement",
+      surface_name = surface.name,
+      area = area,
+      deadline_offset_ticks = 1800,
+      skip_output_assertion = true,
+      primary_entity_name = builder_data.prototypes.firearm_magazine_assembler_name,
+      required_recipe_name = "firearm-magazine",
+      expected_counts = {
+        [builder_data.prototypes.firearm_magazine_assembler_name] = 1
+      },
+      maximum_counts = {
+        ["tree-08"] = 0
+      }
+    }
+  }
+end
+
 local function setup_steel_smelting_test_case(layout_orientation)
   local surface = game.surfaces["nauvis"] or game.surfaces[1]
   if not surface then
@@ -2007,10 +2295,17 @@ local function format_test_failure_summary(surface, force, assertion)
       entity_name .. "=" .. count_test_entities(surface, force, area, entity_name) .. "/" .. expected_count
   end
 
+  for entity_name, maximum_count in pairs(assertion.maximum_counts or {}) do
+    parts[#parts + 1] =
+      entity_name .. "<=" .. maximum_count .. " actual=" .. count_test_entities(surface, force, area, entity_name)
+  end
+
   if assertion.output_item_name and assertion.output_entity_names then
     parts[#parts + 1] =
       "output-" .. assertion.output_item_name .. "=" ..
       get_test_output_item_count(surface, force, area, assertion.output_entity_names, assertion.output_item_name)
+  elseif assertion.skip_output_assertion then
+    parts[#parts + 1] = "output-check=skipped"
   else
     local ammo_item_name = assertion.turret_ammo_item_name or "firearm-magazine"
     parts[#parts + 1] = "turret-ammo=" .. get_test_turret_ammo_count(surface, force, area, ammo_item_name)
@@ -2025,6 +2320,22 @@ local function format_test_failure_summary(surface, force, assertion)
     else
       parts[#parts + 1] = "assembler=missing"
     end
+  end
+
+  if assertion.minimum_primary_distance_from_position then
+    local assembler_name = assertion.primary_entity_name or builder_data.prototypes.firearm_magazine_assembler_name
+    local assembler = get_primary_test_assembler(surface, force, area, assembler_name)
+    local minimum_distance = assertion.minimum_primary_distance_from_position.distance or 0
+    local actual_distance = -1
+
+    if assembler and assembler.valid then
+      actual_distance = math.sqrt(square_distance(
+        assembler.position,
+        assertion.minimum_primary_distance_from_position.position
+      ))
+    end
+
+    parts[#parts + 1] = string.format("primary-distance=%.2f/%.2f", actual_distance, minimum_distance)
   end
 
   if assertion.require_valid_steel_chain_geometry then
@@ -2043,6 +2354,12 @@ local function test_assertion_passed(surface, force, assertion)
 
   for entity_name, expected_count in pairs(assertion.expected_counts or {}) do
     if count_test_entities(surface, force, area, entity_name) < expected_count then
+      return false
+    end
+  end
+
+  for entity_name, maximum_count in pairs(assertion.maximum_counts or {}) do
+    if count_test_entities(surface, force, area, entity_name) > maximum_count then
       return false
     end
   end
@@ -2066,6 +2383,19 @@ local function test_assertion_passed(surface, force, assertion)
     end
   end
 
+  if assertion.minimum_primary_distance_from_position then
+    local assembler_name = assertion.primary_entity_name or builder_data.prototypes.firearm_magazine_assembler_name
+    local assembler = get_primary_test_assembler(surface, force, area, assembler_name)
+    if not (assembler and assembler.valid) then
+      return false
+    end
+
+    local minimum_distance = assertion.minimum_primary_distance_from_position.distance or 0
+    if square_distance(assembler.position, assertion.minimum_primary_distance_from_position.position) < (minimum_distance * minimum_distance) then
+      return false
+    end
+  end
+
   if assertion.output_item_name and assertion.output_entity_names then
     return get_test_output_item_count(
       surface,
@@ -2074,6 +2404,10 @@ local function test_assertion_passed(surface, force, assertion)
       assertion.output_entity_names,
       assertion.output_item_name
     ) >= (assertion.minimum_output_item_count or 1)
+  end
+
+  if assertion.skip_output_assertion then
+    return true
   end
 
   return get_test_turret_ammo_count(
@@ -2131,6 +2465,8 @@ end
 local test_remote_interface = {
   setup_manual_test = setup_manual_test,
   setup_firearm_outpost_test_case = setup_firearm_outpost_test_case,
+  setup_firearm_outpost_anchored_test_case = setup_firearm_outpost_anchored_test_case,
+  setup_tree_blocked_assembler_test_case = setup_tree_blocked_assembler_test_case,
   setup_steel_smelting_test_case = setup_steel_smelting_test_case,
   finish_manual_test = finish_manual_test,
   clear_test_state = clear_test_state
@@ -2222,6 +2558,7 @@ local world_model_context = {
   format_position = format_position,
   get_container_inventory = get_container_inventory,
   get_task_anchor_entity_names = get_task_anchor_entity_names,
+  next_random_index = next_random_index,
   point_in_area = point_in_area,
   rotate_direction_name = rotate_direction_name,
   rotate_offset = rotate_offset,
@@ -2328,6 +2665,7 @@ local task_executor_context = {
   create_task_approach_position = create_task_approach_position,
   debug_log = debug_log,
   decorative_target_exists = decorative_target_exists,
+  find_clearable_build_obstacle = find_clearable_build_obstacle,
   destroy_entity_if_valid = destroy_entity_if_valid,
   direction_from_delta = direction_from_delta,
   find_gather_site = find_gather_site,

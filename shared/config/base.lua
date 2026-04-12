@@ -3,7 +3,10 @@ local constants = require("shared.config.constants")
 return {
   force_name = "enemy-builder",
   force = {
-    unlock_all_technologies = true
+    unlock_all_technologies = false,
+    enabled_recipes = {
+      "steel-plate"
+    }
   },
   prototypes = {
     firearm_magazine_assembler_name = constants.firearm_magazine_assembler_name
