@@ -699,6 +699,25 @@ local function get_patch_for_site(site, task, ctx)
   return best_patch
 end
 
+local function get_mining_area_patch_margin(mining_area, patch)
+  local bounds = patch and patch.bounds or nil
+  if not (mining_area and bounds and bounds.left_top and bounds.right_bottom) then
+    return 0
+  end
+
+  local patch_left = bounds.left_top.x - 0.5
+  local patch_top = bounds.left_top.y - 0.5
+  local patch_right = bounds.right_bottom.x + 0.5
+  local patch_bottom = bounds.right_bottom.y + 0.5
+
+  return math.min(
+    mining_area.left_top.x - patch_left,
+    patch_right - mining_area.right_bottom.x,
+    mining_area.left_top.y - patch_top,
+    patch_bottom - mining_area.right_bottom.y
+  )
+end
+
 local function get_direction_name_from_delta(dx, dy)
   if math.abs(dx) >= math.abs(dy) then
     if dx < 0 then
@@ -1144,6 +1163,8 @@ local function find_miner_placement(surface, force, task, resource_position, pat
     mining_area_hits = 0,
     valid_candidates = 0,
     best_resource_coverage = 0,
+    best_patch_margin = 0,
+    selected_patch_margin = 0,
     selected_candidate_pool_size = 0,
     output_container_hits = 0,
     downstream_positions_checked = 0,
@@ -1187,6 +1208,7 @@ local function find_miner_placement(surface, force, task, resource_position, pat
             name = task.resource_name
           }
           local resource_coverage = #covered_resources
+          local patch_margin = get_mining_area_patch_margin(test_miner.mining_area, patch)
           local mines_resource = resource_coverage > 0
           local downstream_machine_position = nil
           local output_container_position = nil
@@ -1201,6 +1223,9 @@ local function find_miner_placement(surface, force, task, resource_position, pat
             stats.mining_area_hits = stats.mining_area_hits + 1
             if resource_coverage > stats.best_resource_coverage then
               stats.best_resource_coverage = resource_coverage
+            end
+            if patch_margin > stats.best_patch_margin then
+              stats.best_patch_margin = patch_margin
             end
 
             if task.downstream_machine then
@@ -1258,6 +1283,7 @@ local function find_miner_placement(surface, force, task, resource_position, pat
               belt_hub_key = belt_hub_key,
               belt_terminal_position = belt_terminal_position and ctx.clone_position(belt_terminal_position) or nil,
               resource_coverage = resource_coverage,
+              patch_margin = patch_margin,
               search_weight = position.weight,
               direction_name = direction_name
             }
@@ -1272,6 +1298,10 @@ local function find_miner_placement(surface, force, task, resource_position, pat
     valid_candidates,
     site_selection.random_candidate_pool or 1,
     function(left, right)
+      if site_selection.prefer_patch_margin and left.patch_margin ~= right.patch_margin then
+        return left.patch_margin > right.patch_margin
+      end
+
       if site_selection.prefer_middle ~= false and left.resource_coverage ~= right.resource_coverage then
         return left.resource_coverage > right.resource_coverage
       end
@@ -1283,16 +1313,21 @@ local function find_miner_placement(surface, force, task, resource_position, pat
       return left.direction_name < right.direction_name
     end,
     function(candidate, best_candidate)
-      if site_selection.prefer_middle == false then
-        return true
+      if site_selection.prefer_patch_margin and candidate.patch_margin ~= best_candidate.patch_margin then
+        return false
       end
 
-      return candidate.resource_coverage >= best_candidate.resource_coverage
+      if site_selection.prefer_middle ~= false and candidate.resource_coverage ~= best_candidate.resource_coverage then
+        return false
+      end
+
+      return true
     end
   )
 
   if selected_candidate then
     stats.selected_candidate_pool_size = pool_size
+    stats.selected_patch_margin = selected_candidate.patch_margin
     return selected_candidate.build_position,
       selected_candidate.build_direction,
       selected_candidate.output_container_position,
@@ -1466,6 +1501,7 @@ function queries.find_resource_site(surface, force, origin, task, ctx)
             belt_hub_key = belt_hub_key,
             belt_terminal_position = belt_terminal_position,
             resource_coverage = placement_stats.best_resource_coverage,
+            patch_margin = placement_stats.selected_patch_margin or placement_stats.best_patch_margin or 0,
             resource_distance = ctx.square_distance(origin, build_position)
           }
         end
@@ -1480,6 +1516,10 @@ function queries.find_resource_site(surface, force, origin, task, ctx)
       site_candidates,
       site_selection.random_candidate_pool or 1,
       function(left, right)
+        if site_selection.prefer_patch_margin and left.patch_margin ~= right.patch_margin then
+          return left.patch_margin > right.patch_margin
+        end
+
         if site_selection.prefer_middle ~= false and left.resource_coverage ~= right.resource_coverage then
           return left.resource_coverage > right.resource_coverage
         end
@@ -1491,11 +1531,15 @@ function queries.find_resource_site(surface, force, origin, task, ctx)
         return ctx.square_distance(origin, left.resource.position) < ctx.square_distance(origin, right.resource.position)
       end,
       function(candidate, best_candidate)
-        if site_selection.prefer_middle == false then
-          return true
+        if site_selection.prefer_patch_margin and candidate.patch_margin ~= best_candidate.patch_margin then
+        return false
+      end
+
+        if site_selection.prefer_middle ~= false and candidate.resource_coverage ~= best_candidate.resource_coverage then
+          return false
         end
 
-        return candidate.resource_coverage >= best_candidate.resource_coverage
+        return true
       end
     )
 

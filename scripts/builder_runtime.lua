@@ -2280,6 +2280,8 @@ local function setup_iron_plate_belt_export_test_case()
       surface_name = surface.name,
       area = area,
       deadline_offset_ticks = 7200,
+      resource_name = "iron-ore",
+      minimum_miner_patch_margin = 0.5,
       expected_counts = {
         ["burner-inserter"] = 1,
         ["transport-belt"] = 1,
@@ -2440,6 +2442,55 @@ local function get_test_belt_item_count(surface, force, area, item_name)
   end
 
   return total_count
+end
+
+local function get_test_min_miner_patch_margin(surface, force, area, resource_name)
+  local resources = surface.find_entities_filtered{
+    area = area,
+    type = "resource",
+    name = resource_name
+  }
+
+  if #resources == 0 then
+    return nil
+  end
+
+  local min_x = nil
+  local max_x = nil
+  local min_y = nil
+  local max_y = nil
+
+  for _, resource in ipairs(resources) do
+    min_x = min_x and math.min(min_x, resource.position.x) or resource.position.x
+    max_x = max_x and math.max(max_x, resource.position.x) or resource.position.x
+    min_y = min_y and math.min(min_y, resource.position.y) or resource.position.y
+    max_y = max_y and math.max(max_y, resource.position.y) or resource.position.y
+  end
+
+  local patch_left = min_x - 0.5
+  local patch_top = min_y - 0.5
+  local patch_right = max_x + 0.5
+  local patch_bottom = max_y + 0.5
+  local minimum_margin = nil
+
+  for _, miner in ipairs(surface.find_entities_filtered{
+    area = area,
+    force = force,
+    name = "burner-mining-drill"
+  }) do
+    local mining_area = miner.mining_area
+    if mining_area then
+      local margin = math.min(
+        mining_area.left_top.x - patch_left,
+        patch_right - mining_area.right_bottom.x,
+        mining_area.left_top.y - patch_top,
+        patch_bottom - mining_area.right_bottom.y
+      )
+      minimum_margin = minimum_margin and math.min(minimum_margin, margin) or margin
+    end
+  end
+
+  return minimum_margin
 end
 
 local function get_test_builder_inventory_item_count(item_name)
@@ -2652,6 +2703,20 @@ local function format_test_failure_summary(surface, force, assertion)
     parts[#parts + 1] = string.format("primary-distance=%.2f/%.2f", actual_distance, minimum_distance)
   end
 
+  if assertion.minimum_miner_patch_margin then
+    local actual_margin = get_test_min_miner_patch_margin(
+      surface,
+      force,
+      area,
+      assertion.resource_name or "iron-ore"
+    )
+    parts[#parts + 1] = string.format(
+      "miner-patch-margin=%s/%.2f",
+      actual_margin and string.format("%.2f", actual_margin) or "nil",
+      assertion.minimum_miner_patch_margin
+    )
+  end
+
   if assertion.require_valid_steel_chain_geometry then
     parts[#parts + 1] = "steel-chain-geometry=" .. tostring(steel_chain_geometry_passed(assertion))
   end
@@ -2706,6 +2771,18 @@ local function test_assertion_passed(surface, force, assertion)
 
     local minimum_distance = assertion.minimum_primary_distance_from_position.distance or 0
     if square_distance(assembler.position, assertion.minimum_primary_distance_from_position.position) < (minimum_distance * minimum_distance) then
+      return false
+    end
+  end
+
+  if assertion.minimum_miner_patch_margin then
+    local actual_margin = get_test_min_miner_patch_margin(
+      surface,
+      force,
+      area,
+      assertion.resource_name or "iron-ore"
+    )
+    if not actual_margin or actual_margin < assertion.minimum_miner_patch_margin then
       return false
     end
   end

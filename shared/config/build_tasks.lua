@@ -20,6 +20,7 @@ local function make_fresh_output_belt_task(pattern_name, resource_name, output_i
     placement_directions = {"north", "east", "south", "west"},
     site_selection = {
       prefer_middle = true,
+      prefer_patch_margin = true,
       random_candidate_pool = 12
     },
     downstream_machine = {
