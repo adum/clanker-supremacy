@@ -2253,13 +2253,13 @@ local function setup_iron_plate_belt_export_test_case()
     error("enemy-builder test: nauvis surface is unavailable")
   end
 
-  local anchor_position = {x = 32, y = 0}
+  local patch_center = {x = 32, y = 0}
   local builder_position = {x = 0, y = 0}
-  local area = make_test_area(anchor_position, 80, 56)
+  local area = make_test_area(patch_center, 96, 64)
 
   surface.always_day = true
   clear_test_area(surface, area)
-  local anchor_site = place_test_iron_smelting_anchor(surface, "north", anchor_position)
+  create_test_resource_patch(surface, "iron-ore", patch_center, 3, 5000)
 
   return setup_manual_test{
     case_name = "iron_plate_belt_export_physical_feed",
@@ -2268,27 +2268,18 @@ local function setup_iron_plate_belt_export_test_case()
     surface_name = surface.name,
     suppress_player_autospawn = true,
     disable_nearby_machine_output_collection = true,
-    mutate_request = function(request)
-      local export_task = request.tasks and request.tasks[1]
-      if export_task then
-        export_task.manual_anchor_position = clone_position(anchor_site.anchor_furnace.position)
-        export_task.max_anchor_entities = 4
-      end
-    end,
     inventory = {
+      {name = "burner-mining-drill", count = 1},
+      {name = "stone-furnace", count = 1},
       {name = "burner-inserter", count = 1},
       {name = "transport-belt", count = 48},
-      {name = "coal", count = 40}
+      {name = "coal", count = 60}
     },
     assertion = {
       case_name = "iron_plate_belt_export_physical_feed",
       surface_name = surface.name,
       area = area,
-      deadline_offset_ticks = 5400,
-      seed_source_item_after_layout = {
-        item_name = "iron-ore",
-        count = 8
-      },
+      deadline_offset_ticks = 7200,
       expected_counts = {
         ["burner-inserter"] = 1,
         ["transport-belt"] = 1,

@@ -64,6 +64,8 @@ return {
   iron_plate_belt_export = {
     display_name = "iron plate belt export",
     required_items = {
+      {name = "burner-mining-drill", count = 1},
+      {name = "stone-furnace", count = 1},
       {name = "burner-inserter", count = 1},
       {name = "transport-belt", count = 48}
     },
@@ -72,6 +74,8 @@ return {
   copper_plate_belt_export = {
     display_name = "copper plate belt export",
     required_items = {
+      {name = "burner-mining-drill", count = 1},
+      {name = "stone-furnace", count = 1},
       {name = "burner-inserter", count = 1},
       {name = "transport-belt", count = 48}
     },

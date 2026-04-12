@@ -3,6 +3,8 @@ local sites = require("scripts.world.sites")
 local storage_helpers = require("scripts.world.storage")
 
 local queries = {}
+local find_or_create_belt_hub_position
+local build_output_belt_layout_for_anchor
 
 local function find_nearby_output_container_position(surface, anchor_entity, container_config)
   local area = anchor_entity.selection_box
@@ -103,6 +105,47 @@ local function find_downstream_machine_placement(surface, force, task, drop_posi
   end
 
   return nil, nil, stats
+end
+
+local function find_output_belt_layout_for_machine_position(surface, force, task, patch, output_machine_position, stats, ctx)
+  if not (task.output_inserter and task.belt_entity_name and task.downstream_machine and output_machine_position) then
+    return nil, nil, nil, nil
+  end
+
+  local probe_machine = surface.create_entity{
+    name = task.downstream_machine.name,
+    position = output_machine_position,
+    force = force,
+    create_build_effect_smoke = false,
+    raise_built = false
+  }
+
+  if not probe_machine then
+    return nil, nil, nil, nil
+  end
+
+  local effective_patch = patch or {
+    anchor_position = ctx.clone_position(output_machine_position),
+    resource_name = task.resource_name
+  }
+  local hub_position, patch_key = find_or_create_belt_hub_position(surface, force, effective_patch, task, stats, ctx)
+  local placements = nil
+  local terminal_position = nil
+
+  if hub_position then
+    placements, terminal_position = build_output_belt_layout_for_anchor(
+      surface,
+      force,
+      probe_machine,
+      hub_position,
+      task,
+      stats,
+      ctx
+    )
+  end
+
+  probe_machine.destroy()
+  return placements, hub_position, patch_key, terminal_position
 end
 
 local function count_registered_sites_near_position(requirement, position, ctx)
@@ -779,7 +822,7 @@ local function snap_position_to_tile_center(position)
   }
 end
 
-local function find_or_create_belt_hub_position(surface, force, patch, task, summary, ctx)
+find_or_create_belt_hub_position = function(surface, force, patch, task, summary, ctx)
   local belt_hubs = storage_helpers.ensure_belt_hubs()
   local patch_key = get_patch_key(patch)
   local existing = patch_key and belt_hubs[patch_key] or nil
@@ -1003,7 +1046,7 @@ local function validate_output_inserter_geometry(surface, force, output_machine,
   return valid
 end
 
-local function build_output_belt_layout_for_anchor(surface, force, output_machine, hub_position, task, summary, ctx)
+build_output_belt_layout_for_anchor = function(surface, force, output_machine, hub_position, task, summary, ctx)
   for _, direction_name in ipairs(get_prioritized_output_directions(output_machine.position, hub_position)) do
     local inserter_direction = ctx.direction_by_name[get_opposite_direction_name(direction_name)]
     for _, edge_candidate in ipairs(get_machine_edge_belt_candidates(output_machine, direction_name)) do
@@ -1093,7 +1136,7 @@ local function build_output_belt_layout_for_anchor(surface, force, output_machin
   return nil, nil
 end
 
-local function find_miner_placement(surface, force, task, resource_position, ctx)
+local function find_miner_placement(surface, force, task, resource_position, patch, ctx)
   local stats = {
     positions_checked = 0,
     placeable_positions = 0,
@@ -1106,7 +1149,12 @@ local function find_miner_placement(surface, force, task, resource_position, ctx
     downstream_positions_checked = 0,
     downstream_placeable_positions = 0,
     test_downstream_created = 0,
-    downstream_anchor_hits = 0
+    downstream_anchor_hits = 0,
+    terminal_positions_found = 0,
+    valid_belt_paths = 0,
+    failed_belt_paths = 0,
+    failed_inserter_geometry = 0,
+    resource_overlap_rejections = 0
   }
   local valid_candidates = {}
 
@@ -1143,6 +1191,11 @@ local function find_miner_placement(surface, force, task, resource_position, ctx
           local downstream_machine_position = nil
           local output_container_position = nil
           local has_output_container_spot = true
+          local belt_layout_placements = nil
+          local belt_hub_position = nil
+          local belt_hub_key = nil
+          local belt_terminal_position = nil
+          local has_output_belt_layout = true
 
           if mines_resource then
             stats.mining_area_hits = stats.mining_area_hits + 1
@@ -1172,11 +1225,25 @@ local function find_miner_placement(surface, force, task, resource_position, ctx
                 stats.output_container_hits = stats.output_container_hits + 1
               end
             end
+
+            if has_output_container_spot and downstream_machine_position and task.output_inserter and task.belt_entity_name then
+              belt_layout_placements, belt_hub_position, belt_hub_key, belt_terminal_position =
+                find_output_belt_layout_for_machine_position(
+                  surface,
+                  force,
+                  task,
+                  patch,
+                  downstream_machine_position,
+                  stats,
+                  ctx
+                )
+              has_output_belt_layout = belt_layout_placements ~= nil and #belt_layout_placements > 0
+            end
           end
 
           test_miner.destroy()
 
-          if mines_resource and has_output_container_spot then
+          if mines_resource and has_output_container_spot and has_output_belt_layout then
             stats.valid_candidates = stats.valid_candidates + 1
             valid_candidates[#valid_candidates + 1] = {
               build_position = {
@@ -1186,6 +1253,10 @@ local function find_miner_placement(surface, force, task, resource_position, ctx
               build_direction = direction,
               output_container_position = output_container_position and ctx.clone_position(output_container_position) or nil,
               downstream_machine_position = downstream_machine_position and ctx.clone_position(downstream_machine_position) or nil,
+              belt_layout_placements = belt_layout_placements,
+              belt_hub_position = belt_hub_position and ctx.clone_position(belt_hub_position) or nil,
+              belt_hub_key = belt_hub_key,
+              belt_terminal_position = belt_terminal_position and ctx.clone_position(belt_terminal_position) or nil,
               resource_coverage = resource_coverage,
               search_weight = position.weight,
               direction_name = direction_name
@@ -1226,10 +1297,14 @@ local function find_miner_placement(surface, force, task, resource_position, ctx
       selected_candidate.build_direction,
       selected_candidate.output_container_position,
       selected_candidate.downstream_machine_position,
+      selected_candidate.belt_layout_placements,
+      selected_candidate.belt_hub_position,
+      selected_candidate.belt_hub_key,
+      selected_candidate.belt_terminal_position,
       stats
   end
 
-  return nil, nil, nil, nil, stats
+  return nil, nil, nil, nil, nil, nil, nil, nil, stats
 end
 
 function queries.find_resource_site(surface, force, origin, task, ctx)
@@ -1249,7 +1324,12 @@ function queries.find_resource_site(surface, force, origin, task, ctx)
     downstream_positions_checked = 0,
     downstream_placeable_positions = 0,
     test_downstream_created = 0,
-    downstream_anchor_hits = 0
+    downstream_anchor_hits = 0,
+    terminal_positions_found = 0,
+    valid_belt_paths = 0,
+    failed_belt_paths = 0,
+    failed_inserter_geometry = 0,
+    resource_overlap_rejections = 0
   }
 
   for _, radius in ipairs(task.search_radii) do
@@ -1273,8 +1353,16 @@ function queries.find_resource_site(surface, force, origin, task, ctx)
       for _, patch in ipairs(patches) do
         summary.patch_centers_considered = summary.patch_centers_considered + 1
 
-        local build_position, build_direction, output_container_position, downstream_machine_position, placement_stats =
-          find_miner_placement(surface, force, task, patch.anchor_position, ctx)
+        local build_position,
+          build_direction,
+          output_container_position,
+          downstream_machine_position,
+          belt_layout_placements,
+          belt_hub_position,
+          belt_hub_key,
+          belt_terminal_position,
+          placement_stats =
+          find_miner_placement(surface, force, task, patch.anchor_position, patch, ctx)
 
         summary.positions_checked = summary.positions_checked + placement_stats.positions_checked
         summary.placeable_positions = summary.placeable_positions + placement_stats.placeable_positions
@@ -1289,6 +1377,11 @@ function queries.find_resource_site(surface, force, origin, task, ctx)
         summary.downstream_placeable_positions = summary.downstream_placeable_positions + placement_stats.downstream_placeable_positions
         summary.test_downstream_created = summary.test_downstream_created + placement_stats.test_downstream_created
         summary.downstream_anchor_hits = summary.downstream_anchor_hits + placement_stats.downstream_anchor_hits
+        summary.terminal_positions_found = summary.terminal_positions_found + (placement_stats.terminal_positions_found or 0)
+        summary.valid_belt_paths = summary.valid_belt_paths + (placement_stats.valid_belt_paths or 0)
+        summary.failed_belt_paths = summary.failed_belt_paths + (placement_stats.failed_belt_paths or 0)
+        summary.failed_inserter_geometry = summary.failed_inserter_geometry + (placement_stats.failed_inserter_geometry or 0)
+        summary.resource_overlap_rejections = summary.resource_overlap_rejections + (placement_stats.resource_overlap_rejections or 0)
 
         if build_position then
           summary.selected_candidate_pool_size = placement_stats.selected_candidate_pool_size
@@ -1299,6 +1392,10 @@ function queries.find_resource_site(surface, force, origin, task, ctx)
             build_direction = build_direction,
             output_container_position = output_container_position,
             downstream_machine_position = downstream_machine_position,
+            belt_layout_placements = belt_layout_placements,
+            belt_hub_position = belt_hub_position,
+            belt_hub_key = belt_hub_key,
+            belt_terminal_position = belt_terminal_position,
             resource_coverage = placement_stats.best_resource_coverage,
             selected_from_patch_center = true,
             summary = summary
@@ -1317,8 +1414,27 @@ function queries.find_resource_site(surface, force, origin, task, ctx)
         considered_this_radius = considered_this_radius + 1
         summary.resources_considered = summary.resources_considered + 1
 
-        local build_position, build_direction, output_container_position, downstream_machine_position, placement_stats =
-          find_miner_placement(surface, force, task, resource.position, ctx)
+        local build_position,
+          build_direction,
+          output_container_position,
+          downstream_machine_position,
+          belt_layout_placements,
+          belt_hub_position,
+          belt_hub_key,
+          belt_terminal_position,
+          placement_stats =
+          find_miner_placement(
+            surface,
+            force,
+            task,
+            resource.position,
+            {
+              anchor_position = ctx.clone_position(resource.position),
+              resource_name = task.resource_name,
+              representative_resource = resource
+            },
+            ctx
+          )
         summary.positions_checked = summary.positions_checked + placement_stats.positions_checked
         summary.placeable_positions = summary.placeable_positions + placement_stats.placeable_positions
         summary.test_miners_created = summary.test_miners_created + placement_stats.test_miners_created
@@ -1332,6 +1448,11 @@ function queries.find_resource_site(surface, force, origin, task, ctx)
         summary.downstream_placeable_positions = summary.downstream_placeable_positions + placement_stats.downstream_placeable_positions
         summary.test_downstream_created = summary.test_downstream_created + placement_stats.test_downstream_created
         summary.downstream_anchor_hits = summary.downstream_anchor_hits + placement_stats.downstream_anchor_hits
+        summary.terminal_positions_found = summary.terminal_positions_found + (placement_stats.terminal_positions_found or 0)
+        summary.valid_belt_paths = summary.valid_belt_paths + (placement_stats.valid_belt_paths or 0)
+        summary.failed_belt_paths = summary.failed_belt_paths + (placement_stats.failed_belt_paths or 0)
+        summary.failed_inserter_geometry = summary.failed_inserter_geometry + (placement_stats.failed_inserter_geometry or 0)
+        summary.resource_overlap_rejections = summary.resource_overlap_rejections + (placement_stats.resource_overlap_rejections or 0)
 
         if build_position then
           site_candidates[#site_candidates + 1] = {
@@ -1340,6 +1461,10 @@ function queries.find_resource_site(surface, force, origin, task, ctx)
             build_direction = build_direction,
             output_container_position = output_container_position,
             downstream_machine_position = downstream_machine_position,
+            belt_layout_placements = belt_layout_placements,
+            belt_hub_position = belt_hub_position,
+            belt_hub_key = belt_hub_key,
+            belt_terminal_position = belt_terminal_position,
             resource_coverage = placement_stats.best_resource_coverage,
             resource_distance = ctx.square_distance(origin, build_position)
           }

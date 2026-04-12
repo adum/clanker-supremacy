@@ -41,6 +41,12 @@ local function get_next_build_phase(task_state, task)
     return "place-output-container"
   end
 
+  if task_state.layout_placements and #task_state.layout_placements > 0 and
+    #(task_state.placed_layout_entities or {}) < #task_state.layout_placements
+  then
+    return "place-output-belt-layout"
+  end
+
   return "build-complete"
 end
 
@@ -163,18 +169,50 @@ function action_build.finish_place_miner_task(builder_state, task, tick, ctx, re
     return
   end
 
+  local output_inserter = nil
+  local belt_entities = {}
+  if task.output_inserter and task.belt_entity_name then
+    for _, placement in ipairs(task_state.placed_layout_entities or {}) do
+      if placement.entity and placement.entity.valid then
+        if placement.site_role == "output-inserter" then
+          output_inserter = placement.entity
+        elseif placement.site_role == "output-belt" then
+          belt_entities[#belt_entities + 1] = placement.entity
+        end
+      end
+    end
+
+    if not (output_inserter and output_inserter.valid and #belt_entities > 0) then
+      ctx.debug_log("task " .. task.id .. ": build finished without a valid output belt layout; refreshing task")
+      refresh_task(builder_state, task, tick, ctx)
+      return
+    end
+  end
+
   if downstream_machine then
     ctx.register_smelting_site(task, miner, downstream_machine, container)
   end
 
   ctx.register_resource_site(task, miner, downstream_machine, container)
 
+  if output_inserter then
+    ctx.register_output_belt_site(
+      task,
+      downstream_machine,
+      output_inserter,
+      belt_entities,
+      task_state.belt_hub_position or task_state.belt_terminal_position or belt_entities[#belt_entities].position
+    )
+  end
+
   ctx.complete_current_task(
     builder_state,
     task,
     "placed " .. task.miner_name .. " at " .. ctx.format_position(miner.position) ..
     (downstream_machine and " with " .. downstream_machine.name .. " at " .. ctx.format_position(downstream_machine.position) or "") ..
-    (container and " and " .. container.name .. " at " .. ctx.format_position(container.position) or "")
+    (container and " and " .. container.name .. " at " .. ctx.format_position(container.position) or "") ..
+    (output_inserter and " with output belt toward " ..
+      ctx.format_position(task_state.belt_hub_position or task_state.belt_terminal_position or belt_entities[#belt_entities].position) or "")
   )
 end
 
@@ -409,6 +447,10 @@ function action_build.place_miner(builder_state, task, tick, ctx, refresh_task)
 
   local function abort_build(reason)
     refund_consumed_build_items("refunded after aborted build for " .. task.id)
+    for _, placement in ipairs(task_state.placed_layout_entities or {}) do
+      ctx.destroy_entity_if_valid(placement.entity)
+    end
+    task_state.placed_layout_entities = {}
     ctx.destroy_entity_if_valid(task_state.placed_output_container)
     ctx.destroy_entity_if_valid(task_state.placed_downstream_machine)
     ctx.destroy_entity_if_valid(task_state.placed_miner)
@@ -600,6 +642,72 @@ function action_build.place_miner(builder_state, task, tick, ctx, refresh_task)
       tick,
       get_next_build_phase(task_state, task) == "build-complete" and "build-complete" or "building",
       container,
+      ctx
+    )
+    return
+  end
+
+  if build_phase == "place-output-belt-layout" then
+    local placement = task_state.layout_placements and task_state.layout_placements[task_state.layout_index]
+    if not placement then
+      task_state.phase = "build-complete"
+      return
+    end
+
+    if not surface.can_place_entity{
+      name = placement.entity_name,
+      position = placement.build_position,
+      direction = placement.build_direction,
+      force = entity.force
+    } then
+      if try_clear_blocking_obstacle(builder_state, task, tick, placement.entity_name, placement.build_position, ctx) then
+        return
+      end
+      abort_build("output belt layout position became invalid for " .. placement.entity_name .. " at " .. ctx.format_position(placement.build_position))
+      return
+    end
+
+    local placed_entity = surface.create_entity{
+      name = placement.entity_name,
+      position = placement.build_position,
+      direction = placement.build_direction,
+      force = entity.force,
+      create_build_effect_smoke = false
+    }
+
+    if not placed_entity then
+      abort_build("failed to place " .. placement.entity_name .. " at " .. ctx.format_position(placement.build_position))
+      return
+    end
+
+    if not consume_build_item(placement.item_name, placed_entity) then
+      placed_entity.destroy()
+      abort_build("missing " .. placement.item_name .. " in builder inventory")
+      return
+    end
+
+    ctx.insert_entity_fuel(placed_entity, placement.fuel)
+
+    task_state.placed_layout_entities = task_state.placed_layout_entities or {}
+    task_state.placed_layout_entities[#task_state.placed_layout_entities + 1] = {
+      id = placement.id,
+      site_role = placement.site_role,
+      entity = placed_entity
+    }
+
+    ctx.debug_log(
+      "task " .. task.id .. ": placed " .. placement.entity_name ..
+      " at " .. ctx.format_position(placed_entity.position) ..
+      (placement.site_role and " as " .. placement.site_role or "")
+    )
+
+    task_state.layout_index = (task_state.layout_index or 1) + 1
+    begin_post_place_pause(
+      builder_state,
+      task,
+      tick,
+      task_state.layout_index > #(task_state.layout_placements or {}) and "build-complete" or "building",
+      placed_entity,
       ctx
     )
     return

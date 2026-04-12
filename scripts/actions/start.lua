@@ -22,7 +22,12 @@ local function start_place_miner_task(builder_state, task, tick, ctx)
       search_summary.mining_area_hits .. " mining-area hits, " ..
       search_summary.valid_candidates .. " valid sites, best coverage " .. search_summary.best_resource_coverage .. ", " ..
       search_summary.downstream_anchor_hits .. " downstream-machine hits, " ..
-      search_summary.output_container_hits .. " output-container hits; retry at tick " ..
+      search_summary.output_container_hits .. " output-container hits, " ..
+      (search_summary.terminal_positions_found or 0) .. " terminal positions, " ..
+      (search_summary.valid_belt_paths or 0) .. " valid belt paths, " ..
+      (search_summary.failed_belt_paths or 0) .. " failed belt paths, " ..
+      (search_summary.failed_inserter_geometry or 0) .. " inserter-geometry failures, " ..
+      (search_summary.resource_overlap_rejections or 0) .. " resource-overlap rejections; retry at tick " ..
       builder_state.task_state.next_attempt_tick
     )
     return
@@ -42,6 +47,12 @@ local function start_place_miner_task(builder_state, task, tick, ctx)
     build_direction = build_direction,
     downstream_machine_position = downstream_machine_position,
     output_container_position = output_container_position,
+    layout_placements = site.belt_layout_placements,
+    layout_index = 1,
+    placed_layout_entities = {},
+    belt_hub_position = site.belt_hub_position,
+    belt_hub_key = site.belt_hub_key,
+    belt_terminal_position = site.belt_terminal_position,
     last_position = ctx.clone_position(entity.position),
     last_progress_tick = tick
   }
@@ -56,7 +67,8 @@ local function start_place_miner_task(builder_state, task, tick, ctx)
     " from " .. tostring(site.summary.selected_candidate_pool_size or 1) ..
     " preferred candidates; moving toward " .. ctx.format_position(build_position) ..
     (downstream_machine_position and " with " .. task.downstream_machine.name .. " at " .. ctx.format_position(downstream_machine_position) or "") ..
-    (output_container_position and " with output container at " .. ctx.format_position(output_container_position) or "")
+    (output_container_position and " with output container at " .. ctx.format_position(output_container_position) or "") ..
+    (site.belt_hub_position and " with belt hub at " .. ctx.format_position(site.belt_hub_position) or "")
   )
 end
 

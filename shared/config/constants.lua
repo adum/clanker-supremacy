@@ -4,7 +4,7 @@ constants.gather_sources = {
   {
     id = "trees",
     entity_type = "tree",
-    search_radii = {32, 64, 128},
+    search_radii = {64, 128, 256, 512},
     yields = {
       {name = "wood", count = 4}
     }
