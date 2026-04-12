@@ -58,7 +58,7 @@ function task_executor.advance_task_phase(builder_state, task, tick, ctx)
   if phase == "building" then
     if task.type == "place-machine-near-site" then
       action_build.place_machine_near_site(builder_state, task, tick, ctx, task_executor.refresh_task)
-    elseif task.type == "place-layout-near-machine" then
+    elseif task.type == "place-layout-near-machine" or task.type == "place-output-belt-line" then
       action_build.place_layout_near_machine(builder_state, task, tick, ctx, task_executor.refresh_task)
     else
       action_build.place_miner(builder_state, task, tick, ctx, task_executor.refresh_task)
@@ -74,7 +74,7 @@ function task_executor.advance_task_phase(builder_state, task, tick, ctx)
   if phase == "build-complete" then
     if task.type == "place-machine-near-site" then
       action_build.finish_place_machine_near_site_task(builder_state, task, tick, ctx, task_executor.refresh_task)
-    elseif task.type == "place-layout-near-machine" then
+    elseif task.type == "place-layout-near-machine" or task.type == "place-output-belt-line" then
       action_build.finish_place_layout_near_machine_task(builder_state, task, tick, ctx, task_executor.refresh_task)
     else
       action_build.finish_place_miner_task(builder_state, task, tick, ctx, task_executor.refresh_task)

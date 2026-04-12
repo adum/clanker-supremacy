@@ -6,7 +6,7 @@ mod_dir_default="$(cd "$repo_root/.." && pwd)"
 
 factorio_bin="${FACTORIO_BIN:-/Users/adammiller/Library/Application Support/Steam/steamapps/common/Factorio/factorio.app/Contents/MacOS/factorio}"
 mod_dir="${FACTORIO_MOD_DIR:-$mod_dir_default}"
-timeout_secs="${FACTORIO_TEST_TIMEOUT_SECS:-75}"
+timeout_secs="${FACTORIO_TEST_TIMEOUT_SECS:-120}"
 
 temp_root="$(mktemp -d /tmp/enemy-builder-tests.XXXXXX)"
 write_data_dir="$temp_root/write-data"
@@ -212,10 +212,13 @@ EOF
 }
 
 run_case "firearm_outpost_physical_feed" "setup_firearm_outpost_test_case" "34197"
-run_case "steel_smelting_physical_feed_north" "setup_steel_smelting_test_case" "34198" "north"
-run_case "steel_smelting_physical_feed_east" "setup_steel_smelting_test_case" "34199" "east"
-run_case "steel_smelting_physical_feed_south" "setup_steel_smelting_test_case" "34200" "south"
-run_case "steel_smelting_physical_feed_west" "setup_steel_smelting_test_case" "34201" "west"
+run_case "firearm_outpost_anchor_clearance" "setup_firearm_outpost_anchored_test_case" "34198"
+run_case "tree_blocked_machine_placement" "setup_tree_blocked_assembler_test_case" "34199"
+run_case "iron_plate_belt_export_physical_feed" "setup_iron_plate_belt_export_test_case" "34200"
+run_case "steel_smelting_physical_feed_north" "setup_steel_smelting_test_case" "34201" "north"
+run_case "steel_smelting_physical_feed_east" "setup_steel_smelting_test_case" "34202" "east"
+run_case "steel_smelting_physical_feed_south" "setup_steel_smelting_test_case" "34203" "south"
+run_case "steel_smelting_physical_feed_west" "setup_steel_smelting_test_case" "34204" "west"
 
 echo
 echo "All requested headless tests passed."

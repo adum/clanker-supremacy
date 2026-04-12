@@ -55,6 +55,14 @@ return {
         {name = "iron-gear-wheel", count = 1}
       }
     },
+    ["transport-belt"] = {
+      craft_ticks = 15,
+      result_count = 2,
+      ingredients = {
+        {name = "iron-plate", count = 1},
+        {name = "iron-gear-wheel", count = 1}
+      }
+    },
     ["small-electric-pole"] = {
       craft_ticks = 30,
       result_count = 2,

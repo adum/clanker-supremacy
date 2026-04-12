@@ -143,6 +143,56 @@ function production.register_assembler_defense_site(task, assembler, placed_layo
   return production_sites[#production_sites]
 end
 
+function production.register_output_belt_site(task, output_machine, output_inserter, belt_entities, hub_position, ctx)
+  if not (task and output_machine and output_machine.valid and output_inserter and output_inserter.valid) then
+    return nil
+  end
+
+  local valid_belts = {}
+  for _, belt_entity in ipairs(belt_entities or {}) do
+    if belt_entity and belt_entity.valid then
+      valid_belts[#valid_belts + 1] = belt_entity
+    end
+  end
+
+  if #valid_belts == 0 then
+    return nil
+  end
+
+  local production_sites = storage_helpers.ensure_production_sites()
+  local task_id = (task and task.id) or (task and task.pattern_name) or "smelting-output-belt"
+
+  for _, site in ipairs(production_sites) do
+    if site.site_type == "smelting-output-belt" and site.output_machine == output_machine then
+      site.task_id = task_id
+      site.output_machine = output_machine
+      site.output_inserter = output_inserter
+      site.belt_entities = valid_belts
+      site.hub_position = hub_position
+      return site
+    end
+  end
+
+  production_sites[#production_sites + 1] = {
+    task_id = task_id,
+    site_type = "smelting-output-belt",
+    output_machine = output_machine,
+    output_inserter = output_inserter,
+    belt_entities = valid_belts,
+    hub_position = hub_position
+  }
+
+  ctx.debug_log(
+    "task " .. task_id .. ": registered smelting output belt at " ..
+    ctx.format_position(output_machine.position) ..
+    " with inserter at " .. ctx.format_position(output_inserter.position) ..
+    " and " .. tostring(#valid_belts) .. " belts toward " ..
+    ctx.format_position(hub_position)
+  )
+
+  return production_sites[#production_sites]
+end
+
 function production.process_production_sites(tick, ctx)
   local production_sites = storage_helpers.ensure_production_sites()
   local kept_sites = {}
@@ -191,6 +241,23 @@ function production.process_production_sites(tick, ctx)
         site.feed_inserter and site.feed_inserter.valid and
         site.downstream_machine and site.downstream_machine.valid and
         site.miner and site.miner.valid
+      then
+        kept_sites[#kept_sites + 1] = site
+      end
+    elseif site.site_type == "smelting-output-belt" then
+      local valid_belts = {}
+
+      for _, belt_entity in ipairs(site.belt_entities or {}) do
+        if belt_entity and belt_entity.valid then
+          valid_belts[#valid_belts + 1] = belt_entity
+        end
+      end
+
+      site.belt_entities = valid_belts
+
+      if site.output_machine and site.output_machine.valid and
+        site.output_inserter and site.output_inserter.valid and
+        #site.belt_entities > 0
       then
         kept_sites[#kept_sites + 1] = site
       end

@@ -61,6 +61,30 @@ return {
     },
     build_task = build_tasks.steel_smelting
   },
+  iron_plate_belt_export = {
+    display_name = "iron plate belt export",
+    required_items = {
+      {name = "burner-inserter", count = 1},
+      {name = "transport-belt", count = 48}
+    },
+    build_task = build_tasks.iron_plate_belt_export
+  },
+  copper_plate_belt_export = {
+    display_name = "copper plate belt export",
+    required_items = {
+      {name = "burner-inserter", count = 1},
+      {name = "transport-belt", count = 48}
+    },
+    build_task = build_tasks.copper_plate_belt_export
+  },
+  steel_plate_belt_export = {
+    display_name = "steel plate belt export",
+    required_items = {
+      {name = "burner-inserter", count = 1},
+      {name = "transport-belt", count = 48}
+    },
+    build_task = build_tasks.steel_plate_belt_export
+  },
   firearm_magazine_outpost = {
     display_name = "firearm magazine outpost",
     required_items = {

@@ -56,8 +56,16 @@ function status.derive_action_summary(snapshot)
     return "Move to gather " .. common.humanize_identifier(task_state.target_item_name)
   end
 
+  if task_state.phase == "moving-to-source" and task_state.clear_obstacle_label then
+    return "Move to clear " .. common.humanize_identifier(task_state.clear_obstacle_label) .. " obstacle"
+  end
+
   if task_state.phase == "harvesting" and task_state.target_item_name then
     return "Gather " .. common.humanize_identifier(task_state.target_item_name)
+  end
+
+  if task_state.phase == "harvesting" and task_state.clear_obstacle_label then
+    return "Clear " .. common.humanize_identifier(task_state.clear_obstacle_label) .. " obstacle"
   end
 
   if task_state.phase == "building" or task_state.phase == "post-place-pause" or task_state.phase == "build-complete" then

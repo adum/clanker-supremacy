@@ -80,6 +80,65 @@ local function seed_entity_from_builder_inventory(builder, target_entity, seed_i
   return inserted_items
 end
 
+local function begin_clear_obstacle(builder_state, task, tick, blocked_entity_name, blocked_position, obstacle, ctx)
+  local task_state = builder_state.task_state
+  local builder = builder_state.entity
+  local obstacle_label = obstacle.display_name or obstacle.target_name or "obstacle"
+
+  task_state.phase = "moving-to-source"
+  task_state.source_id = (obstacle.source_id or obstacle_label) .. "-obstacle"
+  task_state.target_item_name = nil
+  task_state.target_kind = obstacle.target_kind
+  task_state.target_name = obstacle.target_name
+  task_state.target_entity = obstacle.entity
+  task_state.target_decorative_position = obstacle.decorative_position and ctx.clone_position(obstacle.decorative_position) or nil
+  task_state.target_position = ctx.clone_position(obstacle.target_position)
+  task_state.approach_position = ctx.create_task_approach_position(task, obstacle.target_position)
+  task_state.harvest_products = obstacle.yields or {}
+  task_state.harvest_complete_tick = nil
+  task_state.mining_duration_ticks = obstacle.mining_duration_ticks or 45
+  task_state.resume_phase_after_clear = "building"
+  task_state.clear_obstacle_label = obstacle_label
+  task_state.clear_obstacle_target_name = obstacle.target_name
+  task_state.clear_obstacle_build_position = ctx.clone_position(blocked_position)
+  task_state.last_position = ctx.clone_position(builder.position)
+  task_state.last_progress_tick = tick
+
+  ctx.builder_runtime.record_recovery(
+    builder_state,
+    {
+      kind = "clear-obstacle",
+      message = "Clearing " .. obstacle_label .. " blocking " .. blocked_entity_name,
+      meta = {
+        obstacle_name = obstacle.target_name,
+        obstacle_label = obstacle_label,
+        blocked_entity_name = blocked_entity_name,
+        blocked_position = ctx.clone_position(blocked_position)
+      }
+    }
+  )
+  ctx.debug_log(
+    "task " .. task.id .. ": clearing " .. obstacle_label ..
+    " (" .. tostring(obstacle.target_name) .. ") at " .. ctx.format_position(obstacle.target_position) ..
+    " blocking " .. blocked_entity_name .. " at " .. ctx.format_position(blocked_position)
+  )
+end
+
+local function try_clear_blocking_obstacle(builder_state, task, tick, blocked_entity_name, blocked_position, ctx)
+  local obstacle = ctx.find_clearable_build_obstacle(
+    builder_state.entity.surface,
+    blocked_entity_name,
+    blocked_position
+  )
+
+  if not obstacle then
+    return false
+  end
+
+  begin_clear_obstacle(builder_state, task, tick, blocked_entity_name, blocked_position, obstacle, ctx)
+  return true
+end
+
 function action_build.finish_place_miner_task(builder_state, task, tick, ctx, refresh_task)
   local task_state = builder_state.task_state
   local miner = task_state.placed_miner
@@ -220,6 +279,45 @@ function action_build.finish_place_layout_near_machine_task(builder_state, task,
     return
   end
 
+  if task.type == "place-output-belt-line" then
+    local output_machine = task_state.anchor_entity
+    local output_inserter = nil
+    local belt_entities = {}
+
+    for _, placement in ipairs(valid_entities) do
+      if placement.site_role == "output-inserter" then
+        output_inserter = placement.entity
+      elseif placement.site_role == "output-belt" then
+        belt_entities[#belt_entities + 1] = placement.entity
+      end
+    end
+
+    if not (output_machine and output_machine.valid and output_inserter and output_inserter.valid and #belt_entities > 0) then
+      ctx.debug_log("task " .. task.id .. ": output belt layout completed without valid machine/inserter/belts; refreshing task")
+      refresh_task(builder_state, task, tick, ctx)
+      return
+    end
+
+    ctx.register_output_belt_site(
+      task,
+      output_machine,
+      output_inserter,
+      belt_entities,
+      task_state.belt_hub_position
+    )
+
+    ctx.complete_current_task(
+      builder_state,
+      task,
+      "extended " .. (task_state.anchor_site and task_state.anchor_site.pattern_name or "smelting line") ..
+      " at " .. ctx.format_position(output_machine.position) ..
+      " with burner-inserter at " .. ctx.format_position(output_inserter.position) ..
+      " and " .. tostring(#belt_entities) .. " belts toward " ..
+      ctx.format_position(task_state.belt_hub_position or belt_entities[#belt_entities].position)
+    )
+    return
+  end
+
   local seeded_items = seed_entity_from_builder_inventory(
     builder_state.entity,
     anchor_entity,
@@ -327,6 +425,9 @@ function action_build.place_miner(builder_state, task, tick, ctx, refresh_task)
       direction = task_state.build_direction,
       force = entity.force
     } then
+      if try_clear_blocking_obstacle(builder_state, task, tick, task.miner_name, task_state.build_position, ctx) then
+        return
+      end
       ctx.debug_log("task " .. task.id .. ": build position became invalid at " .. ctx.format_position(task_state.build_position))
       refresh_task(builder_state, task, tick, ctx)
       return
@@ -398,6 +499,16 @@ function action_build.place_miner(builder_state, task, tick, ctx, refresh_task)
       position = task_state.downstream_machine_position,
       force = entity.force
     } then
+      if try_clear_blocking_obstacle(
+        builder_state,
+        task,
+        tick,
+        task.downstream_machine.name,
+        task_state.downstream_machine_position,
+        ctx
+      ) then
+        return
+      end
       abort_build("downstream machine position became invalid at " .. ctx.format_position(task_state.downstream_machine_position))
       return
     end
@@ -450,6 +561,16 @@ function action_build.place_miner(builder_state, task, tick, ctx, refresh_task)
       position = task_state.output_container_position,
       force = entity.force
     } then
+      if try_clear_blocking_obstacle(
+        builder_state,
+        task,
+        tick,
+        task.output_container.name,
+        task_state.output_container_position,
+        ctx
+      ) then
+        return
+      end
       abort_build("output container position became invalid at " .. ctx.format_position(task_state.output_container_position))
       return
     end
@@ -525,6 +646,9 @@ function action_build.place_machine_near_site(builder_state, task, tick, ctx, re
       direction = task_state.build_direction,
       force = entity.force
     } then
+      if try_clear_blocking_obstacle(builder_state, task, tick, task.entity_name, task_state.build_position, ctx) then
+        return
+      end
       ctx.debug_log("task " .. task.id .. ": build position became invalid at " .. ctx.format_position(task_state.build_position))
       refresh_task(builder_state, task, tick, ctx)
       return
@@ -663,6 +787,9 @@ function action_build.place_layout_near_machine(builder_state, task, tick, ctx, 
     direction = placement.build_direction,
     force = entity.force
   } then
+    if try_clear_blocking_obstacle(builder_state, task, tick, placement.entity_name, placement.build_position, ctx) then
+      return
+    end
     abort_build("layout position became invalid for " .. placement.entity_name .. " at " .. ctx.format_position(placement.build_position))
     return
   end

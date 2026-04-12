@@ -192,7 +192,9 @@ local function start_place_machine_near_site_task(builder_state, task, tick, ctx
     ctx.debug_log(
       "task " .. task.id .. ": no buildable " .. task.entity_name ..
       " site found near anchor sites; checked " .. summary.anchor_sites_considered ..
-      " anchors, " .. summary.positions_checked .. " candidate positions, " ..
+      " anchors, " .. (summary.clearance_headings_considered or 0) .. " outward headings, " ..
+      (summary.clearance_origins_found or 0) .. " post-ore origins, " ..
+      summary.positions_checked .. " candidate positions, " ..
       summary.placeable_positions .. " placeable spots, " ..
       (summary.resource_overlap_rejections or 0) .. " resource-overlap rejections, " ..
       (summary.layout_reservation_rejections or 0) .. " layout-fit rejections; retry at tick " ..
@@ -217,7 +219,9 @@ local function start_place_machine_near_site_task(builder_state, task, tick, ctx
     "task " .. task.id .. ": found build site for " .. task.entity_name ..
     " near " .. (site.site.pattern_name or "resource site") ..
     " at " .. ctx.format_position(site.anchor_position) ..
-    "; moving toward " .. ctx.format_position(site.build_position)
+    " after trying " .. tostring(site.summary.clearance_headings_considered or 0) ..
+    " outward headings and " .. tostring(site.summary.clearance_origins_found or 0) ..
+    " post-ore origins; moving toward " .. ctx.format_position(site.build_position)
   )
 end
 
@@ -237,11 +241,13 @@ local function start_place_layout_near_machine_task(builder_state, task, tick, c
     builder_state.task_state = {
       phase = "waiting-for-resource",
       wait_reason = "no-layout-site",
-      next_attempt_tick = tick + task.search_retry_ticks
+      next_attempt_tick = tick + task.search_retry_ticks,
+      failed_layout_anchor_entity = summary.failed_anchor_entity
     }
     ctx.debug_log(
       "task " .. task.id .. ": no layout site found; checked " ..
       summary.anchor_entities_considered .. " anchors, " ..
+      (summary.anchors_skipped_blocked or 0) .. " anchors blocked, " ..
       (summary.anchors_skipped_registered or 0) .. " anchors already registered, " ..
       summary.orientations_considered .. " orientations, " ..
       summary.layout_elements_checked .. " layout elements, " ..
@@ -277,6 +283,67 @@ local function start_place_layout_near_machine_task(builder_state, task, tick, c
   )
 end
 
+local function start_place_output_belt_line_task(builder_state, task, tick, ctx)
+  local entity = builder_state.entity
+  local anchor_description = task.anchor_pattern_names and #task.anchor_pattern_names > 0 and
+    table.concat(task.anchor_pattern_names, ", ") or "smelting sites"
+  ctx.debug_log(
+    "task " .. task.id .. ": scanning for belt export anchor " ..
+    anchor_description ..
+    " from " .. ctx.format_position(entity.position)
+  )
+
+  local site, summary = ctx.find_output_belt_line_site(builder_state, task)
+  if not site then
+    builder_state.task_state = {
+      phase = "waiting-for-resource",
+      wait_reason = "no-output-belt-site",
+      next_attempt_tick = tick + task.search_retry_ticks,
+      failed_layout_anchor_entity = summary.failed_anchor_entity
+    }
+    ctx.debug_log(
+      "task " .. task.id .. ": no output belt site found; checked " ..
+      summary.anchor_entities_considered .. " anchors, " ..
+      (summary.anchors_skipped_blocked or 0) .. " anchors blocked, " ..
+      (summary.anchors_skipped_registered or 0) .. " anchors already registered, " ..
+      summary.positions_checked .. " candidate positions, " ..
+      summary.placeable_positions .. " placeable spots, " ..
+      (summary.terminal_positions_found or 0) .. " terminal positions, " ..
+      (summary.valid_belt_paths or 0) .. " valid belt paths, " ..
+      (summary.failed_belt_paths or 0) .. " failed belt paths, " ..
+      (summary.failed_inserter_geometry or 0) .. " inserter-geometry failures, " ..
+      (summary.resource_overlap_rejections or 0) .. " resource-overlap rejections; retry at tick " ..
+      builder_state.task_state.next_attempt_tick
+    )
+    return
+  end
+
+  builder_state.task_state = {
+    phase = "moving",
+    build_position = ctx.clone_position(site.build_position),
+    approach_position = ctx.create_task_approach_position(task, site.build_position),
+    anchor_position = ctx.clone_position(site.anchor_position),
+    anchor_entity = site.anchor_entity,
+    anchor_site = site.site,
+    layout_placements = site.placements,
+    layout_index = 1,
+    placed_layout_entities = {},
+    belt_hub_position = site.hub_position,
+    belt_hub_key = site.hub_key,
+    belt_terminal_position = site.belt_terminal_position,
+    last_position = ctx.clone_position(entity.position),
+    last_progress_tick = tick
+  }
+  ctx.builder_runtime.clear_task_retry_state(builder_state, task)
+
+  ctx.debug_log(
+    "task " .. task.id .. ": found output belt layout near " .. site.anchor_entity.name ..
+    " at " .. ctx.format_position(site.anchor_position) ..
+    " toward hub " .. ctx.format_position(site.hub_position) ..
+    "; moving toward " .. ctx.format_position(site.build_position)
+  )
+end
+
 function action_start.start_task(builder_state, task, tick, ctx)
   if task.type == "place-miner-on-resource" then
     start_place_miner_task(builder_state, task, tick, ctx)
@@ -300,6 +367,11 @@ function action_start.start_task(builder_state, task, tick, ctx)
 
   if task.type == "place-layout-near-machine" then
     start_place_layout_near_machine_task(builder_state, task, tick, ctx)
+    return
+  end
+
+  if task.type == "place-output-belt-line" then
+    start_place_output_belt_line_task(builder_state, task, tick, ctx)
     return
   end
 

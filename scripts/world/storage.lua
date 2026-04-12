@@ -16,4 +16,12 @@ function storage_helpers.ensure_resource_sites()
   return storage.resource_sites
 end
 
+function storage_helpers.ensure_belt_hubs()
+  if storage.belt_hubs == nil then
+    storage.belt_hubs = {}
+  end
+
+  return storage.belt_hubs
+end
+
 return storage_helpers

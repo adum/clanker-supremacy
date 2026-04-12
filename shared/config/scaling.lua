@@ -2,11 +2,27 @@ local build_tasks = require("shared.config.build_tasks")
 local constants = require("shared.config.constants")
 local deep_copy = require("shared.config.util").deep_copy
 
+local firearm_magazine_assembler_task = deep_copy(build_tasks.firearm_magazine_outpost)
+firearm_magazine_assembler_task.id = "scale-place-firearm-magazine-assembler"
+firearm_magazine_assembler_task.anchor_pattern_names = {"iron_smelting", "copper_smelting"}
+firearm_magazine_assembler_task.max_anchor_sites = 8
+firearm_magazine_assembler_task.arrival_distance = 1.1
+
 return {
   enabled = true,
   idle_retry_ticks = 2 * 60,
   pursue_milestones_proactively = false,
-  cycle_pattern_names = {"coal_outpost", "iron_smelting", "steel_smelting", "stone_outpost", "copper_smelting", "firearm_magazine_outpost"},
+  cycle_pattern_names = {
+    "coal_outpost",
+    "iron_smelting",
+    "steel_smelting",
+    "stone_outpost",
+    "copper_smelting",
+    "iron_plate_belt_export",
+    "steel_plate_belt_export",
+    "copper_plate_belt_export",
+    "firearm_magazine_outpost"
+  },
   pattern_unlocks = {
     steel_smelting = {
       minimum_site_counts = {
@@ -23,6 +39,21 @@ return {
       minimum_site_counts = {
         coal_outpost = 5,
         iron_smelting = 5
+      }
+    },
+    iron_plate_belt_export = {
+      minimum_site_counts = {
+        iron_smelting = 5
+      }
+    },
+    steel_plate_belt_export = {
+      minimum_site_counts = {
+        steel_smelting = 3
+      }
+    },
+    copper_plate_belt_export = {
+      minimum_site_counts = {
+        copper_smelting = 5
       }
     },
     firearm_magazine_outpost = {
@@ -59,23 +90,7 @@ return {
       required_items = {
         {name = "assembling-machine-1", count = 1}
       },
-      task = {
-        id = "scale-place-firearm-magazine-assembler",
-        type = "place-machine-near-site",
-        entity_name = constants.firearm_magazine_assembler_name,
-        consume_item_name = "assembling-machine-1",
-        recipe_name = "firearm-magazine",
-        recipe_is_fixed = true,
-        anchor_pattern_names = {"iron_smelting", "copper_smelting"},
-        anchor_position_source = "miner",
-        max_anchor_sites = 8,
-        search_retry_ticks = 5 * 60,
-        placement_search_radius = 8,
-        placement_step = 1,
-        arrival_distance = 1.1,
-        stuck_retry_ticks = 3 * 60,
-        forbid_resource_overlap = true
-      }
+      task = firearm_magazine_assembler_task
     },
     {
       name = "firearm-magazine-defense",

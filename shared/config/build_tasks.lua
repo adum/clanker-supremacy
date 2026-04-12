@@ -3,6 +3,49 @@ local deep_copy = require("shared.config.util").deep_copy
 
 local build_tasks = {}
 
+local function make_output_belt_task(pattern_name, anchor_pattern_names, resource_name, output_item_name)
+  return {
+    type = "place-output-belt-line",
+    pattern_name = pattern_name,
+    resource_name = resource_name,
+    output_item_name = output_item_name,
+    anchor_pattern_names = anchor_pattern_names,
+    anchor_position_source = "downstream-machine",
+    max_anchor_entities = 12,
+    search_retry_ticks = 5 * 60,
+    arrival_distance = 1.6,
+    stuck_retry_ticks = 3 * 60,
+    patch_search_radius = 64,
+    require_missing_registered_site = {
+      site_type = "smelting-output-belt",
+      entity_field = "output_machine"
+    },
+    output_inserter = {
+      entity_name = "burner-inserter",
+      item_name = "burner-inserter",
+      fuel = {
+        name = "coal",
+        count = 4
+      }
+    },
+    belt_entity_name = "transport-belt",
+    belt_item_name = "transport-belt",
+    belt_hub_search = {
+      heading_count = 16,
+      heading_attempts = 8,
+      ray_step = 1,
+      max_distance = 80,
+      extra_distance_min = 18,
+      extra_distance_max = 24,
+      local_search_radius = 4,
+      local_search_step = 1
+    },
+    belt_terminal_search_radius = 3,
+    belt_terminal_search_step = 1,
+    forbid_resource_overlap = true
+  }
+end
+
 build_tasks.coal_outpost = {
   type = "place-miner-on-resource",
   pattern_name = "coal_outpost",
@@ -185,8 +228,16 @@ build_tasks.firearm_magazine_outpost = {
   anchor_position_source = "miner",
   max_anchor_sites = 12,
   search_retry_ticks = 5 * 60,
-  placement_search_radius = 10,
+  placement_search_radius = 8,
   placement_step = 1,
+  resource_clearance_search = {
+    heading_count = 16,
+    heading_attempts = 8,
+    ray_step = 1,
+    max_distance = 64,
+    extra_distance_min = 10,
+    extra_distance_max = 16
+  },
   arrival_distance = 1.6,
   stuck_retry_ticks = 3 * 60,
   forbid_resource_overlap = true,
@@ -203,6 +254,27 @@ build_tasks.firearm_magazine_outpost = {
     }
   }
 }
+
+build_tasks.iron_plate_belt_export = make_output_belt_task(
+  "iron_plate_belt_export",
+  {"iron_smelting"},
+  "iron-ore",
+  "iron-plate"
+)
+
+build_tasks.copper_plate_belt_export = make_output_belt_task(
+  "copper_plate_belt_export",
+  {"copper_smelting"},
+  "copper-ore",
+  "copper-plate"
+)
+
+build_tasks.steel_plate_belt_export = make_output_belt_task(
+  "steel_plate_belt_export",
+  {"steel_smelting"},
+  "iron-ore",
+  "steel-plate"
+)
 
 build_tasks.bootstrap_gather = {
   id = "gather-bootstrap-materials",
