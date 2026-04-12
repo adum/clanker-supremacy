@@ -1937,6 +1937,101 @@ local function setup_manual_test(spec)
   }
 end
 
+local function setup_scaling_test(spec)
+  spec = spec or {}
+
+  ensure_debug_settings()
+  ensure_production_sites()
+  ensure_resource_sites()
+  ensure_builder_map_markers()
+  ensure_builder_force()
+
+  storage.enemy_builder_test = {
+    case_name = spec.case_name or "scaling-test",
+    suppress_player_autospawn = spec.suppress_player_autospawn ~= false,
+    forbid_direct_turret_ammo_transfer = spec.forbid_direct_turret_ammo_transfer == true,
+    disable_nearby_machine_output_collection = spec.disable_nearby_machine_output_collection == true
+  }
+
+  if spec.assertion then
+    storage.enemy_builder_test.assertion = deep_copy(spec.assertion)
+    storage.enemy_builder_test.assertion.case_name =
+      storage.enemy_builder_test.assertion.case_name or storage.enemy_builder_test.case_name
+    storage.enemy_builder_test.assertion.surface_name =
+      storage.enemy_builder_test.assertion.surface_name or spec.surface_name
+    storage.enemy_builder_test.assertion.surface_index =
+      storage.enemy_builder_test.assertion.surface_index or spec.surface_index
+    storage.enemy_builder_test.assertion.deadline_tick =
+      game.tick + (storage.enemy_builder_test.assertion.deadline_offset_ticks or 0)
+    storage.enemy_builder_test.assertion.result_file =
+      storage.enemy_builder_test.assertion.result_file or
+      ("enemy-builder-tests/" .. sanitize_test_file_name(storage.enemy_builder_test.assertion.case_name) .. ".status")
+  end
+
+  debug_markers.clear()
+  destroy_active_builder()
+  storage.production_sites = {}
+  storage.resource_sites = {}
+
+  local surface = get_test_surface(spec)
+  if not surface then
+    error("enemy-builder test: no valid surface available for setup")
+  end
+
+  local builder_position = clone_position(spec.builder_position or {x = 0, y = 0})
+  local builder_state = spawn_builder_at_position(
+    surface,
+    builder_position,
+    "for test " .. storage.enemy_builder_test.case_name
+  )
+
+  if not builder_state then
+    error("enemy-builder test: failed to spawn builder for test setup")
+  end
+
+  builder_state.task_state = nil
+  builder_state.scaling_active_task = nil
+  builder_state.manual_goal_request = nil
+  local bootstrap_tasks = (((builder_data.plans or {}).bootstrap or {}).tasks) or {}
+  builder_state.task_index = #bootstrap_tasks + 1
+  builder_state.task_retry_state = {
+    counts = {},
+    cooldowns = {}
+  }
+  builder_state.completed_scaling_milestones = deep_copy(spec.completed_scaling_milestones or {})
+
+  for _, stack in ipairs(normalize_test_inventory(spec.inventory)) do
+    local inserted_count = insert_item(builder_state.entity, stack.name, stack.count, "test setup inventory")
+    if inserted_count < stack.count then
+      error(
+        "enemy-builder test: failed to seed " .. stack.name ..
+        " x" .. stack.count .. "; inserted " .. inserted_count
+      )
+    end
+  end
+
+  if spec.mutate_builder_state then
+    spec.mutate_builder_state(builder_state, surface)
+  end
+
+  if builder_state.goal_engine then
+    builder_state.goal_engine.scaling_display_task = nil
+  end
+  set_idle(builder_state.entity)
+  builder_runtime.clear_recovery(builder_state)
+  builder_runtime.update_goal_model(builder_state, game.tick)
+  builder_runtime.update_builder_overlays(builder_state, game.tick, true)
+  update_builder_map_markers(builder_state, game.tick, true)
+  debug_log(
+    "test setup " .. storage.enemy_builder_test.case_name ..
+    ": initialized scaling test at " .. format_position(builder_state.entity.position)
+  )
+
+  return {
+    builder_position = clone_position(builder_state.entity.position)
+  }
+end
+
 local function setup_firearm_outpost_test_case()
   local surface = game.surfaces["nauvis"] or game.surfaces[1]
   if not surface then
@@ -2206,6 +2301,61 @@ local function setup_iron_plate_belt_export_test_case()
   }
 end
 
+local function setup_scaling_collect_switches_site_test_case()
+  local surface = game.surfaces["nauvis"] or game.surfaces[1]
+  if not surface then
+    error("enemy-builder test: nauvis surface is unavailable")
+  end
+
+  local builder_position = {x = 0, y = 0}
+  local near_anchor_position = {x = 20, y = 0}
+  local far_anchor_position = {x = 68, y = 0}
+  local area = make_test_area({x = 44, y = 0}, 96, 32)
+
+  surface.always_day = true
+  clear_test_area(surface, area)
+
+  local near_site = place_test_iron_smelting_anchor(surface, "north", near_anchor_position)
+  local far_site = place_test_iron_smelting_anchor(surface, "north", far_anchor_position)
+
+  local near_output = near_site.anchor_furnace.get_output_inventory and near_site.anchor_furnace.get_output_inventory() or nil
+  local far_output = far_site.anchor_furnace.get_output_inventory and far_site.anchor_furnace.get_output_inventory() or nil
+  if not (near_output and far_output) then
+    error("enemy-builder test: failed to get furnace output inventories for scaling collection switch case")
+  end
+
+  near_output.insert{name = "iron-plate", count = 5}
+  far_output.insert{name = "iron-plate", count = 4}
+
+  return setup_scaling_test{
+    case_name = "scaling_collect_switches_site",
+    builder_position = builder_position,
+    surface_name = surface.name,
+    suppress_player_autospawn = true,
+    disable_nearby_machine_output_collection = true,
+    inventory = {
+      {name = "coal", count = 60},
+      {name = "wood", count = 10}
+    },
+    assertion = {
+      case_name = "scaling_collect_switches_site",
+      surface_name = surface.name,
+      area = area,
+      deadline_offset_ticks = 2400,
+      skip_output_assertion = true,
+      minimum_builder_inventory_items = {
+        {name = "iron-plate", count = 4}
+      },
+      drain_site_output_when_phase = {
+        phase = "scaling-collecting-site",
+        site_pattern_name = "iron_smelting",
+        output_machine_position = clone_position(near_site.anchor_furnace.position),
+        item_name = "iron-plate"
+      }
+    }
+  }
+end
+
 local function finish_manual_test()
   if storage.enemy_builder_test then
     storage.enemy_builder_test.finished = true
@@ -2299,6 +2449,15 @@ local function get_test_belt_item_count(surface, force, area, item_name)
   end
 
   return total_count
+end
+
+local function get_test_builder_inventory_item_count(item_name)
+  local builder_state = get_builder_state and get_builder_state() or nil
+  if not (builder_state and builder_state.entity and builder_state.entity.valid and item_name) then
+    return 0
+  end
+
+  return builder_state.entity.get_item_count(item_name)
 end
 
 local function find_test_resource_site_in_area(pattern_name, area)
@@ -2480,6 +2639,12 @@ local function format_test_failure_summary(surface, force, assertion)
     end
   end
 
+  for _, requirement in ipairs(assertion.minimum_builder_inventory_items or {}) do
+    parts[#parts + 1] =
+      "builder-" .. requirement.name .. "=" ..
+      get_test_builder_inventory_item_count(requirement.name) .. "/" .. requirement.count
+  end
+
   if assertion.minimum_primary_distance_from_position then
     local assembler_name = assertion.primary_entity_name or builder_data.prototypes.firearm_magazine_assembler_name
     local assembler = get_primary_test_assembler(surface, force, area, assembler_name)
@@ -2581,6 +2746,12 @@ local function test_assertion_passed(surface, force, assertion)
     return true
   end
 
+  for _, requirement in ipairs(assertion.minimum_builder_inventory_items or {}) do
+    if get_test_builder_inventory_item_count(requirement.name) < requirement.count then
+      return false
+    end
+  end
+
   return get_test_turret_ammo_count(
     surface,
     force,
@@ -2600,6 +2771,30 @@ local function run_active_test_assertion(tick)
   local force = game.forces[builder_data.force_name]
   if not (surface and force) then
     error("enemy-builder test: missing surface or builder force while running assertion")
+  end
+
+  local builder_state = get_builder_state and get_builder_state() or nil
+  local drain_site = assertion.drain_site_output_when_phase
+  if drain_site and not assertion.drain_site_output_completed and builder_state and builder_state.task_state and
+    builder_state.task_state.phase == drain_site.phase
+  then
+    for _, site in ipairs(storage.resource_sites or {}) do
+      local output_machine = site.output_machine
+      if site.pattern_name == drain_site.site_pattern_name and output_machine and output_machine.valid and
+        square_distance(output_machine.position, drain_site.output_machine_position) < 0.01
+      then
+        local output_inventory = output_machine.get_output_inventory and output_machine.get_output_inventory() or nil
+        if output_inventory then
+          output_inventory.remove{name = drain_site.item_name, count = output_inventory.get_item_count(drain_site.item_name)}
+          assertion.drain_site_output_completed = true
+          log(
+            debug_prefix .. "test: drained " .. drain_site.item_name ..
+            " from " .. output_machine.name .. " at " .. format_position(output_machine.position)
+          )
+        end
+        break
+      end
+    end
   end
 
   local target_entity = nil
@@ -2700,6 +2895,7 @@ local test_remote_interface = {
   setup_firearm_outpost_anchored_test_case = setup_firearm_outpost_anchored_test_case,
   setup_tree_blocked_assembler_test_case = setup_tree_blocked_assembler_test_case,
   setup_iron_plate_belt_export_test_case = setup_iron_plate_belt_export_test_case,
+  setup_scaling_collect_switches_site_test_case = setup_scaling_collect_switches_site_test_case,
   setup_steel_smelting_test_case = setup_steel_smelting_test_case,
   finish_manual_test = finish_manual_test,
   clear_test_state = clear_test_state

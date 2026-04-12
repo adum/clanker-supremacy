@@ -218,7 +218,7 @@ local function site_matches_pattern_names(site, pattern_names)
   return false
 end
 
-local function find_wait_patrol_site(builder_data, builder_state, item_name, adapters)
+local function find_wait_patrol_site(builder_data, builder_state, item_name, adapters, exclude_site)
   local pattern_names = get_wait_patrol_patterns(builder_data, item_name)
   if not (pattern_names and #pattern_names > 0) then
     return nil
@@ -234,11 +234,23 @@ local function find_wait_patrol_site(builder_data, builder_state, item_name, ada
   local candidates = {}
   for _, site in ipairs(adapters.cleanup_resource_sites()) do
     local collect_position = adapters.get_site_collect_position(site)
-    if collect_position and site_matches_pattern_names(site, pattern_names) then
+    if collect_position and site_matches_pattern_names(site, pattern_names) and site ~= exclude_site then
       candidates[#candidates + 1] = {
         site = site,
         collect_position = collect_position
       }
+    end
+  end
+
+  if #candidates == 0 and exclude_site then
+    for _, site in ipairs(adapters.cleanup_resource_sites()) do
+      local collect_position = adapters.get_site_collect_position(site)
+      if collect_position and site_matches_pattern_names(site, pattern_names) then
+        candidates[#candidates + 1] = {
+          site = site,
+          collect_position = collect_position
+        }
+      end
     end
   end
 
@@ -314,8 +326,8 @@ local function start_scaling_collection(builder_state, site, item_name, tick, al
   end
 end
 
-local function start_scaling_wait_patrol(builder_data, builder_state, item_name, tick, display_task, adapters)
-  local site = find_wait_patrol_site(builder_data, builder_state, item_name, adapters)
+local function start_scaling_wait_patrol(builder_data, builder_state, item_name, tick, display_task, adapters, exclude_site)
+  local site = find_wait_patrol_site(builder_data, builder_state, item_name, adapters, exclude_site)
   if not site then
     return false
   end
@@ -331,6 +343,31 @@ local function start_scaling_wait_patrol(builder_data, builder_state, item_name,
     {collection_mode = "wait-patrol"}
   )
   return true
+end
+
+local function handle_empty_scaling_collection_site(builder_data, builder_state, tick, task_state, display_task, adapters)
+  local item_name = task_state and task_state.target_item_name or nil
+  local current_site = task_state and task_state.scaling_site or nil
+  local alternate_site = find_collectable_site(builder_state, item_name, false, adapters)
+
+  if alternate_site and alternate_site ~= current_site then
+    adapters.debug_log(
+      "scaling: " .. ((current_site and current_site.pattern_name) or "site") ..
+      " was empty on arrival; switching to " .. (alternate_site.pattern_name or "site")
+    )
+    start_scaling_collection(builder_state, alternate_site, item_name, tick, false, display_task, adapters)
+    return true
+  end
+
+  if start_scaling_wait_patrol(builder_data, builder_state, item_name, tick, display_task, adapters, current_site) then
+    adapters.debug_log(
+      "scaling: " .. ((current_site and current_site.pattern_name) or "site") ..
+      " was empty on arrival; patrolling other sites for " .. (item_name or "items")
+    )
+    return true
+  end
+
+  return false
 end
 
 local function start_scaling_craft(builder_data, builder_state, action, tick, display_task, adapters)
@@ -752,6 +789,17 @@ local function advance_scaling(builder_data, builder_state, tick, adapters)
           " yet; waiting on-site until tick " .. builder_state.task_state.next_attempt_tick
         )
       else
+        if handle_empty_scaling_collection_site(
+          builder_data,
+          builder_state,
+          tick,
+          task_state,
+          instances.ensure_state(builder_state).scaling_display_task,
+          adapters
+        ) then
+          return
+        end
+
         start_scaling_wait(
           builder_data,
           builder_state,

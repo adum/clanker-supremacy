@@ -215,6 +215,7 @@ run_case "firearm_outpost_physical_feed" "setup_firearm_outpost_test_case" "3419
 run_case "firearm_outpost_anchor_clearance" "setup_firearm_outpost_anchored_test_case" "34198"
 run_case "tree_blocked_machine_placement" "setup_tree_blocked_assembler_test_case" "34199"
 run_case "iron_plate_belt_export_physical_feed" "setup_iron_plate_belt_export_test_case" "34200"
+run_case "scaling_collect_switches_site" "setup_scaling_collect_switches_site_test_case" "34205"
 run_case "steel_smelting_physical_feed_north" "setup_steel_smelting_test_case" "34201" "north"
 run_case "steel_smelting_physical_feed_east" "setup_steel_smelting_test_case" "34202" "east"
 run_case "steel_smelting_physical_feed_south" "setup_steel_smelting_test_case" "34203" "south"
