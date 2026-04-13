@@ -1,5 +1,54 @@
 local layout_snapshot = {}
 
+local function parse_positive_integer(value)
+  local number = tonumber(value)
+  if not number or number <= 0 then
+    return nil
+  end
+
+  return math.floor(number)
+end
+
+local function parse_positive_number(value)
+  local number = tonumber(value)
+  if not number or number <= 0 then
+    return nil
+  end
+
+  return number
+end
+
+local function parse_snapshot_ticks_csv(value)
+  if type(value) ~= "string" or value == "" then
+    return nil
+  end
+
+  local snapshot_ticks = {}
+  for part in string.gmatch(value, "[^,%s]+") do
+    local tick = parse_positive_integer(part)
+    if tick then
+      snapshot_ticks[#snapshot_ticks + 1] = tick
+    end
+  end
+
+  if #snapshot_ticks == 0 then
+    return nil
+  end
+
+  table.sort(snapshot_ticks)
+
+  local normalized = {}
+  local previous_tick = nil
+  for _, tick in ipairs(snapshot_ticks) do
+    if tick ~= previous_tick then
+      normalized[#normalized + 1] = tick
+      previous_tick = tick
+    end
+  end
+
+  return normalized
+end
+
 local function clone_area(area, clone_position)
   if not area then
     return nil
@@ -794,6 +843,9 @@ local function setup_snapshot_run(spec, ctx)
   table.sort(snapshot_ticks)
   local deadline_offset_ticks = spec.deadline_offset_ticks or snapshot_ticks[#snapshot_ticks] or 43200
   local snapshot_output_name = ctx.sanitize_test_file_name(case_name)
+  local game_speed = spec.game_speed or 1
+
+  game.speed = game_speed
 
   ctx.storage.enemy_builder_test = {
     case_name = case_name,
@@ -803,6 +855,7 @@ local function setup_snapshot_run(spec, ctx)
       description = spec.description or "Deterministic autonomous layout snapshot run",
       area = ctx.deep_copy(spec.area),
       surface_name = spec.surface_name,
+      game_speed = game_speed,
       deadline_tick = game.tick + deadline_offset_ticks,
       tick_schedule = snapshot_ticks,
       next_snapshot_index = 1,
@@ -812,6 +865,7 @@ local function setup_snapshot_run(spec, ctx)
         case_name = case_name,
         description = spec.description or "Deterministic autonomous layout snapshot run",
         surface_name = spec.surface_name,
+        game_speed = game_speed,
         area = ctx.deep_copy(spec.area),
         start_tick = game.tick,
         entries = {}
@@ -879,11 +933,14 @@ local function setup_snapshot_run(spec, ctx)
   return {
     builder_position = ctx.clone_position(builder_state.entity.position),
     deadline_tick = ctx.storage.enemy_builder_test.snapshot_run.deadline_tick,
-    output_dir = ctx.storage.enemy_builder_test.snapshot_run.output_dir
+    output_dir = ctx.storage.enemy_builder_test.snapshot_run.output_dir,
+    game_speed = game_speed
   }
 end
 
-function layout_snapshot.setup_full_run_layout_snapshot_case(ctx)
+function layout_snapshot.setup_full_run_layout_snapshot_case(ctx, options)
+  options = options or {}
+
   local surface = game.surfaces["nauvis"] or game.surfaces[1]
   if not surface then
     error("enemy-builder snapshot: nauvis surface is unavailable")
@@ -908,6 +965,13 @@ function layout_snapshot.setup_full_run_layout_snapshot_case(ctx)
   create_test_rock_cluster(surface, {x = 10, y = 26}, 10, 8, 2)
   create_test_rock_cluster(surface, {x = -18, y = 42}, 8, 6, 2)
 
+  local default_snapshot_ticks = {600, 1200, 2400, 3600, 4800}
+  local snapshot_ticks = parse_snapshot_ticks_csv(options.snapshot_ticks_csv) or ctx.deep_copy(default_snapshot_ticks)
+  local default_deadline_offset_ticks = snapshot_ticks[#snapshot_ticks] or 4800
+  local requested_duration_ticks = parse_positive_integer(options.duration_ticks)
+  local deadline_offset_ticks = math.max(requested_duration_ticks or default_deadline_offset_ticks, default_deadline_offset_ticks)
+  local game_speed = parse_positive_number(options.game_speed) or 1
+
   return setup_snapshot_run({
     case_name = "full_run_layout_snapshot",
     description = "Autonomous deterministic builder run with curated nearby resource patches",
@@ -915,8 +979,9 @@ function layout_snapshot.setup_full_run_layout_snapshot_case(ctx)
     surface_name = surface.name,
     area = area,
     suppress_player_autospawn = true,
-    snapshot_ticks = {600, 1200, 2400, 3600, 4800},
-    deadline_offset_ticks = 4800,
+    snapshot_ticks = snapshot_ticks,
+    deadline_offset_ticks = deadline_offset_ticks,
+    game_speed = game_speed,
     inventory = {
       {name = "burner-mining-drill", count = 1},
       {name = "wooden-chest", count = 1},

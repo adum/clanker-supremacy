@@ -6,10 +6,16 @@ mod_dir_default="$(cd "$repo_root/.." && pwd)"
 
 factorio_bin="${FACTORIO_BIN:-/Users/adammiller/Library/Application Support/Steam/steamapps/common/Factorio/factorio.app/Contents/MacOS/factorio}"
 mod_dir="${FACTORIO_MOD_DIR:-$mod_dir_default}"
-timeout_secs="${FACTORIO_SNAPSHOT_TIMEOUT_SECS:-300}"
+timeout_secs="${FACTORIO_SNAPSHOT_TIMEOUT_SECS:-}"
 case_name="${ENEMY_BUILDER_SNAPSHOT_CASE:-full_run_layout_snapshot}"
 remote_setup_name="${ENEMY_BUILDER_SNAPSHOT_SETUP:-setup_full_run_layout_snapshot_case}"
 output_dir="${ENEMY_BUILDER_SNAPSHOT_OUTPUT_DIR:-$(mktemp -d /tmp/enemy-builder-layout-snapshot.XXXXXX)}"
+duration_ticks="${ENEMY_BUILDER_SNAPSHOT_DURATION_TICKS:-}"
+duration_minutes="${ENEMY_BUILDER_SNAPSHOT_DURATION_MINUTES:-}"
+snapshot_ticks_csv="${ENEMY_BUILDER_SNAPSHOT_TICKS:-}"
+checkpoint_count="${ENEMY_BUILDER_SNAPSHOT_CHECKPOINT_COUNT:-5}"
+game_speed="${ENEMY_BUILDER_SNAPSHOT_GAME_SPEED:-1}"
+server_port="${ENEMY_BUILDER_SNAPSHOT_PORT:-$((35000 + (RANDOM % 2000)))}"
 
 temp_root="$(mktemp -d /tmp/enemy-builder-layout-run.XXXXXX)"
 write_data_dir="$temp_root/write-data"
@@ -32,6 +38,122 @@ cleanup() {
   rm -rf "$temp_root"
 }
 trap cleanup EXIT
+
+print_usage() {
+  cat <<EOF
+Usage: $(basename "$0") [options]
+
+Options:
+  --duration-ticks N        Run for N ticks
+  --duration-minutes N      Run for N game minutes (converted to ticks)
+  --snapshot-ticks CSV      Explicit snapshot ticks, e.g. 600,1200,2400
+  --checkpoint-count N      Generate N evenly spaced snapshots across the duration
+  --game-speed N            Set Factorio game.speed for the run
+  --timeout-secs N          Override wall-clock timeout
+  --output-dir PATH         Copy final artifacts to PATH
+  --case-name NAME          Override snapshot case name
+  --help                    Show this help
+EOF
+}
+
+generate_snapshot_ticks() {
+  local duration="$1"
+  local count="$2"
+  local ticks=()
+  local last_tick=0
+
+  if (( count < 1 )); then
+    count=1
+  fi
+
+  for ((index = 1; index <= count; index++)); do
+    local tick=$(( duration * index / count ))
+    if (( tick <= last_tick )); then
+      tick=$(( last_tick + 1 ))
+    fi
+    ticks+=("$tick")
+    last_tick="$tick"
+  done
+
+  local IFS=,
+  printf '%s' "${ticks[*]}"
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --duration-ticks)
+      duration_ticks="$2"
+      shift 2
+      ;;
+    --duration-minutes)
+      duration_minutes="$2"
+      shift 2
+      ;;
+    --snapshot-ticks)
+      snapshot_ticks_csv="$2"
+      shift 2
+      ;;
+    --checkpoint-count)
+      checkpoint_count="$2"
+      shift 2
+      ;;
+    --game-speed)
+      game_speed="$2"
+      shift 2
+      ;;
+    --timeout-secs)
+      timeout_secs="$2"
+      shift 2
+      ;;
+    --output-dir)
+      output_dir="$2"
+      shift 2
+      ;;
+    --case-name)
+      case_name="$2"
+      shift 2
+      ;;
+    --help)
+      print_usage
+      exit 0
+      ;;
+    *)
+      echo "Unknown option: $1" >&2
+      print_usage >&2
+      exit 1
+      ;;
+  esac
+done
+
+if [[ -n "$duration_minutes" ]]; then
+  duration_ticks="$(awk "BEGIN { printf \"%d\", (($duration_minutes * 3600) + 0.5) }")"
+fi
+
+if [[ -z "$duration_ticks" ]]; then
+  duration_ticks=4800
+fi
+
+if ! [[ "$duration_ticks" =~ ^[0-9]+$ ]] || (( duration_ticks <= 0 )); then
+  echo "duration_ticks must be a positive integer, got: $duration_ticks" >&2
+  exit 1
+fi
+
+if [[ -z "$snapshot_ticks_csv" ]]; then
+  if ! [[ "$checkpoint_count" =~ ^[0-9]+$ ]] || (( checkpoint_count <= 0 )); then
+    echo "checkpoint_count must be a positive integer, got: $checkpoint_count" >&2
+    exit 1
+  fi
+  snapshot_ticks_csv="$(generate_snapshot_ticks "$duration_ticks" "$checkpoint_count")"
+fi
+
+if [[ -z "$timeout_secs" ]]; then
+  timeout_secs=$(( (duration_ticks / 60) + 180 ))
+fi
+
+if ! [[ "$timeout_secs" =~ ^[0-9]+$ ]] || (( timeout_secs <= 0 )); then
+  echo "timeout_secs must be a positive integer, got: $timeout_secs" >&2
+  exit 1
+fi
 
 mkdir -p "$write_data_dir" "$output_dir"
 
@@ -84,6 +206,10 @@ artifact_dest_dir="$output_dir/${case_name}"
 
 echo "== Enemy Builder headless layout snapshot =="
 echo "case_name: $case_name"
+echo "duration_ticks: $duration_ticks"
+echo "snapshot_ticks: $snapshot_ticks_csv"
+echo "game_speed: $game_speed"
+echo "server_port: $server_port"
 echo "timeout_secs: $timeout_secs"
 echo "output_dir: $output_dir"
 echo
@@ -98,7 +224,7 @@ exec 3<>"$server_input_pipe"
 server_input_fd_opened=1
 
 set +e
-run_factorio --start-server "$fresh_save_path" --server-settings "$server_settings_path" --port "34220" <"$server_input_pipe" >"$server_log_path" 2>&1 &
+run_factorio --start-server "$fresh_save_path" --server-settings "$server_settings_path" --port "$server_port" <"$server_input_pipe" >"$server_log_path" 2>&1 &
 factorio_pid=$!
 set -e
 
@@ -132,7 +258,8 @@ fi
 
 echo
 echo "-- inject snapshot setup"
-remote_command=$(printf '/silent-command remote.call("enemy-builder-test", "%s")\n' "$remote_setup_name")
+remote_command=$(printf '/silent-command remote.call("enemy-builder-test", "%s", %s, "%s", %s)\n' \
+  "$remote_setup_name" "$duration_ticks" "$snapshot_ticks_csv" "$game_speed")
 printf '%s' "$remote_command" >&3
 sleep 1
 printf '%s' "$remote_command" >&3

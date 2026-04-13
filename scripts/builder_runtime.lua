@@ -2034,8 +2034,12 @@ local function setup_scaling_test(spec)
   }
 end
 
-local function setup_full_run_layout_snapshot_case()
-  return layout_snapshot.setup_full_run_layout_snapshot_case(layout_snapshot_context)
+local function setup_full_run_layout_snapshot_case(duration_ticks, snapshot_ticks_csv, game_speed)
+  return layout_snapshot.setup_full_run_layout_snapshot_case(layout_snapshot_context, {
+    duration_ticks = duration_ticks,
+    snapshot_ticks_csv = snapshot_ticks_csv,
+    game_speed = game_speed
+  })
 end
 
 local function setup_firearm_outpost_test_case()
