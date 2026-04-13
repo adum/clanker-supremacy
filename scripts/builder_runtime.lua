@@ -2,6 +2,7 @@ local builder_data = require("shared.builder_data")
 local goal_recovery = require("scripts.goal.recovery")
 local goal_engine = require("scripts.goal_engine")
 local goal_tree = require("scripts.goal_tree")
+local layout_snapshot = require("scripts.layout_snapshot")
 local debug_commands = require("scripts.debug.commands")
 local debug_markers = require("scripts.debug.markers")
 local debug_overlay = require("scripts.debug.overlay")
@@ -16,6 +17,7 @@ local debug_prefix = "[enemy-builder] "
 local debug_command_context
 local debug_marker_context
 local debug_overlay_context
+local layout_snapshot_context
 local maintenance_pass_context
 local maintenance_passes
 local get_builder_state
@@ -2032,6 +2034,10 @@ local function setup_scaling_test(spec)
   }
 end
 
+local function setup_full_run_layout_snapshot_case()
+  return layout_snapshot.setup_full_run_layout_snapshot_case(layout_snapshot_context)
+end
+
 local function setup_firearm_outpost_test_case()
   local surface = game.surfaces["nauvis"] or game.surfaces[1]
   if not surface then
@@ -2965,6 +2971,7 @@ local test_remote_interface = {
   setup_iron_plate_belt_export_test_case = setup_iron_plate_belt_export_test_case,
   setup_scaling_collect_switches_site_test_case = setup_scaling_collect_switches_site_test_case,
   setup_steel_smelting_test_case = setup_steel_smelting_test_case,
+  setup_full_run_layout_snapshot_case = setup_full_run_layout_snapshot_case,
   finish_manual_test = finish_manual_test,
   clear_test_state = clear_test_state
 }
@@ -3362,6 +3369,44 @@ debug_command_context = {
   update_goal_model = builder_runtime.update_goal_model
 }
 
+layout_snapshot_context = {
+  builder_data = builder_data,
+  build_runtime_snapshot = builder_runtime.build_runtime_snapshot,
+  clear_recovery = builder_runtime.clear_recovery,
+  clear_test_area = clear_test_area,
+  clone_position = clone_position,
+  count_table_entries = count_table_entries,
+  create_test_resource_patch = create_test_resource_patch,
+  debug_log = debug_log,
+  debug_markers = debug_markers,
+  debug_overlay = debug_overlay,
+  debug_overlay_context = debug_overlay_context,
+  deep_copy = deep_copy,
+  destroy_active_builder = destroy_active_builder,
+  ensure_builder_force = ensure_builder_force,
+  ensure_builder_map_markers = ensure_builder_map_markers,
+  ensure_debug_settings = ensure_debug_settings,
+  ensure_production_sites = ensure_production_sites,
+  ensure_resource_sites = ensure_resource_sites,
+  format_position = format_position,
+  get_builder_state = get_builder_state,
+  get_container_inventory = get_container_inventory,
+  get_sorted_item_stacks = get_sorted_item_stacks,
+  get_test_state = get_test_state,
+  get_test_surface = get_test_surface,
+  insert_item = insert_item,
+  make_test_area = make_test_area,
+  normalize_test_inventory = normalize_test_inventory,
+  point_in_area = point_in_area,
+  sanitize_test_file_name = sanitize_test_file_name,
+  set_idle = set_idle,
+  spawn_builder_at_position = spawn_builder_at_position,
+  storage = storage,
+  update_builder_map_markers = update_builder_map_markers,
+  update_builder_overlays = builder_runtime.update_builder_overlays,
+  update_goal_model = builder_runtime.update_goal_model
+}
+
 maintenance_pass_context = {
   builder_data = builder_data,
   debug_log = debug_log,
@@ -3468,6 +3513,7 @@ local function on_tick(event)
   end
 
   run_active_test_assertion(event.tick)
+  layout_snapshot.run_active_snapshot_run(event.tick, layout_snapshot_context)
   builder_state = get_builder_state()
 
   builder_runtime.update_builder_overlays(builder_state, event.tick, false)
