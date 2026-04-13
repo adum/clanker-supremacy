@@ -13,3 +13,4 @@ There are some basic principles that we're going to follow here in terms of how 
 Code and architecture wise:
 - This is going to get pretty complicated, so it's important to have good, clean architecture and test cases.
 - We also need great debugging tools and visualizations and ways to see what the builder is doing.
+- The key is to code SIMPLE and fast algorithms. It's okay for them to not be precise. For example, the builder might start making a project that combines a bunch of assemblers and inserters for a final project. Then before it gets to the end, he runs out of room due to a cliff. That's fine. He can just abandon that effort and try again later. This is much better than trying to calculate the needed space up front and worrying about the cliffs.
