@@ -101,6 +101,14 @@ function world_model.find_resource_site(surface, force, origin, task, ctx)
   return queries.find_resource_site(surface, force, origin, task, ctx)
 end
 
+function world_model.find_downstream_machine_site(surface, force, task, miner, ctx)
+  return queries.find_downstream_machine_site(surface, force, task, miner, ctx)
+end
+
+function world_model.find_output_belt_layout_for_miner_site(surface, force, task, miner, output_machine, ctx)
+  return queries.find_output_belt_layout_for_miner_site(surface, force, task, miner, output_machine, ctx)
+end
+
 function world_model.find_nearest_resource(surface, origin, task, ctx)
   return queries.find_nearest_resource(surface, origin, task, ctx)
 end

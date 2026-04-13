@@ -68,10 +68,14 @@ local function get_next_build_phase(task_state, task)
     return "place-output-container"
   end
 
-  if task_state.layout_placements and #task_state.layout_placements > 0 and
-    #(task_state.placed_layout_entities or {}) < #task_state.layout_placements
-  then
-    return "place-output-belt-layout"
+  if task.output_inserter and task.belt_entity_name then
+    if not task_state.layout_placements then
+      return "place-output-belt-layout"
+    end
+
+    if #task_state.layout_placements > 0 and #(task_state.placed_layout_entities or {}) < #task_state.layout_placements then
+      return "place-output-belt-layout"
+    end
   end
 
   return "build-complete"
@@ -543,6 +547,10 @@ function action_build.place_miner(builder_state, task, tick, ctx, refresh_task)
     ctx.debug_log("task " .. task.id .. ": " .. reason)
   end
 
+  local function abandon_partial_build(reason)
+    ctx.complete_current_task(builder_state, task, reason)
+  end
+
   local build_phase = get_next_build_phase(task_state, task)
 
   if build_phase == "place-miner" then
@@ -617,8 +625,32 @@ function action_build.place_miner(builder_state, task, tick, ctx, refresh_task)
     end
 
     if not task_state.downstream_machine_position then
-      abort_build("missing downstream machine position")
-      return
+      if task.defer_downstream_planning and ctx.find_downstream_machine_site then
+        local site = ctx.find_downstream_machine_site(surface, entity.force, task, miner)
+        if not site then
+          if task.abandon_partial_site_on_failure then
+            abandon_partial_build(
+              "abandoned partial site after failing to place " ..
+                task.downstream_machine.name ..
+                " for miner at " ..
+                ctx.format_position(miner.position)
+            )
+          else
+            abort_build("missing downstream machine position")
+          end
+          return
+        end
+
+        task_state.downstream_machine_position = site.downstream_machine_position
+        task_state.output_container_position = site.output_container_position
+        ctx.debug_log(
+          "task " .. task.id .. ": resolved " .. task.downstream_machine.name ..
+            " at " .. ctx.format_position(task_state.downstream_machine_position)
+        )
+      else
+        abort_build("missing downstream machine position")
+        return
+      end
     end
 
     if not surface.can_place_entity{
@@ -733,6 +765,39 @@ function action_build.place_miner(builder_state, task, tick, ctx, refresh_task)
   end
 
   if build_phase == "place-output-belt-layout" then
+    if not task_state.layout_placements and task.defer_output_belt_planning and ctx.find_output_belt_layout_for_miner_site then
+      local miner = task_state.placed_miner
+      local downstream_machine = task_state.placed_downstream_machine
+      local layout_site = miner and downstream_machine and miner.valid and downstream_machine.valid and
+        ctx.find_output_belt_layout_for_miner_site(surface, entity.force, task, miner, downstream_machine) or nil
+
+      if not layout_site then
+        if task.abandon_partial_site_on_failure then
+          abandon_partial_build(
+            "abandoned partial site after failing output belt layout near " ..
+              ctx.format_position(
+                (downstream_machine and downstream_machine.valid and downstream_machine.position) or
+                  (miner and miner.valid and miner.position) or
+                  task_state.build_position
+              )
+          )
+        else
+          abort_build("missing output belt layout")
+        end
+        return
+      end
+
+      task_state.layout_placements = layout_site.placements
+      task_state.layout_index = 1
+      task_state.belt_hub_position = layout_site.hub_position
+      task_state.belt_hub_key = layout_site.hub_key
+      task_state.belt_terminal_position = layout_site.belt_terminal_position
+      ctx.debug_log(
+        "task " .. task.id .. ": resolved output belt layout toward " ..
+          ctx.format_position(task_state.belt_hub_position or task_state.belt_terminal_position)
+      )
+    end
+
     local placement = task_state.layout_placements and task_state.layout_placements[task_state.layout_index]
     if not placement then
       task_state.phase = "build-complete"

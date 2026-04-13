@@ -556,6 +556,67 @@ local function get_resource_position_key(resource)
   return string.format("%.2f:%.2f", resource.position.x, resource.position.y)
 end
 
+local function resource_position_is_covered_by_existing_miner(surface, force, miner_name, resource_position, ctx)
+  local nearby_miners = surface.find_entities_filtered{
+    position = resource_position,
+    radius = 4,
+    force = force,
+    name = miner_name
+  }
+
+  for _, miner in ipairs(nearby_miners) do
+    if miner.valid and miner.mining_area and ctx.point_in_area(resource_position, miner.mining_area) then
+      return true
+    end
+  end
+
+  return false
+end
+
+local function build_patch_resource_keys(patch)
+  local keys = {}
+
+  for _, resource in ipairs((patch and patch.resources) or {}) do
+    keys[get_resource_position_key(resource)] = true
+  end
+
+  return keys
+end
+
+local function resource_is_patch_edge(resource, patch_resource_keys)
+  for dx = -1, 1 do
+    for dy = -1, 1 do
+      if dx ~= 0 or dy ~= 0 then
+        local neighbor_key = string.format("%.2f:%.2f", resource.position.x + dx, resource.position.y + dy)
+        if not patch_resource_keys[neighbor_key] then
+          return true
+        end
+      end
+    end
+  end
+
+  return false
+end
+
+local function collect_patch_edge_resources(patch, origin, surface, force, task, ctx)
+  local patch_resource_keys = build_patch_resource_keys(patch)
+  local edge_resources = {}
+
+  for _, resource in ipairs((patch and patch.resources) or {}) do
+    if resource_is_patch_edge(resource, patch_resource_keys) and
+      not resource_position_is_covered_by_existing_miner(surface, force, task.miner_name, resource.position, ctx)
+    then
+      edge_resources[#edge_resources + 1] = resource
+    end
+  end
+
+  table.sort(edge_resources, function(left, right)
+    return ctx.square_distance(origin, left.position) < ctx.square_distance(origin, right.position)
+  end)
+
+  return edge_resources
+end
+
 local function build_resource_patches(resources, origin, ctx)
   local resources_by_key = {}
   local visited = {}
@@ -770,6 +831,91 @@ local function get_mining_area_patch_margin(mining_area, patch)
     mining_area.left_top.y - patch_top,
     patch_bottom - mining_area.right_bottom.y
   )
+end
+
+local function find_first_miner_placement(surface, force, task, resource, patch, ctx)
+  local stats = {
+    positions_checked = 0,
+    placeable_positions = 0,
+    test_miners_created = 0,
+    mining_area_hits = 0,
+    valid_candidates = 0,
+    best_resource_coverage = 0,
+    best_patch_margin = 0,
+    selected_patch_margin = 0,
+    selected_candidate_pool_size = 0,
+    output_container_hits = 0,
+    downstream_positions_checked = 0,
+    downstream_placeable_positions = 0,
+    test_downstream_created = 0,
+    downstream_anchor_hits = 0,
+    terminal_positions_found = 0,
+    valid_belt_paths = 0,
+    failed_belt_paths = 0,
+    failed_inserter_geometry = 0,
+    resource_overlap_rejections = 0
+  }
+
+  for _, position in ipairs(ctx.build_search_positions(resource.position, task.placement_search_radius, task.placement_step)) do
+    for _, direction_name in ipairs(task.placement_directions) do
+      local direction = ctx.direction_by_name[direction_name]
+      stats.positions_checked = stats.positions_checked + 1
+
+      if surface.can_place_entity{
+        name = task.miner_name,
+        position = position,
+        direction = direction,
+        force = force
+      } then
+        stats.placeable_positions = stats.placeable_positions + 1
+        local test_miner = surface.create_entity{
+          name = task.miner_name,
+          position = position,
+          direction = direction,
+          force = force,
+          create_build_effect_smoke = false,
+          raise_built = false
+        }
+
+        if test_miner then
+          stats.test_miners_created = stats.test_miners_created + 1
+          local mines_anchor_resource = test_miner.mining_area and ctx.point_in_area(resource.position, test_miner.mining_area)
+
+          if mines_anchor_resource then
+            local covered_resources = surface.find_entities_filtered{
+              area = test_miner.mining_area,
+              type = "resource",
+              name = task.resource_name
+            }
+            local resource_coverage = #covered_resources
+            local patch_margin = get_mining_area_patch_margin(test_miner.mining_area, patch)
+
+            if resource_coverage > 0 then
+              stats.mining_area_hits = stats.mining_area_hits + 1
+              stats.valid_candidates = 1
+              stats.best_resource_coverage = resource_coverage
+              stats.best_patch_margin = patch_margin
+              stats.selected_patch_margin = patch_margin
+              stats.selected_candidate_pool_size = 1
+              test_miner.destroy()
+              return {
+                build_position = {
+                  x = position.x,
+                  y = position.y
+                },
+                build_direction = direction,
+                resource_coverage = resource_coverage
+              }, stats
+            end
+          end
+
+          test_miner.destroy()
+        end
+      end
+    end
+  end
+
+  return nil, stats
 end
 
 local function get_direction_name_from_delta(dx, dy)
@@ -1410,7 +1556,110 @@ local function find_miner_placement(surface, force, task, resource_position, pat
   return nil, nil, nil, nil, nil, nil, nil, nil, stats
 end
 
+local function find_edge_resource_site(surface, force, origin, task, ctx)
+  local seen_resources = {}
+  local summary = {
+    radii_checked = 0,
+    resources_considered = 0,
+    patch_centers_considered = 0,
+    positions_checked = 0,
+    placeable_positions = 0,
+    test_miners_created = 0,
+    mining_area_hits = 0,
+    valid_candidates = 0,
+    best_resource_coverage = 0,
+    selected_candidate_pool_size = 0,
+    output_container_hits = 0,
+    downstream_positions_checked = 0,
+    downstream_placeable_positions = 0,
+    test_downstream_created = 0,
+    downstream_anchor_hits = 0,
+    terminal_positions_found = 0,
+    valid_belt_paths = 0,
+    failed_belt_paths = 0,
+    failed_inserter_geometry = 0,
+    resource_overlap_rejections = 0,
+    resource_entities_found = 0,
+    resource_entities_selected = 0,
+    resource_entities_truncated = false
+  }
+
+  for _, radius in ipairs(task.search_radii) do
+    summary.radii_checked = summary.radii_checked + 1
+
+    local found_resources = surface.find_entities_filtered{
+      position = origin,
+      radius = radius,
+      type = "resource",
+      name = task.resource_name
+    }
+    local max_resource_scan_entities = task.max_resource_scan_entities_per_radius or
+      math.max((task.max_resource_candidates_per_radius or 48) * 4, 64)
+    local resources, resources_truncated = select_nearest_resources(
+      found_resources,
+      origin,
+      max_resource_scan_entities,
+      ctx
+    )
+    local patches = build_resource_patches(resources, origin, ctx)
+    local considered_this_radius = 0
+
+    summary.resource_entities_found = summary.resource_entities_found + #found_resources
+    summary.resource_entities_selected = summary.resource_entities_selected + #resources
+    summary.resource_entities_truncated = summary.resource_entities_truncated or resources_truncated
+
+    for _, patch in ipairs(patches) do
+      for _, resource in ipairs(collect_patch_edge_resources(patch, origin, surface, force, task, ctx)) do
+        local resource_key = get_resource_position_key(resource)
+        if not seen_resources[resource_key] then
+          seen_resources[resource_key] = true
+          considered_this_radius = considered_this_radius + 1
+          summary.resources_considered = summary.resources_considered + 1
+
+          local site, placement_stats = find_first_miner_placement(surface, force, task, resource, patch, ctx)
+          summary.positions_checked = summary.positions_checked + placement_stats.positions_checked
+          summary.placeable_positions = summary.placeable_positions + placement_stats.placeable_positions
+          summary.test_miners_created = summary.test_miners_created + placement_stats.test_miners_created
+          summary.mining_area_hits = summary.mining_area_hits + placement_stats.mining_area_hits
+          summary.valid_candidates = summary.valid_candidates + placement_stats.valid_candidates
+          if placement_stats.best_resource_coverage > summary.best_resource_coverage then
+            summary.best_resource_coverage = placement_stats.best_resource_coverage
+          end
+          summary.selected_candidate_pool_size = placement_stats.selected_candidate_pool_size or
+            summary.selected_candidate_pool_size
+
+          if site then
+            return {
+              resource = resource,
+              anchor_position = ctx.clone_position(resource.position),
+              build_position = site.build_position,
+              build_direction = site.build_direction,
+              resource_coverage = site.resource_coverage,
+              selected_from_patch_center = false,
+              summary = summary
+            }, summary
+          end
+
+          if task.max_resource_candidates_per_radius and considered_this_radius >= task.max_resource_candidates_per_radius then
+            break
+          end
+        end
+      end
+
+      if task.max_resource_candidates_per_radius and considered_this_radius >= task.max_resource_candidates_per_radius then
+        break
+      end
+    end
+  end
+
+  return nil, summary
+end
+
 function queries.find_resource_site(surface, force, origin, task, ctx)
+  if task.site_search_mode == "resource-edge-only" then
+    return find_edge_resource_site(surface, force, origin, task, ctx)
+  end
+
   local seen_resources = {}
   local summary = {
     radii_checked = 0,
@@ -1630,6 +1879,95 @@ function queries.find_resource_site(surface, force, origin, task, ctx)
   end
 
   return nil, summary
+end
+
+function queries.find_downstream_machine_site(surface, force, task, miner, ctx)
+  if not (surface and force and task and task.downstream_machine and miner and miner.valid) then
+    return nil, {
+      positions_checked = 0,
+      placeable_positions = 0,
+      test_machines_created = 0,
+      anchor_cover_hits = 0,
+      output_container_hits = 0
+    }
+  end
+
+  local downstream_machine_position, output_container_position, summary =
+    find_downstream_machine_placement(surface, force, task, miner.drop_position, ctx)
+
+  if not downstream_machine_position then
+    return nil, summary
+  end
+
+  return {
+    downstream_machine_position = downstream_machine_position,
+    output_container_position = output_container_position
+  }, summary
+end
+
+function queries.find_output_belt_layout_for_miner_site(surface, force, task, miner, output_machine, ctx)
+  local summary = {
+    positions_checked = 0,
+    placeable_positions = 0,
+    terminal_positions_found = 0,
+    valid_belt_paths = 0,
+    failed_belt_paths = 0,
+    failed_inserter_geometry = 0,
+    resource_overlap_rejections = 0
+  }
+
+  if not (
+      surface and
+      force and
+      task and
+      task.output_inserter and
+      task.belt_entity_name and
+      miner and
+      miner.valid and
+      output_machine and
+      output_machine.valid
+    )
+  then
+    return nil, summary
+  end
+
+  local patch = get_patch_for_site(
+    {
+      miner = miner,
+      resource_name = task.resource_name
+    },
+    task,
+    ctx
+  ) or {
+    anchor_position = ctx.clone_position(miner.position),
+    resource_name = task.resource_name
+  }
+  local hub_position, patch_key = find_or_create_belt_hub_position(surface, force, patch, task, summary, ctx)
+
+  if not hub_position then
+    return nil, summary
+  end
+
+  local placements, terminal_position = build_output_belt_layout_for_anchor(
+    surface,
+    force,
+    output_machine,
+    hub_position,
+    task,
+    summary,
+    ctx
+  )
+
+  if not (placements and #placements > 0) then
+    return nil, summary
+  end
+
+  return {
+    placements = placements,
+    hub_position = hub_position,
+    hub_key = patch_key,
+    belt_terminal_position = terminal_position
+  }, summary
 end
 
 function queries.find_nearest_resource(surface, origin, task, ctx)

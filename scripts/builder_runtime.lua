@@ -40,6 +40,8 @@ local find_assembly_input_route_site
 local find_layout_site_near_machine
 local find_output_belt_line_site
 local find_machine_site_near_resource_sites
+local find_downstream_machine_site
+local find_output_belt_layout_for_miner_site
 local find_resource_site
 local find_nearest_resource
 local register_assembly_block_site
@@ -3853,6 +3855,21 @@ find_resource_site = function(surface, force, origin, task)
   return world_model.find_resource_site(surface, force, origin, task, world_model_context)
 end
 
+find_downstream_machine_site = function(surface, force, task, miner)
+  return world_model.find_downstream_machine_site(surface, force, task, miner, world_model_context)
+end
+
+find_output_belt_layout_for_miner_site = function(surface, force, task, miner, output_machine)
+  return world_model.find_output_belt_layout_for_miner_site(
+    surface,
+    force,
+    task,
+    miner,
+    output_machine,
+    world_model_context
+  )
+end
+
 find_nearest_resource = function(surface, origin, task)
   return world_model.find_nearest_resource(surface, origin, task, world_model_context)
 end
@@ -3877,7 +3894,9 @@ local task_executor_context = {
   find_layout_site_near_machine = find_layout_site_near_machine,
   find_output_belt_line_site = find_output_belt_line_site,
   find_machine_site_near_resource_sites = find_machine_site_near_resource_sites,
+  find_downstream_machine_site = find_downstream_machine_site,
   find_nearest_resource = find_nearest_resource,
+  find_output_belt_layout_for_miner_site = find_output_belt_layout_for_miner_site,
   find_resource_site = find_resource_site,
   format_position = format_position,
   format_products = format_products,
