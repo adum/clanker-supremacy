@@ -660,6 +660,64 @@ local function build_resource_patches(resources, origin, ctx)
   return patches
 end
 
+local function sort_resources_by_distance(resources, origin, ctx)
+  table.sort(resources, function(left, right)
+    return ctx.square_distance(origin, left.position) < ctx.square_distance(origin, right.position)
+  end)
+  return resources
+end
+
+local function select_nearest_resources(resources, origin, limit, ctx)
+  if not (resources and limit and limit > 0) or #resources <= limit then
+    return sort_resources_by_distance(resources or {}, origin, ctx), false
+  end
+
+  local nearest = {}
+
+  local function get_farthest_index()
+    local farthest_index = 1
+    local farthest_distance = nearest[1] and nearest[1].distance or -1
+
+    for index = 2, #nearest do
+      if nearest[index].distance > farthest_distance then
+        farthest_index = index
+        farthest_distance = nearest[index].distance
+      end
+    end
+
+    return farthest_index, farthest_distance
+  end
+
+  for _, resource in ipairs(resources) do
+    local distance = ctx.square_distance(origin, resource.position)
+    if #nearest < limit then
+      nearest[#nearest + 1] = {
+        resource = resource,
+        distance = distance
+      }
+    else
+      local farthest_index, farthest_distance = get_farthest_index()
+      if distance < farthest_distance then
+        nearest[farthest_index] = {
+          resource = resource,
+          distance = distance
+        }
+      end
+    end
+  end
+
+  table.sort(nearest, function(left, right)
+    return left.distance < right.distance
+  end)
+
+  local selected_resources = {}
+  for index, entry in ipairs(nearest) do
+    selected_resources[index] = entry.resource
+  end
+
+  return selected_resources, true
+end
+
 local function get_patch_key(patch)
   if not patch then
     return nil
@@ -1375,24 +1433,35 @@ function queries.find_resource_site(surface, force, origin, task, ctx)
     valid_belt_paths = 0,
     failed_belt_paths = 0,
     failed_inserter_geometry = 0,
-    resource_overlap_rejections = 0
+    resource_overlap_rejections = 0,
+    resource_entities_found = 0,
+    resource_entities_selected = 0,
+    resource_entities_truncated = false
   }
 
   for _, radius in ipairs(task.search_radii) do
     summary.radii_checked = summary.radii_checked + 1
 
-    local resources = surface.find_entities_filtered{
+    local found_resources = surface.find_entities_filtered{
       position = origin,
       radius = radius,
       type = "resource",
       name = task.resource_name
     }
 
-    table.sort(resources, function(left, right)
-      return ctx.square_distance(origin, left.position) < ctx.square_distance(origin, right.position)
-    end)
-
     local site_selection = task.site_selection or {}
+    local max_resource_scan_entities = task.max_resource_scan_entities_per_radius or
+      math.max((task.max_resource_candidates_per_radius or 48) * 4, 64)
+    local resources, resources_truncated = select_nearest_resources(
+      found_resources,
+      origin,
+      max_resource_scan_entities,
+      ctx
+    )
+    summary.resource_entities_found = summary.resource_entities_found + #found_resources
+    summary.resource_entities_selected = summary.resource_entities_selected + #resources
+    summary.resource_entities_truncated = summary.resource_entities_truncated or resources_truncated
+
     if site_selection.prefer_middle ~= false and #resources > 0 then
       local patches = build_resource_patches(resources, origin, ctx)
 
@@ -1568,16 +1637,14 @@ function queries.find_nearest_resource(surface, origin, task, ctx)
   local seen_resources = {}
 
   for _, radius in ipairs(task.search_radii) do
-    local resources = surface.find_entities_filtered{
+    local found_resources = surface.find_entities_filtered{
       position = origin,
       radius = radius,
       type = "resource",
       name = task.resource_name
     }
 
-    table.sort(resources, function(left, right)
-      return ctx.square_distance(origin, left.position) < ctx.square_distance(origin, right.position)
-    end)
+    local resources = select_nearest_resources(found_resources, origin, 1, ctx)
 
     for _, resource in ipairs(resources) do
       local resource_key = get_resource_position_key(resource)

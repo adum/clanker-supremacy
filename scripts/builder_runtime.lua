@@ -14,6 +14,7 @@ local world_snapshot = require("scripts.world_snapshot")
 
 local builder_runtime = {}
 local debug_prefix = "[enemy-builder] "
+local entry_timing = {}
 local debug_command_context
 local debug_marker_context
 local debug_overlay_context
@@ -247,6 +248,174 @@ local function ensure_debug_settings()
   end
 end
 
+function entry_timing.ensure_settings()
+  if storage.entry_timing == nil then
+    storage.entry_timing = {
+      enabled = false,
+      threshold_ms = 1000,
+      next_entry_id = 1,
+      active_entry = nil,
+      last_completed_entry = nil
+    }
+  end
+
+  if storage.entry_timing.enabled == nil then
+    storage.entry_timing.enabled = false
+  end
+
+  if storage.entry_timing.threshold_ms == nil then
+    storage.entry_timing.threshold_ms = 1000
+  end
+
+  if storage.entry_timing.next_entry_id == nil then
+    storage.entry_timing.next_entry_id = 1
+  end
+
+  return storage.entry_timing
+end
+
+function entry_timing.get_settings()
+  local settings = entry_timing.ensure_settings()
+  return {
+    enabled = settings.enabled == true,
+    threshold_ms = settings.threshold_ms,
+    next_entry_id = settings.next_entry_id,
+    active_entry = settings.active_entry and deep_copy(settings.active_entry) or nil,
+    last_completed_entry = settings.last_completed_entry and deep_copy(settings.last_completed_entry) or nil
+  }
+end
+
+function entry_timing.set_enabled(enabled)
+  local settings = entry_timing.ensure_settings()
+  settings.enabled = enabled == true
+  return settings.enabled
+end
+
+function entry_timing.set_threshold_ms(threshold_ms)
+  local settings = entry_timing.ensure_settings()
+  local numeric_threshold = tonumber(threshold_ms)
+  if not numeric_threshold then
+    return nil
+  end
+
+  if numeric_threshold < 0 then
+    numeric_threshold = 0
+  end
+
+  settings.threshold_ms = numeric_threshold
+  return settings.threshold_ms
+end
+
+function entry_timing.resolve_context(context)
+  if type(context) == "function" then
+    return context()
+  end
+
+  return context
+end
+
+function entry_timing.trim_string(value)
+  return (string.gsub(value or "", "^%s*(.-)%s*$", "%1"))
+end
+
+function entry_timing.build_context_line(extra_context)
+  local parts = {}
+
+  if game then
+    parts[#parts + 1] = "tick=" .. game.tick
+  end
+
+  local builder_state = storage.builder_state
+  if builder_state and builder_state.entity and builder_state.entity.valid then
+    local task = get_active_task and get_active_task(builder_state) or nil
+    if task and task.id then
+      parts[#parts + 1] = "task=" .. task.id
+    end
+
+    local task_state = builder_state.task_state
+    if task_state and task_state.phase then
+      parts[#parts + 1] = "phase=" .. task_state.phase
+    end
+    if task_state and task_state.wait_reason then
+      parts[#parts + 1] = "wait=" .. task_state.wait_reason
+    end
+
+    if builder_state.goal_model_root then
+      parts[#parts + 1] = "goal=" .. goal_tree.get_root_goal_line(builder_state.goal_model_root)
+    end
+  end
+
+  local resolved_context = entry_timing.resolve_context(extra_context)
+  if resolved_context and resolved_context ~= "" then
+    parts[#parts + 1] = resolved_context
+  end
+
+  return table.concat(parts, " ")
+end
+
+function entry_timing.run(entry_name, extra_context, callback, ...)
+  local settings = entry_timing.ensure_settings()
+  if settings.enabled ~= true then
+    return callback(...)
+  end
+
+  local profiler = helpers.create_profiler()
+  local entry_id = settings.next_entry_id or 1
+  local entry_tick = game and game.tick or 0
+  local context_line = entry_timing.build_context_line(extra_context)
+  settings.next_entry_id = entry_id + 1
+  settings.active_entry = {
+    id = entry_id,
+    name = entry_name,
+    tick = entry_tick,
+    context = context_line
+  }
+
+  if context_line ~= "" then
+    log(debug_prefix .. "entry begin id=" .. entry_id .. " name=" .. entry_name .. " " .. context_line)
+  else
+    log(debug_prefix .. "entry begin id=" .. entry_id .. " name=" .. entry_name)
+  end
+
+  local results = table.pack(callback(...))
+  profiler.stop()
+  settings.active_entry = nil
+  settings.last_completed_entry = {
+    id = entry_id,
+    name = entry_name,
+    tick = entry_tick,
+    context = context_line
+  }
+
+  if context_line ~= "" then
+    log({"", debug_prefix, "entry end id=", tostring(entry_id), " name=", entry_name, " duration=", profiler, " ", context_line})
+  else
+    log({"", debug_prefix, "entry end id=", tostring(entry_id), " name=", entry_name, " duration=", profiler})
+  end
+
+  return table.unpack(results, 1, results.n)
+end
+
+function entry_timing.create_callback(entry_name, extra_context, callback)
+  return function(...)
+    return entry_timing.run(entry_name, extra_context, callback, ...)
+  end
+end
+
+function entry_timing.create_remote_interface(interface_name, interface_definition)
+  local wrapped_definition = {}
+
+  for method_name, callback in pairs(interface_definition) do
+    wrapped_definition[method_name] = entry_timing.create_callback(
+      "remote:" .. interface_name .. "." .. method_name,
+      "remote=" .. interface_name .. "." .. method_name,
+      callback
+    )
+  end
+
+  return wrapped_definition
+end
+
 local function ensure_builder_map_markers()
   return debug_markers.ensure_storage()
 end
@@ -355,10 +524,20 @@ local function ensure_builder_state_fields(builder_state)
     builder_state.blocked_layout_anchors = {}
   end
 
+  if builder_state.resource_site_discovery == nil then
+    builder_state.resource_site_discovery = {
+      next_tick = 0
+    }
+  end
+
   return builder_state
 end
 
 builder_runtime.ensure_builder_state_fields = ensure_builder_state_fields
+builder_runtime.ensure_entry_timing_settings = entry_timing.ensure_settings
+builder_runtime.get_entry_timing_settings = entry_timing.get_settings
+builder_runtime.set_entry_timing_enabled = entry_timing.set_enabled
+builder_runtime.set_entry_timing_threshold_ms = entry_timing.set_threshold_ms
 
 local function normalize_builder_task_state(builder_state)
   local task_state = builder_state and builder_state.task_state or nil
@@ -3445,6 +3624,9 @@ local test_remote_interface = {
   setup_scaling_builds_before_coal_reserve_test_case = setup_scaling_builds_before_coal_reserve_test_case,
   setup_steel_smelting_test_case = setup_steel_smelting_test_case,
   setup_full_run_layout_snapshot_case = setup_full_run_layout_snapshot_case,
+  get_entry_timing_settings = entry_timing.get_settings,
+  set_entry_timing_enabled = entry_timing.set_enabled,
+  set_entry_timing_threshold_ms = entry_timing.set_threshold_ms,
   finish_manual_test = finish_manual_test,
   clear_test_state = clear_test_state
 }
@@ -3565,8 +3747,8 @@ cleanup_resource_sites = function()
   return world_model.cleanup_resource_sites(world_model_context)
 end
 
-discover_resource_sites = function(builder_state)
-  return world_model.discover_resource_sites(builder_state, world_model_context)
+discover_resource_sites = function(builder_state, options)
+  return world_model.discover_resource_sites(builder_state, world_model_context, options)
 end
 
 find_machine_site_near_resource_sites = function(builder_state, task)
@@ -3860,6 +4042,7 @@ debug_command_context = {
   debug_log = debug_log,
   ensure_builder_for_command = builder_runtime.ensure_builder_for_command,
   ensure_debug_settings = ensure_debug_settings,
+  ensure_entry_timing_settings = entry_timing.ensure_settings,
   ensure_production_sites = ensure_production_sites,
   ensure_resource_sites = ensure_resource_sites,
   format_direction = format_direction,
@@ -3867,11 +4050,15 @@ debug_command_context = {
   get_active_task = get_active_task,
   get_builder_state = get_builder_state,
   get_command_player = get_command_player,
+  get_entry_timing_settings = entry_timing.get_settings,
   get_item_count = get_item_count,
   get_recipe = get_recipe,
   record_recovery = builder_runtime.record_recovery,
   reply_to_command = reply_to_command,
+  run_timed_entry = entry_timing.run,
   set_idle = set_idle,
+  set_entry_timing_enabled = entry_timing.set_enabled,
+  set_entry_timing_threshold_ms = entry_timing.set_threshold_ms,
   update_goal_model = builder_runtime.update_goal_model
 }
 
@@ -3945,7 +4132,7 @@ local function on_init()
     if player then
       local builder_state = spawn_builder_for_player(player)
       if builder_state then
-        discover_resource_sites(builder_state)
+        discover_resource_sites(builder_state, {force = true})
       end
     else
       debug_log("on_init: no player character available yet")
@@ -3972,14 +4159,14 @@ local function on_configuration_changed()
       if player then
         local builder_state = spawn_builder_for_player(player)
         if builder_state then
-          discover_resource_sites(builder_state)
+          discover_resource_sites(builder_state, {force = true})
         end
       else
         debug_log("on_configuration_changed: no player character available yet")
       end
     end
   else
-    discover_resource_sites(get_builder_state())
+    discover_resource_sites(get_builder_state(), {force = true})
   end
 
   if get_builder_state() then
@@ -4031,11 +4218,22 @@ function builder_runtime.register_events()
   if remote.interfaces["enemy-builder-test"] then
     remote.remove_interface("enemy-builder-test")
   end
-  remote.add_interface("enemy-builder-test", test_remote_interface)
-  script.on_init(on_init)
-  script.on_configuration_changed(on_configuration_changed)
-  script.on_event(defines.events.on_player_created, on_player_created)
-  script.on_event(defines.events.on_tick, on_tick)
+  remote.add_interface("enemy-builder-test", entry_timing.create_remote_interface("enemy-builder-test", test_remote_interface))
+  script.on_init(entry_timing.create_callback("event:on_init", "event=on_init", on_init))
+  script.on_configuration_changed(
+    entry_timing.create_callback(
+      "event:on_configuration_changed",
+      function()
+        return "event=on_configuration_changed"
+      end,
+      on_configuration_changed
+    )
+  )
+  script.on_event(
+    defines.events.on_player_created,
+    entry_timing.create_callback("event:on_player_created", "event=on_player_created", on_player_created)
+  )
+  script.on_event(defines.events.on_tick, entry_timing.create_callback("event:on_tick", "event=on_tick", on_tick))
 end
 
 return builder_runtime

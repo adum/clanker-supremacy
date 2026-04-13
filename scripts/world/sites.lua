@@ -236,10 +236,22 @@ function sites.reconcile_production_sites_from_resource_sites(ctx)
   end
 end
 
-function sites.discover_resource_sites(builder_state, ctx)
+function sites.discover_resource_sites(builder_state, ctx, options)
   if not (builder_state and builder_state.entity and builder_state.entity.valid) then
     return
   end
+
+  builder_state.resource_site_discovery = builder_state.resource_site_discovery or {
+    next_tick = 0
+  }
+
+  local discovery_interval_ticks = (options and options.interval_ticks) or (10 * 60)
+  local current_tick = (game and game.tick) or 0
+  if not (options and options.force == true) and current_tick < (builder_state.resource_site_discovery.next_tick or 0) then
+    return
+  end
+
+  builder_state.resource_site_discovery.next_tick = current_tick + discovery_interval_ticks
 
   local known_sites = sites.cleanup_resource_sites()
   local known_miners = {}

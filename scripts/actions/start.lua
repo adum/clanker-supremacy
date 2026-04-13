@@ -1,10 +1,35 @@
 local action_start = {}
 
+local function get_progressive_search_task(builder_state, task, ctx)
+  local search_radii = task and task.search_radii or nil
+  if not (search_radii and #search_radii > 1) then
+    return task, search_radii and search_radii[1] or nil
+  end
+
+  local retry_state = ctx.builder_runtime.get_retry_state(builder_state)
+  local retry_key = ctx.builder_runtime.get_task_retry_key(task)
+  local retry_count = retry_state.counts[retry_key] or 0
+  local radius_index = math.min(retry_count + 1, #search_radii)
+  local scoped_task = {}
+
+  for key, value in pairs(task) do
+    scoped_task[key] = value
+  end
+
+  scoped_task.search_radii = {search_radii[radius_index]}
+  return scoped_task, search_radii[radius_index]
+end
+
 local function start_place_miner_task(builder_state, task, tick, ctx)
   local entity = builder_state.entity
   local search_origin = task.manual_search_origin or entity.position
-  ctx.debug_log("task " .. task.id .. ": scanning for " .. task.resource_name .. " from " .. ctx.format_position(search_origin))
-  local site, search_summary = ctx.find_resource_site(entity.surface, entity.force, search_origin, task)
+  local search_task, search_radius = get_progressive_search_task(builder_state, task, ctx)
+  ctx.debug_log(
+    "task " .. task.id .. ": scanning for " .. task.resource_name ..
+    " from " .. ctx.format_position(search_origin) ..
+    (search_radius and (" using radius " .. tostring(search_radius)) or "")
+  )
+  local site, search_summary = ctx.find_resource_site(entity.surface, entity.force, search_origin, search_task)
 
   if not site then
     builder_state.task_state = {
@@ -14,8 +39,12 @@ local function start_place_miner_task(builder_state, task, tick, ctx)
     }
     ctx.debug_log(
       "task " .. task.id .. ": no buildable " .. task.miner_name .. " site found for " .. task.resource_name ..
+      (search_radius and " within radius " .. tostring(search_radius) or "") ..
       "; checked " .. search_summary.resources_considered .. " resource tiles and " ..
       search_summary.patch_centers_considered .. " patch centers, " ..
+      (search_summary.resource_entities_found or 0) .. " resource entities found, " ..
+      (search_summary.resource_entities_selected or 0) .. " resource entities selected" ..
+      ((search_summary.resource_entities_truncated and " (truncated), ") or ", ") ..
       search_summary.positions_checked .. " candidate positions, " ..
       search_summary.placeable_positions .. " placeable spots, " ..
       search_summary.test_miners_created .. " probe drills, " ..
@@ -61,6 +90,7 @@ local function start_place_miner_task(builder_state, task, tick, ctx)
     "task " .. task.id .. ": found build site for " .. task.resource_name .. " at " ..
     ctx.format_position((site.selected_from_patch_center and site.anchor_position) or resource.position) ..
     (site.selected_from_patch_center and " via patch center" or "") ..
+    (search_radius and " within radius " .. tostring(search_radius) or "") ..
     " after checking " .. site.summary.resources_considered ..
     " resource tiles and " .. tostring(site.summary.patch_centers_considered or 0) .. " patch centers; chose coverage " ..
     tostring(site.resource_coverage or site.summary.best_resource_coverage or 0) ..
@@ -134,9 +164,14 @@ end
 local function start_move_to_resource_task(builder_state, task, tick, ctx)
   local entity = builder_state.entity
   local search_origin = task.manual_search_origin or entity.position
-  ctx.debug_log("task " .. task.id .. ": scanning for " .. task.resource_name .. " from " .. ctx.format_position(search_origin))
+  local search_task, search_radius = get_progressive_search_task(builder_state, task, ctx)
+  ctx.debug_log(
+    "task " .. task.id .. ": scanning for " .. task.resource_name ..
+    " from " .. ctx.format_position(search_origin) ..
+    (search_radius and (" using radius " .. tostring(search_radius)) or "")
+  )
 
-  local resource = ctx.find_nearest_resource(entity.surface, search_origin, task)
+  local resource = ctx.find_nearest_resource(entity.surface, search_origin, search_task)
   if not resource then
     builder_state.task_state = {
       phase = "waiting-for-resource",

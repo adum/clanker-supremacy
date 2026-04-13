@@ -676,8 +676,6 @@ local function plan_scaling(builder_data, builder_state, tick, adapters)
 end
 
 local function advance_scaling(builder_data, builder_state, tick, adapters)
-  adapters.discover_resource_sites(builder_state)
-
   if builder_state.scaling_active_task and builder_state.task_state then
     set_scaling_display_task(builder_state, builder_state.scaling_active_task)
     adapters.advance_task_phase(builder_state, builder_state.scaling_active_task, tick)

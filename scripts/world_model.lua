@@ -93,8 +93,8 @@ function world_model.register_resource_site(task, miner, downstream_machine, out
   return sites.register_resource_site(task, miner, downstream_machine, output_container, extras, ctx)
 end
 
-function world_model.discover_resource_sites(builder_state, ctx)
-  return sites.discover_resource_sites(builder_state, ctx)
+function world_model.discover_resource_sites(builder_state, ctx, options)
+  return sites.discover_resource_sites(builder_state, ctx, options)
 end
 
 function world_model.find_resource_site(surface, force, origin, task, ctx)

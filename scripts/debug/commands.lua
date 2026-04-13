@@ -10,6 +10,37 @@ local function clear_display_task(builder_state)
   end
 end
 
+local function describe_entry_timing_settings(settings, context)
+  local lines = {
+    "entry-timing=" .. (settings.enabled and "on" or "off")
+  }
+
+  if settings.active_entry then
+    local line =
+      "entry-timing-active=" ..
+      settings.active_entry.name ..
+      " tick=" .. tostring(settings.active_entry.tick)
+    if settings.active_entry.context and settings.active_entry.context ~= "" then
+      line = line .. " " .. settings.active_entry.context
+    end
+    lines[#lines + 1] = line
+  end
+
+  if settings.last_completed_entry then
+    local last_completed = settings.last_completed_entry
+    local line = "entry-timing-last-completed=" .. last_completed.name
+    if last_completed.tick ~= nil then
+      line = line .. " tick=" .. tostring(last_completed.tick)
+    end
+    if last_completed.context and last_completed.context ~= "" then
+      line = line .. " " .. last_completed.context
+    end
+    lines[#lines + 1] = line
+  end
+
+  return lines
+end
+
 local function parse_manual_component_request(command, builder_state, context)
   local parameter = command.parameter or ""
   local tokens = {}
@@ -201,6 +232,41 @@ function commands_module.toggle_debug(command, context)
   )
 end
 
+function commands_module.entry_timing(command, context)
+  context.ensure_entry_timing_settings()
+
+  local parameter = command.parameter or ""
+  local tokens = {}
+  for token in string.gmatch(parameter, "%S+") do
+    tokens[#tokens + 1] = string.lower(token)
+  end
+
+  local action = tokens[1] or "status"
+  if action == "status" then
+    for _, line in ipairs(describe_entry_timing_settings(context.get_entry_timing_settings(), context)) do
+      context.reply_to_command(command, line)
+    end
+    return
+  end
+
+  if action == "on" then
+    context.set_entry_timing_enabled(true)
+    context.reply_to_command(command, "entry timing enabled")
+    return
+  end
+
+  if action == "off" then
+    context.set_entry_timing_enabled(false)
+    context.reply_to_command(command, "entry timing disabled")
+    return
+  end
+
+  context.reply_to_command(
+    command,
+    "usage: /enemy-builder-entry-timing [status|on|off]"
+  )
+end
+
 function commands_module.retask(command, context)
   local builder_state = context.get_builder_state()
   if not builder_state then
@@ -316,6 +382,7 @@ function commands_module.register(context)
     {"enemy-builder-status", "Show the current Enemy Builder state.", commands_module.status},
     {"enemy-builder-goals", "Show the current Enemy Builder goal tree.", commands_module.goals},
     {"enemy-builder-debug", "Toggle Enemy Builder debug logging. Use on or off.", commands_module.toggle_debug},
+    {"enemy-builder-entry-timing", "Inspect or configure Enemy Builder entry timing logs.", commands_module.entry_timing},
     {"enemy-builder-retask", "Clear the current Enemy Builder task state and retry.", commands_module.retask},
     {"enemy-builder-plan", "Preview a manual Enemy Builder component plan.", commands_module.manual_plan},
     {"enemy-builder-build", "Queue a manual Enemy Builder component build.", commands_module.manual_build},
@@ -328,7 +395,18 @@ function commands_module.register(context)
       commands.remove_command(name)
     end
     commands.add_command(name, definition[2], function(command)
-      definition[3](command, context)
+      context.run_timed_entry(
+        "command:" .. name,
+        function()
+          if command.parameter and command.parameter ~= "" then
+            return "command=" .. name .. " parameter=" .. command.parameter
+          end
+          return "command=" .. name
+        end,
+        definition[3],
+        command,
+        context
+      )
     end)
   end
 end
