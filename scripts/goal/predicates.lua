@@ -44,7 +44,7 @@ function predicates.get_milestone(builder_data, milestone_name)
   return nil
 end
 
-local function unlock_requirements_met(builder_state, unlock, get_resource_site_counts)
+function predicates.unlock_requirements_met(builder_state, unlock, get_resource_site_counts)
   if not unlock then
     return true
   end
@@ -281,7 +281,7 @@ function predicates.should_pursue_milestone(builder_data, builder_state, milesto
 end
 
 function predicates.is_milestone_unlocked(builder_state, milestone, get_resource_site_counts)
-  return unlock_requirements_met(builder_state, milestone and milestone.unlock, get_resource_site_counts)
+  return predicates.unlock_requirements_met(builder_state, milestone and milestone.unlock, get_resource_site_counts)
 end
 
 return predicates

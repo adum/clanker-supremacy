@@ -581,28 +581,30 @@ end
 
 local function plan_scaling(builder_data, builder_state, tick, adapters)
   for _, reserve_item in ipairs((builder_data.scaling and builder_data.scaling.reserve_items) or {}) do
-    if adapters.get_item_count(builder_state.entity, reserve_item.name) < reserve_item.count then
-      local reserve_task = {
-        id = "scale-reserve-" .. reserve_item.name,
-        type = "scale-reserve",
-        reserve_item_name = reserve_item.name
-      }
-      local site = find_collectable_site(builder_state, reserve_item.name, false, adapters)
-      if site then
-        start_scaling_collection(builder_state, site, reserve_item.name, tick, false, reserve_task, adapters)
-      elseif start_scaling_wait_patrol(builder_data, builder_state, reserve_item.name, tick, reserve_task, adapters) then
-      else
-        start_scaling_wait(
-          builder_data,
-          builder_state,
-          tick,
-          "waiting-for-" .. reserve_item.name,
-          "scaling: waiting for " .. reserve_item.name .. " from existing sites",
-          reserve_task,
-          adapters
-        )
+    if predicates.unlock_requirements_met(builder_state, reserve_item.unlock, adapters.get_resource_site_counts) then
+      if adapters.get_item_count(builder_state.entity, reserve_item.name) < reserve_item.count then
+        local reserve_task = {
+          id = "scale-reserve-" .. reserve_item.name,
+          type = "scale-reserve",
+          reserve_item_name = reserve_item.name
+        }
+        local site = find_collectable_site(builder_state, reserve_item.name, false, adapters)
+        if site then
+          start_scaling_collection(builder_state, site, reserve_item.name, tick, false, reserve_task, adapters)
+        elseif start_scaling_wait_patrol(builder_data, builder_state, reserve_item.name, tick, reserve_task, adapters) then
+        else
+          start_scaling_wait(
+            builder_data,
+            builder_state,
+            tick,
+            "waiting-for-" .. reserve_item.name,
+            "scaling: waiting for " .. reserve_item.name .. " from existing sites",
+            reserve_task,
+            adapters
+          )
+        end
+        return
       end
-      return
     end
   end
 

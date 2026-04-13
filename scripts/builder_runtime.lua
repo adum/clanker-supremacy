@@ -1900,6 +1900,53 @@ local function place_test_runtime_iron_smelting_site(surface, origin_position)
   }
 end
 
+local function place_test_runtime_coal_outpost_site(surface, origin_position)
+  local force = ensure_builder_force()
+  local coal_task = builder_data.site_patterns and builder_data.site_patterns.coal_outpost and
+    builder_data.site_patterns.coal_outpost.build_task or nil
+  if not coal_task then
+    error("enemy-builder test: missing coal_outpost build task")
+  end
+
+  local site = find_resource_site(surface, force, origin_position, coal_task)
+  if not site then
+    error("enemy-builder test: failed to find runtime coal outpost site near " .. format_position(origin_position))
+  end
+
+  local miner = surface.create_entity{
+    name = coal_task.miner_name,
+    position = site.build_position,
+    direction = site.build_direction,
+    force = force,
+    create_build_effect_smoke = false
+  }
+
+  if not (miner and miner.valid) then
+    error("enemy-builder test: failed to create runtime coal miner")
+  end
+
+  local container = surface.create_entity{
+    name = coal_task.output_container.name,
+    position = site.output_container_position,
+    force = force,
+    create_build_effect_smoke = false
+  }
+
+  if not (container and container.valid) then
+    miner.destroy()
+    error("enemy-builder test: failed to create runtime coal output container")
+  end
+
+  insert_entity_fuel(miner, coal_task.fuel)
+  register_resource_site(coal_task, miner, nil, container)
+
+  return {
+    miner = miner,
+    output_container = container,
+    miner_position = miner.position
+  }
+end
+
 local function place_test_plate_belt_source(surface, item_name, machine_position)
   local force = ensure_builder_force()
   local furnace = surface.create_entity{
@@ -2612,6 +2659,55 @@ local function setup_scaling_collect_switches_site_test_case()
   }
 end
 
+local function setup_scaling_early_expansion_over_coal_reserve_test_case()
+  local surface = game.surfaces["nauvis"] or game.surfaces[1]
+  if not surface then
+    error("enemy-builder test: nauvis surface is unavailable")
+  end
+
+  local builder_position = {x = 0, y = 0}
+  local near_coal_patch = {x = 28, y = -8}
+  local near_iron_patch = {x = 28, y = 12}
+  local far_coal_patch = {x = 56, y = -8}
+  local far_iron_patch = {x = 56, y = 12}
+  local area = make_test_area({x = 42, y = 2}, 96, 56)
+
+  surface.always_day = true
+  clear_test_area(surface, area)
+
+  create_test_resource_patch(surface, "coal", near_coal_patch, 3, 5000)
+  create_test_resource_patch(surface, "iron-ore", near_iron_patch, 3, 5000)
+  create_test_resource_patch(surface, "coal", far_coal_patch, 3, 5000)
+  create_test_resource_patch(surface, "iron-ore", far_iron_patch, 3, 5000)
+
+  place_test_runtime_coal_outpost_site(surface, near_coal_patch)
+  place_test_runtime_iron_smelting_site(surface, near_iron_patch)
+
+  return setup_scaling_test{
+    case_name = "scaling_early_expansion_over_coal_reserve",
+    builder_position = builder_position,
+    surface_name = surface.name,
+    suppress_player_autospawn = true,
+    disable_nearby_machine_output_collection = true,
+    inventory = {
+      {name = "iron-plate", count = 80},
+      {name = "stone", count = 80},
+      {name = "wood", count = 40}
+    },
+    assertion = {
+      case_name = "scaling_early_expansion_over_coal_reserve",
+      surface_name = surface.name,
+      area = area,
+      deadline_offset_ticks = 3000,
+      skip_output_assertion = true,
+      minimum_resource_site_counts = {
+        coal_outpost = 2,
+        iron_smelting = 2
+      }
+    }
+  }
+end
+
 local function finish_manual_test()
   if storage.enemy_builder_test then
     storage.enemy_builder_test.finished = true
@@ -2952,6 +3048,7 @@ end
 local function format_test_failure_summary(surface, force, assertion)
   local area = assertion.area
   local parts = {}
+  local resource_site_counts = get_resource_site_counts and get_resource_site_counts() or {}
 
   for entity_name, expected_count in pairs(assertion.expected_counts or {}) do
     parts[#parts + 1] =
@@ -2961,6 +3058,11 @@ local function format_test_failure_summary(surface, force, assertion)
   for entity_name, maximum_count in pairs(assertion.maximum_counts or {}) do
     parts[#parts + 1] =
       entity_name .. "<=" .. maximum_count .. " actual=" .. count_test_entities(surface, force, area, entity_name)
+  end
+
+  for pattern_name, minimum_count in pairs(assertion.minimum_resource_site_counts or {}) do
+    parts[#parts + 1] =
+      "site-" .. pattern_name .. "=" .. tostring(resource_site_counts[pattern_name] or 0) .. "/" .. tostring(minimum_count)
   end
 
   if assertion.output_item_name and assertion.output_entity_names then
@@ -3041,6 +3143,7 @@ end
 
 local function test_assertion_passed(surface, force, assertion)
   local area = assertion.area
+  local resource_site_counts = get_resource_site_counts and get_resource_site_counts() or {}
 
   for entity_name, expected_count in pairs(assertion.expected_counts or {}) do
     if count_test_entities(surface, force, area, entity_name) < expected_count then
@@ -3050,6 +3153,12 @@ local function test_assertion_passed(surface, force, assertion)
 
   for entity_name, maximum_count in pairs(assertion.maximum_counts or {}) do
     if count_test_entities(surface, force, area, entity_name) > maximum_count then
+      return false
+    end
+  end
+
+  for pattern_name, minimum_count in pairs(assertion.minimum_resource_site_counts or {}) do
+    if (resource_site_counts[pattern_name] or 0) < minimum_count then
       return false
     end
   end
@@ -3276,6 +3385,7 @@ local test_remote_interface = {
   setup_iron_plate_belt_export_test_case = setup_iron_plate_belt_export_test_case,
   setup_solar_panel_factory_test_case = setup_solar_panel_factory_test_case,
   setup_scaling_collect_switches_site_test_case = setup_scaling_collect_switches_site_test_case,
+  setup_scaling_early_expansion_over_coal_reserve_test_case = setup_scaling_early_expansion_over_coal_reserve_test_case,
   setup_steel_smelting_test_case = setup_steel_smelting_test_case,
   setup_full_run_layout_snapshot_case = setup_full_run_layout_snapshot_case,
   finish_manual_test = finish_manual_test,

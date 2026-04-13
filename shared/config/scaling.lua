@@ -81,7 +81,16 @@ return {
     }
   },
   reserve_items = {
-    {name = "coal", count = 20}
+    {
+      name = "coal",
+      count = 20,
+      unlock = {
+        minimum_site_counts = {
+          coal_outpost = 2,
+          iron_smelting = 2
+        }
+      }
+    }
   },
   wait_patrol = {
     item_site_patterns = {
