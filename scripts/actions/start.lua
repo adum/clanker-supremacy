@@ -356,6 +356,121 @@ local function start_place_output_belt_line_task(builder_state, task, tick, ctx)
   )
 end
 
+local function start_place_assembly_block_task(builder_state, task, tick, ctx)
+  local entity = builder_state.entity
+  ctx.debug_log(
+    "task " .. task.id .. ": scanning for assembly block " ..
+    (task.target_item_name or (task.assembly_target and task.assembly_target.target_item_name) or "target") ..
+    " from " .. ctx.format_position(entity.position)
+  )
+
+  local site, summary = ctx.find_assembly_block_site(builder_state, task)
+  if not site then
+    builder_state.task_state = {
+      phase = "waiting-for-resource",
+      wait_reason = "no-assembly-site",
+      next_attempt_tick = tick + task.search_retry_ticks,
+      failed_layout_anchor_entity = summary.failed_anchor_entity
+    }
+    ctx.debug_log(
+      "task " .. task.id .. ": no assembly block site found; checked " ..
+      summary.anchor_entities_considered .. " anchors, " ..
+      (summary.anchors_skipped_blocked or 0) .. " anchors blocked, " ..
+      (summary.anchors_skipped_registered or 0) .. " anchors already registered, " ..
+      (summary.anchors_missing_power or 0) .. " anchors without power, " ..
+      summary.orientations_considered .. " orientations, " ..
+      summary.positions_checked .. " candidate positions, " ..
+      summary.placeable_positions .. " placeable spots, " ..
+      (summary.source_sites_considered or 0) .. " source belt sites, " ..
+      (summary.failed_source_routes or 0) .. " failed source routes, " ..
+      (summary.failed_inserter_geometry or 0) .. " inserter-geometry failures, " ..
+      (summary.failed_power_bridge or 0) .. " power-bridge failures, " ..
+      (summary.failed_power_network or 0) .. " power-network failures, " ..
+      (summary.recipe_unavailable_rejections or 0) .. " recipe failures, " ..
+      (summary.resource_overlap_rejections or 0) .. " resource-overlap rejections; retry at tick " ..
+      builder_state.task_state.next_attempt_tick
+    )
+    return
+  end
+
+  builder_state.task_state = {
+    phase = "moving",
+    build_position = ctx.clone_position(site.build_position),
+    approach_position = ctx.create_task_approach_position(task, site.build_position),
+    anchor_position = ctx.clone_position(site.anchor_entity.position),
+    anchor_entity = site.anchor_entity,
+    layout_placements = site.placements,
+    layout_index = 1,
+    placed_layout_entities = {},
+    last_position = ctx.clone_position(entity.position),
+    last_progress_tick = tick
+  }
+  ctx.builder_runtime.clear_task_retry_state(builder_state, task)
+
+  ctx.debug_log(
+    "task " .. task.id .. ": found assembly block site for " ..
+    (task.target_item_name or "target") .. " near " .. site.anchor_entity.name ..
+    " at " .. ctx.format_position(site.anchor_entity.position) ..
+    "; moving toward " .. ctx.format_position(site.build_position)
+  )
+end
+
+local function start_place_assembly_input_route_task(builder_state, task, tick, ctx)
+  local entity = builder_state.entity
+  ctx.debug_log(
+    "task " .. task.id .. ": scanning for assembly input route " ..
+    tostring(task.route_id) .. " from " .. ctx.format_position(entity.position)
+  )
+
+  local site, summary = ctx.find_assembly_input_route_site(builder_state, task)
+  if not site then
+    builder_state.task_state = {
+      phase = "waiting-for-resource",
+      wait_reason = "no-assembly-input-route",
+      next_attempt_tick = tick + task.search_retry_ticks,
+      failed_layout_anchor_entity = summary.failed_anchor_entity
+    }
+    ctx.debug_log(
+      "task " .. task.id .. ": no assembly input route found; checked " ..
+      summary.anchor_entities_considered .. " assembly blocks, " ..
+      (summary.anchors_skipped_blocked or 0) .. " anchors blocked, " ..
+      (summary.anchors_skipped_registered or 0) .. " routes already connected, " ..
+      (summary.source_sites_considered or 0) .. " source belt sites, " ..
+      summary.positions_checked .. " candidate positions, " ..
+      summary.placeable_positions .. " placeable spots, " ..
+      (summary.failed_source_extractors or 0) .. " failed source extractors, " ..
+      (summary.failed_belt_paths or 0) .. " failed belt paths, " ..
+      (summary.resource_overlap_rejections or 0) .. " resource-overlap rejections; retry at tick " ..
+      builder_state.task_state.next_attempt_tick
+    )
+    return
+  end
+
+  builder_state.task_state = {
+    phase = "moving",
+    build_position = ctx.clone_position(site.build_position),
+    approach_position = ctx.create_task_approach_position(task, site.build_position),
+    anchor_position = ctx.clone_position(site.anchor_entity.position),
+    anchor_entity = site.anchor_entity,
+    assembly_site = site.assembly_site,
+    route_id = site.route_id,
+    route_spec = site.route_spec,
+    source_site = site.source_site,
+    layout_placements = site.placements,
+    layout_index = 1,
+    placed_layout_entities = {},
+    last_position = ctx.clone_position(entity.position),
+    last_progress_tick = tick
+  }
+  ctx.builder_runtime.clear_task_retry_state(builder_state, task)
+
+  ctx.debug_log(
+    "task " .. task.id .. ": found assembly input route " .. tostring(site.route_id) ..
+    " into block at " .. ctx.format_position(site.anchor_entity.position) ..
+    "; moving toward " .. ctx.format_position(site.build_position)
+  )
+end
+
 function action_start.start_task(builder_state, task, tick, ctx)
   if task.type == "place-miner-on-resource" then
     start_place_miner_task(builder_state, task, tick, ctx)
@@ -384,6 +499,16 @@ function action_start.start_task(builder_state, task, tick, ctx)
 
   if task.type == "place-output-belt-line" then
     start_place_output_belt_line_task(builder_state, task, tick, ctx)
+    return
+  end
+
+  if task.type == "place-assembly-block" then
+    start_place_assembly_block_task(builder_state, task, tick, ctx)
+    return
+  end
+
+  if task.type == "place-assembly-input-route" then
+    start_place_assembly_input_route_task(builder_state, task, tick, ctx)
     return
   end
 

@@ -29,6 +29,14 @@ function world_model.find_output_belt_line_site(builder_state, task, ctx)
   return queries.find_output_belt_line_site(builder_state, task, ctx)
 end
 
+function world_model.find_assembly_block_site(builder_state, task, ctx)
+  return queries.find_assembly_block_site(builder_state, task, ctx)
+end
+
+function world_model.find_assembly_input_route_site(builder_state, task, ctx)
+  return queries.find_assembly_input_route_site(builder_state, task, ctx)
+end
+
 function world_model.register_smelting_site(task, miner, downstream_machine, output_container, ctx)
   return production.register_smelting_site(task, miner, downstream_machine, output_container, ctx)
 end
@@ -43,6 +51,14 @@ end
 
 function world_model.register_output_belt_site(task, output_machine, output_inserter, belt_entities, hub_position, ctx)
   return production.register_output_belt_site(task, output_machine, output_inserter, belt_entities, hub_position, ctx)
+end
+
+function world_model.register_assembly_block_site(task, anchor_entity, root_assembler, placed_layout_entities, ctx)
+  return production.register_assembly_block_site(task, anchor_entity, root_assembler, placed_layout_entities, ctx)
+end
+
+function world_model.register_assembly_input_route(task, assembly_site, route_id, belt_entities, source_site, ctx)
+  return production.register_assembly_input_route(task, assembly_site, route_id, belt_entities, source_site, ctx)
 end
 
 function world_model.process_production_sites(tick, ctx)

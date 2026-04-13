@@ -100,6 +100,7 @@ end
 function goal_engine.get_pending_scaling_milestone(builder_data, builder_state, tick, adapters)
   for _, milestone in ipairs((builder_data.scaling and builder_data.scaling.production_milestones) or {}) do
     if
+      predicates.is_milestone_unlocked(builder_state, milestone, adapters.get_resource_site_counts) and
       not adapters.is_goal_retry_blocked(builder_state, "milestone:" .. milestone.name, tick) and
       not builder_state.completed_scaling_milestones[milestone.name]
     then

@@ -578,11 +578,12 @@ function goal_tree.instantiate_manual_request(builder_data, component_name, posi
     return nil, "unknown component '" .. tostring(component_name) .. "'"
   end
 
+  local snapped_position = position and common.snap_to_tile_center(position) or nil
   local request = {
     id = (game and game.tick or 0) .. "-" .. component.id,
     component_name = component.id,
     display_name = component.display_name,
-    requested_position = common.clone_position(position),
+    requested_position = common.clone_position(snapped_position or position),
     current_task_index = 1,
     tasks = {}
   }
@@ -592,14 +593,19 @@ function goal_tree.instantiate_manual_request(builder_data, component_name, posi
     instance.id = "manual-" .. component.id .. "-" .. tostring(index) .. "-" .. (instance.id or instance.type or "task")
     instance.manual_goal_id = request.id
     instance.manual_component_name = component.id
-    instance.manual_search_origin = common.clone_position(position)
-    if position then
+    instance.manual_search_origin = common.clone_position(snapped_position or position)
+    if snapped_position then
       if instance.type == "place-machine-near-site" then
-        instance.manual_target_position = common.clone_position(position)
+        instance.manual_target_position = common.clone_position(snapped_position)
+      end
+
+      if instance.type == "place-assembly-block" then
+        instance.manual_target_position = common.clone_position(snapped_position)
+        instance.manual_target_search_radius = instance.placement_search_radius or 6
       end
 
       if instance.type == "place-layout-near-machine" then
-        instance.manual_anchor_position = common.clone_position(position)
+        instance.manual_anchor_position = common.clone_position(snapped_position)
         instance.manual_anchor_search_radius = 16
       end
     end

@@ -4,6 +4,33 @@ local function entity_contains_point(entity, point, ctx)
   return entity and entity.valid and point and ctx.point_in_area(point, entity.selection_box)
 end
 
+local function try_set_entity_recipe(entity, recipe_name)
+  if not (entity and entity.valid and recipe_name and entity.set_recipe) then
+    return false, "entity-or-recipe-missing"
+  end
+
+  local ok, result = pcall(function()
+    return entity.set_recipe(recipe_name)
+  end)
+  if ok then
+    if result ~= false then
+      return true, nil
+    end
+    return false, "set_recipe returned false"
+  end
+
+  local first_error = tostring(result)
+  ok, result = pcall(function()
+    return entity.set_recipe(recipe_name, "normal")
+  end)
+  if ok and result ~= false then
+    return true, nil
+  end
+
+  local second_error = ok and "set_recipe returned false with quality" or tostring(result)
+  return false, first_error .. " / " .. second_error
+end
+
 local function begin_post_place_pause(builder_state, task, tick, next_phase, placed_entity, ctx)
   local task_state = builder_state.task_state
   local pause_ticks = ctx.get_post_place_pause_ticks(task)
@@ -356,6 +383,64 @@ function action_build.finish_place_layout_near_machine_task(builder_state, task,
     return
   end
 
+  if task.type == "place-assembly-block" then
+    local anchor_entity = task_state.anchor_entity
+    local root_assembler = nil
+
+    for _, placement in ipairs(valid_entities) do
+      if placement.site_role == "assembly-root" then
+        root_assembler = placement.entity
+        break
+      end
+    end
+
+    if not (anchor_entity and anchor_entity.valid and root_assembler and root_assembler.valid) then
+      ctx.debug_log("task " .. task.id .. ": assembly block completed without a valid anchor/root assembler; refreshing task")
+      refresh_task(builder_state, task, tick, ctx)
+      return
+    end
+
+    ctx.register_assembly_block_site(task, anchor_entity, root_assembler, valid_entities)
+
+    ctx.complete_current_task(
+      builder_state,
+      task,
+      "built " .. (task.target_item_name or "assembly block") ..
+      " at " .. ctx.format_position(root_assembler.position) ..
+      " near " .. anchor_entity.name .. " at " .. ctx.format_position(anchor_entity.position)
+    )
+    return
+  end
+
+  if task.type == "place-assembly-input-route" then
+    local assembly_site = task_state.assembly_site
+    local anchor_entity = task_state.anchor_entity
+    local belt_entities = {}
+
+    for _, placement in ipairs(valid_entities) do
+      if placement.entity and placement.entity.valid and placement.entity.type == "transport-belt" then
+        belt_entities[#belt_entities + 1] = placement.entity
+      end
+    end
+
+    if not (assembly_site and anchor_entity and anchor_entity.valid and #belt_entities > 0) then
+      ctx.debug_log("task " .. task.id .. ": assembly input route completed without a valid block/belts; refreshing task")
+      refresh_task(builder_state, task, tick, ctx)
+      return
+    end
+
+    ctx.register_assembly_input_route(task, assembly_site, task_state.route_id or task.route_id, belt_entities, task_state.source_site)
+
+    ctx.complete_current_task(
+      builder_state,
+      task,
+      "connected " .. tostring(task_state.route_id or task.route_id or "assembly route") ..
+      " into block at " .. ctx.format_position(anchor_entity.position) ..
+      " with " .. tostring(#belt_entities) .. " belts"
+    )
+    return
+  end
+
   local seeded_items = seed_entity_from_builder_inventory(
     builder_state.entity,
     anchor_entity,
@@ -692,6 +777,7 @@ function action_build.place_miner(builder_state, task, tick, ctx, refresh_task)
     task_state.placed_layout_entities[#task_state.placed_layout_entities + 1] = {
       id = placement.id,
       site_role = placement.site_role,
+      route_id = placement.route_id,
       entity = placed_entity
     }
 
@@ -790,25 +876,15 @@ function action_build.place_machine_near_site(builder_state, task, tick, ctx, re
         return
       end
     elseif task.recipe_name then
-      local recipe_set = false
       local recipe_enabled = entity.force.recipes and entity.force.recipes[task.recipe_name] and entity.force.recipes[task.recipe_name].enabled
-      if placed_entity.set_recipe then
-        local ok, result = pcall(placed_entity.set_recipe, placed_entity, task.recipe_name, "normal")
-        recipe_set = ok and result ~= false
-        if not ok then
-          ctx.debug_log(
-            "task " .. task.id .. ": set_recipe raised " .. tostring(result) ..
-            " while configuring " .. task.entity_name
-          )
-        end
-      end
+      local recipe_set, recipe_error = try_set_entity_recipe(placed_entity, task.recipe_name)
 
       if not recipe_set then
         task_state.placed_entity = placed_entity
         schedule_retry(
           "recipe-unavailable",
           "failed to set recipe " .. task.recipe_name .. " on " .. task.entity_name ..
-            " (force recipe enabled=" .. tostring(recipe_enabled) .. ")"
+            " (force recipe enabled=" .. tostring(recipe_enabled) .. ", reason=" .. tostring(recipe_error) .. ")"
         )
         return
       end
@@ -915,6 +991,15 @@ function action_build.place_layout_near_machine(builder_state, task, tick, ctx, 
     return
   end
 
+  if placement.recipe_name then
+    local recipe_set, recipe_error = try_set_entity_recipe(placed_entity, placement.recipe_name)
+    if not recipe_set then
+      placed_entity.destroy()
+      abort_build("failed to set recipe " .. placement.recipe_name .. " on " .. placement.entity_name .. ": " .. tostring(recipe_error))
+      return
+    end
+  end
+
   if task.consume_items_on_place then
     local removed_count = ctx.remove_item(
       entity,
@@ -936,6 +1021,7 @@ function action_build.place_layout_near_machine(builder_state, task, tick, ctx, 
   task_state.placed_layout_entities[#task_state.placed_layout_entities + 1] = {
     id = placement.id,
     site_role = placement.site_role,
+    route_id = placement.route_id,
     entity = placed_entity
   }
 

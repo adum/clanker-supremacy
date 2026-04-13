@@ -5,7 +5,10 @@ return {
   force = {
     unlock_all_technologies = false,
     enabled_recipes = {
-      "steel-plate"
+      "steel-plate",
+      "copper-cable",
+      "electronic-circuit",
+      "solar-panel"
     }
   },
   prototypes = {

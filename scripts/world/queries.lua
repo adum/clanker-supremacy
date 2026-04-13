@@ -366,6 +366,17 @@ local function build_resource_clearance_search_origins(surface, force, task, anc
         placement_step = local_search_step
       }
       summary.clearance_origins_found = summary.clearance_origins_found + 1
+    elseif not saw_resource_overlap then
+      local center_distance = random_between_inclusive(ctx, extra_distance_min, extra_distance_max)
+      search_origins[#search_origins + 1] = {
+        center = {
+          x = anchor_position.x + (unit_x * center_distance),
+          y = anchor_position.y + (unit_y * center_distance)
+        },
+        search_radius = local_search_radius,
+        placement_step = local_search_step
+      }
+      summary.clearance_origins_found = summary.clearance_origins_found + 1
     end
   end
 
@@ -1957,6 +1968,1575 @@ function queries.find_output_belt_line_site(builder_state, task, ctx)
         end
       end
     end
+  end
+
+  return nil, summary
+end
+
+local function get_position_key(position)
+  return string.format("%.2f:%.2f", position.x, position.y)
+end
+
+local function get_direction_vector_from_direction(direction, ctx)
+  if direction == ctx.direction_by_name.north then
+    return {x = 0, y = -1}
+  end
+
+  if direction == ctx.direction_by_name.south then
+    return {x = 0, y = 1}
+  end
+
+  if direction == ctx.direction_by_name.west then
+    return {x = -1, y = 0}
+  end
+
+  return {x = 1, y = 0}
+end
+
+local function get_site_output_item_name(site)
+  if site.output_item_name then
+    return site.output_item_name
+  end
+
+  if site.output_machine and site.output_machine.valid and site.output_machine.get_recipe then
+    local recipe = site.output_machine.get_recipe()
+    return recipe and recipe.name or nil
+  end
+
+  return nil
+end
+
+local function get_assembly_route_item_names(assembly_target)
+  local item_names = {}
+  local seen = {}
+
+  for _, route_spec in ipairs((assembly_target and assembly_target.raw_input_routes) or {}) do
+    local item_name = route_spec.item_name
+    if item_name and not seen[item_name] then
+      seen[item_name] = true
+      item_names[#item_names + 1] = item_name
+    end
+  end
+
+  return item_names
+end
+
+local function find_nearest_power_anchor_pole(surface, force, position, radius, pole_name, ctx)
+  local poles = surface.find_entities_filtered{
+    position = position,
+    radius = radius,
+    force = force,
+    name = pole_name
+  }
+
+  table.sort(poles, function(left, right)
+    return ctx.square_distance(position, left.position) < ctx.square_distance(position, right.position)
+  end)
+
+  return poles[1]
+end
+
+local function build_source_cluster_anchor_candidates(builder_state, task, summary, ctx)
+  local builder = builder_state.entity
+  local assembly_target = task.assembly_target or {}
+  local cluster_config = assembly_target.source_cluster or task.source_cluster or {}
+  local site_type = cluster_config.site_type or "smelting-output-belt"
+  local max_sites_per_item = math.max(cluster_config.max_sites_per_item or 4, 1)
+  local route_item_names = get_assembly_route_item_names(assembly_target)
+  local sites_by_item = {}
+  local candidates = {}
+
+  if #route_item_names == 0 then
+    return candidates
+  end
+
+  for _, item_name in ipairs(route_item_names) do
+    sites_by_item[item_name] = {}
+  end
+
+  for _, site in ipairs(storage_helpers.ensure_production_sites()) do
+    local output_item_name = get_site_output_item_name(site)
+    if site.site_type == site_type and output_item_name and sites_by_item[output_item_name] then
+      local anchor_entity = site.output_machine
+      local hub_position = site.hub_position
+      if anchor_entity and anchor_entity.valid and hub_position then
+        sites_by_item[output_item_name][#sites_by_item[output_item_name] + 1] = {
+          site = site,
+          distance = ctx.square_distance(builder.position, hub_position)
+        }
+      end
+    end
+  end
+
+  for _, item_name in ipairs(route_item_names) do
+    local item_sites = sites_by_item[item_name]
+    table.sort(item_sites, function(left, right)
+      return left.distance < right.distance
+    end)
+
+    while #item_sites > max_sites_per_item do
+      table.remove(item_sites)
+    end
+
+    if #item_sites == 0 then
+      return {}
+    end
+  end
+
+  local primary_item_name = route_item_names[1]
+  for _, primary_candidate in ipairs(sites_by_item[primary_item_name]) do
+    local source_sites_by_item = {
+      [primary_item_name] = {primary_candidate.site}
+    }
+    local cluster_positions = {
+      primary_candidate.site.hub_position
+    }
+    local preferred_direction_x = 0
+    local preferred_direction_y = 0
+    local cluster_score = 0
+    local cluster_valid = true
+
+    if primary_candidate.site.output_machine and primary_candidate.site.output_machine.valid then
+      preferred_direction_x = preferred_direction_x +
+        (primary_candidate.site.hub_position.x - primary_candidate.site.output_machine.position.x)
+      preferred_direction_y = preferred_direction_y +
+        (primary_candidate.site.hub_position.y - primary_candidate.site.output_machine.position.y)
+    end
+
+    for item_index = 2, #route_item_names do
+      local item_name = route_item_names[item_index]
+      local nearest_site = nil
+      local nearest_distance = nil
+
+      for _, candidate in ipairs(sites_by_item[item_name]) do
+        local candidate_distance = ctx.square_distance(primary_candidate.site.hub_position, candidate.site.hub_position)
+        if not nearest_site or candidate_distance < nearest_distance then
+          nearest_site = candidate.site
+          nearest_distance = candidate_distance
+        end
+      end
+
+      if not nearest_site then
+        cluster_valid = false
+        break
+      end
+
+      source_sites_by_item[item_name] = {nearest_site}
+      cluster_positions[#cluster_positions + 1] = nearest_site.hub_position
+      if nearest_site.output_machine and nearest_site.output_machine.valid then
+        preferred_direction_x = preferred_direction_x +
+          (nearest_site.hub_position.x - nearest_site.output_machine.position.x)
+        preferred_direction_y = preferred_direction_y +
+          (nearest_site.hub_position.y - nearest_site.output_machine.position.y)
+      end
+      cluster_score = cluster_score + (nearest_distance or 0)
+    end
+
+    if cluster_valid then
+      local sum_x = 0
+      local sum_y = 0
+      for _, cluster_position in ipairs(cluster_positions) do
+        sum_x = sum_x + cluster_position.x
+        sum_y = sum_y + cluster_position.y
+      end
+
+      local cluster_center = {
+        x = sum_x / #cluster_positions,
+        y = sum_y / #cluster_positions
+      }
+      local power_anchor_pole = find_nearest_power_anchor_pole(
+        builder.surface,
+        builder.force,
+        cluster_center,
+        task.power_anchor_search_radius or 16,
+        assembly_target.power_anchor_entity_name or task.power_anchor_entity_name,
+        ctx
+      )
+
+      if power_anchor_pole and power_anchor_pole.valid then
+        local preferred_direction_vector = nil
+        if preferred_direction_x ~= 0 or preferred_direction_y ~= 0 then
+          preferred_direction_vector = {
+            x = preferred_direction_x,
+            y = preferred_direction_y
+          }
+        else
+          preferred_direction_vector = {
+            x = power_anchor_pole.position.x - cluster_center.x,
+            y = power_anchor_pole.position.y - cluster_center.y
+          }
+        end
+
+        candidates[#candidates + 1] = {
+          anchor_entity = primary_candidate.site.output_machine,
+          power_anchor_pole = power_anchor_pole,
+          search_center = snap_position_to_tile_center(power_anchor_pole.position),
+          minimum_distance_reference = snap_position_to_tile_center(cluster_center),
+          source_sites_by_item = source_sites_by_item,
+          preferred_direction_vector = preferred_direction_vector,
+          score = cluster_score + ctx.square_distance(builder.position, cluster_center)
+        }
+      else
+        summary.anchors_missing_power = summary.anchors_missing_power + 1
+      end
+    end
+  end
+
+  table.sort(candidates, function(left, right)
+    return left.score < right.score
+  end)
+
+  return candidates
+end
+
+local function build_source_cluster_search_origins(cluster_center, cluster_config, task, preferred_direction_vector, ctx)
+  local maximum_build_distance = math.max(
+    cluster_config.maximum_build_distance or cluster_config.local_search_radius or task.placement_search_radius or 0,
+    0
+  )
+  local minimum_build_distance = math.max(cluster_config.minimum_build_distance or 0, 0)
+
+  if maximum_build_distance <= 0 then
+    return {{
+      center = ctx.clone_position(cluster_center),
+      search_radius = task.placement_search_radius or 0,
+      placement_step = cluster_config.local_search_step or task.placement_step or 1
+    }}
+  end
+
+  local heading_config = {
+    heading_count = cluster_config.heading_count or 16,
+    heading_attempts = cluster_config.heading_attempts or (cluster_config.heading_count or 16)
+  }
+  local origin_search_radius = cluster_config.origin_search_radius or task.placement_search_radius or 0
+  local origin_search_step = cluster_config.local_search_step or task.placement_step or 1
+  local search_origins = {}
+
+  local heading_angles = build_randomized_heading_angles(heading_config, ctx)
+  if preferred_direction_vector and (preferred_direction_vector.x ~= 0 or preferred_direction_vector.y ~= 0) then
+    local vector_length = math.sqrt(
+      (preferred_direction_vector.x * preferred_direction_vector.x) +
+      (preferred_direction_vector.y * preferred_direction_vector.y)
+    )
+    if vector_length > 0 then
+      local preferred_unit_x = preferred_direction_vector.x / vector_length
+      local preferred_unit_y = preferred_direction_vector.y / vector_length
+      table.sort(heading_angles, function(left, right)
+        local left_score = (math.cos(left) * preferred_unit_x) + (math.sin(left) * preferred_unit_y)
+        local right_score = (math.cos(right) * preferred_unit_x) + (math.sin(right) * preferred_unit_y)
+        return left_score > right_score
+      end)
+    end
+  end
+
+  for _, angle in ipairs(heading_angles) do
+    local center_distance = random_between_inclusive(
+      ctx,
+      math.ceil(minimum_build_distance),
+      math.ceil(maximum_build_distance)
+    )
+    search_origins[#search_origins + 1] = {
+      center = snap_position_to_tile_center{
+        x = cluster_center.x + (math.cos(angle) * center_distance),
+        y = cluster_center.y + (math.sin(angle) * center_distance)
+      },
+      search_radius = origin_search_radius,
+      placement_step = origin_search_step
+    }
+  end
+
+  return search_origins
+end
+
+local function get_output_belt_terminal_entity(site, ctx)
+  local best_belt = nil
+  local best_distance = nil
+  local hub_position = site and site.hub_position or nil
+
+  for _, belt_entity in ipairs((site and site.belt_entities) or {}) do
+    if belt_entity and belt_entity.valid then
+      local distance
+      if hub_position then
+        distance = ctx.square_distance(belt_entity.position, hub_position)
+      elseif site.output_machine and site.output_machine.valid then
+        distance = -ctx.square_distance(belt_entity.position, site.output_machine.position)
+      else
+        distance = 0
+      end
+
+      if not best_belt or distance < best_distance then
+        best_belt = belt_entity
+        best_distance = distance
+      end
+    end
+  end
+
+  return best_belt
+end
+
+local function get_output_belt_connection_positions(site, ctx)
+  local terminal_belt = get_output_belt_terminal_entity(site, ctx)
+  if not (terminal_belt and terminal_belt.valid) then
+    return {}
+  end
+
+  local direction_vector = get_direction_vector_from_direction(terminal_belt.direction, ctx)
+  return {{
+    position = {
+      x = terminal_belt.position.x + direction_vector.x,
+      y = terminal_belt.position.y + direction_vector.y
+    },
+    terminal_belt = terminal_belt
+  }}
+end
+
+local function build_source_route_entry_options(surface, force, terminal_belt, route_target_position, task, summary, ctx)
+  local options = {}
+  if not (terminal_belt and terminal_belt.valid and route_target_position) then
+    return options
+  end
+
+  local extractor_spec = task.assembly_target and task.assembly_target.source_route_extractor or nil
+  if not extractor_spec then
+    local start_direction_vector = get_direction_vector_from_direction(terminal_belt.direction, ctx)
+    if start_direction_vector then
+      options[#options + 1] = {
+        path_start_position = {
+          x = terminal_belt.position.x + (start_direction_vector.x * 2),
+          y = terminal_belt.position.y + (start_direction_vector.y * 2)
+        },
+        prefix_placements = {{
+          entity_name = task.belt_entity_name,
+          item_name = task.belt_item_name or task.belt_entity_name,
+          build_position = {
+            x = terminal_belt.position.x + start_direction_vector.x,
+            y = terminal_belt.position.y + start_direction_vector.y
+          },
+          build_direction = terminal_belt.direction,
+          site_role = "assembly-source-belt"
+        }}
+      }
+    end
+    return options
+  end
+
+  local candidate_steps = {
+    {x = 1, y = 0},
+    {x = -1, y = 0},
+    {x = 0, y = 1},
+    {x = 0, y = -1}
+  }
+  local target_vector = {
+    x = route_target_position.x - terminal_belt.position.x,
+    y = route_target_position.y - terminal_belt.position.y
+  }
+  table.sort(candidate_steps, function(left, right)
+    local left_score = (left.x * target_vector.x) + (left.y * target_vector.y)
+    local right_score = (right.x * target_vector.x) + (right.y * target_vector.y)
+    return left_score > right_score
+  end)
+
+  for _, step in ipairs(candidate_steps) do
+    local inserter_position = {
+      x = terminal_belt.position.x + step.x,
+      y = terminal_belt.position.y + step.y
+    }
+    local drop_belt_position = {
+      x = terminal_belt.position.x + (step.x * 2),
+      y = terminal_belt.position.y + (step.y * 2)
+    }
+    local pickup_direction_name = get_direction_name_from_delta(-step.x, -step.y)
+    local pickup_direction = pickup_direction_name and ctx.direction_by_name[pickup_direction_name] or nil
+
+    if pickup_direction and surface.can_place_entity{
+      name = extractor_spec.entity_name,
+      position = inserter_position,
+      direction = pickup_direction,
+      force = force
+    } and surface.can_place_entity{
+      name = task.belt_entity_name,
+      position = drop_belt_position,
+      direction = ctx.direction_by_name.east,
+      force = force
+    } then
+      local resource_overlap = false
+      if task.forbid_resource_overlap then
+        resource_overlap =
+          candidate_entity_overlaps_resources(surface, force, extractor_spec.entity_name, inserter_position, pickup_direction) or
+          candidate_entity_overlaps_resources(surface, force, task.belt_entity_name, drop_belt_position, ctx.direction_by_name.east)
+      end
+
+      if resource_overlap then
+        summary.resource_overlap_rejections = (summary.resource_overlap_rejections or 0) + 1
+      else
+        local probe_belt = surface.create_entity{
+          name = task.belt_entity_name,
+          position = drop_belt_position,
+          direction = ctx.direction_by_name.east,
+          force = force,
+          create_build_effect_smoke = false,
+          raise_built = false
+        }
+        local probe_inserter = probe_belt and surface.create_entity{
+          name = extractor_spec.entity_name,
+          position = inserter_position,
+          direction = pickup_direction,
+          force = force,
+          create_build_effect_smoke = false,
+          raise_built = false
+        } or nil
+
+        local geometry_ok =
+          probe_belt and probe_belt.valid and
+          probe_inserter and probe_inserter.valid and
+          entity_contains_point(terminal_belt, probe_inserter.pickup_position, ctx) and
+          entity_contains_point(probe_belt, probe_inserter.drop_position, ctx)
+
+        if probe_inserter and probe_inserter.valid then
+          probe_inserter.destroy()
+        end
+        if probe_belt and probe_belt.valid then
+          probe_belt.destroy()
+        end
+
+        if geometry_ok then
+          options[#options + 1] = {
+            path_start_position = ctx.clone_position(drop_belt_position),
+            suffix_placements = {{
+              entity_name = extractor_spec.entity_name,
+              item_name = extractor_spec.item_name or extractor_spec.entity_name,
+              build_position = ctx.clone_position(inserter_position),
+              build_direction = pickup_direction,
+              site_role = "assembly-source-inserter",
+              fuel = extractor_spec.fuel
+            }}
+          }
+        else
+          summary.failed_source_extractors = (summary.failed_source_extractors or 0) + 1
+        end
+      end
+    else
+      summary.failed_source_extractors = (summary.failed_source_extractors or 0) + 1
+    end
+  end
+
+  return options
+end
+
+local function build_belt_path_placements_between_positions(surface, force, first_position, terminal_position, task, summary, reusable_belt_entities_by_key, ctx)
+  local function is_walkable_position(position)
+    local position_key = get_position_key(position)
+    local reusable_belt = reusable_belt_entities_by_key and reusable_belt_entities_by_key[position_key] or nil
+    if reusable_belt and reusable_belt.valid then
+      return true
+    end
+
+    summary.positions_checked = summary.positions_checked + 1
+
+    if not surface.can_place_entity{
+      name = task.belt_entity_name,
+      position = position,
+      direction = ctx.direction_by_name.east,
+      force = force
+    } then
+      return false
+    end
+
+    summary.placeable_positions = summary.placeable_positions + 1
+
+    if task.forbid_resource_overlap and candidate_entity_overlaps_resources(
+      surface,
+      force,
+      task.belt_entity_name,
+      position,
+      ctx.direction_by_name.east
+    ) then
+      summary.resource_overlap_rejections = (summary.resource_overlap_rejections or 0) + 1
+      return false
+    end
+
+    return true
+  end
+
+  local function try_build_placements_from_positions(positions, axis_label)
+    local placements = {}
+    local seen_positions = {}
+
+    for index, position in ipairs(positions) do
+      local next_position = positions[index + 1]
+      local previous_position = positions[index - 1]
+      local direction_name = nil
+
+      if next_position then
+        direction_name = get_direction_name_from_delta(next_position.x - position.x, next_position.y - position.y)
+      elseif previous_position then
+        direction_name = get_direction_name_from_delta(position.x - previous_position.x, position.y - previous_position.y)
+      end
+
+      local direction = direction_name and ctx.direction_by_name[direction_name] or ctx.direction_by_name.east
+      local position_key = get_position_key(position)
+      if seen_positions[position_key] then
+        if (summary.failed_source_routes or 0) < 5 then
+          ctx.debug_log(
+            "assembly route duplicate position at " .. ctx.format_position(position) ..
+            " for path " .. ctx.format_position(first_position) .. " -> " .. ctx.format_position(terminal_position) ..
+            " via " .. axis_label
+          )
+        end
+        return nil
+      end
+      seen_positions[position_key] = true
+
+      local reusable_belt = reusable_belt_entities_by_key and reusable_belt_entities_by_key[position_key] or nil
+      if reusable_belt and reusable_belt.valid then
+        if position_key ~= get_position_key(terminal_position) and reusable_belt.direction == direction then
+          goto continue_position
+        end
+        return nil
+      end
+
+      summary.positions_checked = summary.positions_checked + 1
+
+      if not surface.can_place_entity{
+        name = task.belt_entity_name,
+        position = position,
+        direction = direction,
+        force = force
+      } then
+        if (summary.failed_source_routes or 0) < 5 then
+          local occupant_names = {}
+          for _, occupant in ipairs(surface.find_entities_filtered{
+            area = {
+              {position.x - 0.51, position.y - 0.51},
+              {position.x + 0.51, position.y + 0.51}
+            }
+          }) do
+            if occupant and occupant.valid then
+              occupant_names[#occupant_names + 1] = occupant.name .. "@" .. ctx.format_position(occupant.position)
+            end
+          end
+          ctx.debug_log(
+            "assembly route blocked at " .. ctx.format_position(position) ..
+            " dir=" .. tostring(direction_name) ..
+            " for path " .. ctx.format_position(first_position) .. " -> " .. ctx.format_position(terminal_position) ..
+            " via " .. axis_label ..
+            "; occupants=" .. table.concat(occupant_names, ",")
+          )
+        end
+        return nil
+      end
+
+      summary.placeable_positions = summary.placeable_positions + 1
+
+      if task.forbid_resource_overlap and candidate_entity_overlaps_resources(surface, force, task.belt_entity_name, position, direction) then
+        summary.resource_overlap_rejections = (summary.resource_overlap_rejections or 0) + 1
+        if (summary.failed_source_routes or 0) < 5 then
+          ctx.debug_log(
+            "assembly route resource overlap at " .. ctx.format_position(position) ..
+            " for path " .. ctx.format_position(first_position) .. " -> " .. ctx.format_position(terminal_position) ..
+            " via " .. axis_label
+          )
+        end
+        return nil
+      end
+
+      placements[#placements + 1] = {
+        id = "assembly-belt-route-" .. tostring(index),
+        site_role = "assembly-input-belt",
+        entity_name = task.belt_entity_name,
+        item_name = task.belt_item_name or task.belt_entity_name,
+        build_position = ctx.clone_position(position),
+        build_direction = direction
+      }
+
+      ::continue_position::
+    end
+
+    return placements
+  end
+
+  local axis_orders = {
+    {"x", "y"},
+    {"y", "x"}
+  }
+
+  for _, axis_order in ipairs(axis_orders) do
+    local positions = build_belt_path_positions(first_position, terminal_position, axis_order, ctx)
+    if not positions then
+      goto continue
+    end
+
+    local placements = try_build_placements_from_positions(positions, table.concat(axis_order, ","))
+    if placements then
+      return placements
+    end
+
+    ::continue::
+  end
+
+  local search_margin = task.belt_route_search_margin or 10
+  local min_x = math.min(first_position.x, terminal_position.x) - search_margin
+  local max_x = math.max(first_position.x, terminal_position.x) + search_margin
+  local min_y = math.min(first_position.y, terminal_position.y) - search_margin
+  local max_y = math.max(first_position.y, terminal_position.y) + search_margin
+  local function in_bounds(position)
+    return position.x >= min_x and position.x <= max_x and position.y >= min_y and position.y <= max_y
+  end
+
+  local start_key = get_position_key(first_position)
+  local goal_key = get_position_key(terminal_position)
+  local queue = {ctx.clone_position(first_position)}
+  local head = 1
+  local parents = {}
+  local visited = {[start_key] = true}
+  local found_goal = false
+  local steps = {
+    {x = 1, y = 0},
+    {x = -1, y = 0},
+    {x = 0, y = 1},
+    {x = 0, y = -1}
+  }
+
+  while head <= #queue do
+    local current = queue[head]
+    head = head + 1
+
+    if get_position_key(current) == goal_key then
+      found_goal = true
+      break
+    end
+
+    for _, step in ipairs(steps) do
+      local next_position = {
+        x = current.x + step.x,
+        y = current.y + step.y
+      }
+      local next_key = get_position_key(next_position)
+
+      if not visited[next_key] and in_bounds(next_position) then
+        visited[next_key] = true
+
+        if next_key == goal_key then
+          parents[next_key] = get_position_key(current)
+          queue[#queue + 1] = next_position
+        else
+          if is_walkable_position(next_position) then
+            parents[next_key] = get_position_key(current)
+            queue[#queue + 1] = next_position
+          end
+        end
+      end
+    end
+  end
+
+  if found_goal or visited[goal_key] then
+    local positions = {ctx.clone_position(terminal_position)}
+    local current_key = goal_key
+    while current_key ~= start_key do
+      local parent_key = parents[current_key]
+      if not parent_key then
+        positions = nil
+        break
+      end
+      local x_string, y_string = string.match(parent_key, "^([^:]+):([^:]+)$")
+      positions[#positions + 1] = {
+        x = tonumber(x_string),
+        y = tonumber(y_string)
+      }
+      current_key = parent_key
+    end
+
+    if positions then
+      local ordered_positions = {}
+      for index = #positions, 1, -1 do
+        ordered_positions[#ordered_positions + 1] = positions[index]
+      end
+      local placements = try_build_placements_from_positions(ordered_positions, "grid")
+      if placements then
+        return placements
+      end
+    end
+  end
+
+  if (summary.failed_source_routes or 0) < 5 then
+    ctx.debug_log(
+      "assembly route no path from " .. ctx.format_position(first_position) ..
+      " to " .. ctx.format_position(terminal_position) ..
+      " within search margin " .. tostring(task.belt_route_search_margin or 10)
+    )
+  end
+
+  return nil
+end
+
+local function create_ordered_belt_placements_from_positions(positions, task, id_prefix, site_role, explicit_direction_name, ctx)
+  local placements = {}
+
+  for index, position in ipairs(positions or {}) do
+    local next_position = positions[index + 1]
+    local previous_position = positions[index - 1]
+    local direction_name = nil
+
+    if next_position then
+      direction_name = get_direction_name_from_delta(next_position.x - position.x, next_position.y - position.y)
+    elseif previous_position then
+      direction_name = get_direction_name_from_delta(position.x - previous_position.x, position.y - previous_position.y)
+    end
+
+    local final_direction_name = explicit_direction_name or direction_name
+
+    placements[#placements + 1] = {
+      id = id_prefix .. "-" .. tostring(index),
+      site_role = site_role or "assembly-input-belt",
+      entity_name = task.belt_entity_name,
+      item_name = task.belt_item_name or task.belt_entity_name,
+      build_position = ctx.clone_position(position),
+      build_direction = final_direction_name and ctx.direction_by_name[final_direction_name] or ctx.direction_by_name.east
+    }
+  end
+
+  return placements
+end
+
+local function transform_offset_positions(origin_position, offsets, orientation, ctx)
+  local positions = {}
+
+  for _, offset in ipairs(offsets or {}) do
+    local rotated_offset = ctx.rotate_offset(offset, orientation)
+    positions[#positions + 1] = {
+      x = origin_position.x + rotated_offset.x,
+      y = origin_position.y + rotated_offset.y
+    }
+  end
+
+  return positions
+end
+
+local function build_power_bridge_positions(surface, force, source_position, target_position, pole_name, ctx)
+  local max_link_distance = 5.5
+  local max_link_distance_squared = max_link_distance * max_link_distance
+  if ctx.square_distance(source_position, target_position) <= max_link_distance_squared then
+    return {}
+  end
+
+  local source = snap_position_to_tile_center(source_position)
+  local target = snap_position_to_tile_center(target_position)
+  local search_margin = 12
+  local min_x = math.min(source.x, target.x) - search_margin
+  local max_x = math.max(source.x, target.x) + search_margin
+  local min_y = math.min(source.y, target.y) - search_margin
+  local max_y = math.max(source.y, target.y) + search_margin
+  local steps = {
+    {x = 5, y = 0},
+    {x = -5, y = 0},
+    {x = 0, y = 5},
+    {x = 0, y = -5},
+    {x = 5, y = 5},
+    {x = 5, y = -5},
+    {x = -5, y = 5},
+    {x = -5, y = -5}
+  }
+
+  local function in_bounds(position)
+    return position.x >= min_x and position.x <= max_x and position.y >= min_y and position.y <= max_y
+  end
+
+  local function position_key(position)
+    return string.format("%.2f:%.2f", position.x, position.y)
+  end
+
+  local function parse_position_key(key)
+    local x_string, y_string = string.match(key, "^([^:]+):([^:]+)$")
+    return {
+      x = tonumber(x_string),
+      y = tonumber(y_string)
+    }
+  end
+
+  local queue = {source}
+  local head = 1
+  local parents = {}
+  local visited = {
+    [position_key(source)] = true
+  }
+  local goal_key = nil
+
+  while head <= #queue do
+    local current = queue[head]
+    head = head + 1
+
+    for _, step in ipairs(steps) do
+      local next_position = snap_position_to_tile_center{
+        x = current.x + step.x,
+        y = current.y + step.y
+      }
+      local next_key = position_key(next_position)
+
+      if not visited[next_key] and in_bounds(next_position) then
+        visited[next_key] = true
+
+        if ctx.square_distance(next_position, target) <= max_link_distance_squared then
+          parents[next_key] = position_key(current)
+          goal_key = next_key
+          head = #queue + 1
+          break
+        end
+
+        if surface.can_place_entity{
+          name = pole_name,
+          position = next_position,
+          force = force
+        } then
+          parents[next_key] = position_key(current)
+          queue[#queue + 1] = next_position
+        end
+      end
+    end
+  end
+
+  if not goal_key then
+    return nil
+  end
+
+  local positions = {}
+  local current_key = goal_key
+  while current_key do
+    local parent_key = parents[current_key]
+    if not parent_key then
+      break
+    end
+
+    local current_position = parse_position_key(current_key)
+    if ctx.square_distance(current_position, target) > max_link_distance_squared then
+      positions[#positions + 1] = current_position
+    end
+
+    if parent_key == position_key(source) then
+      break
+    end
+    current_key = parent_key
+  end
+
+  local ordered_positions = {}
+  for index = #positions, 1, -1 do
+    ordered_positions[#ordered_positions + 1] = positions[index]
+  end
+
+  return ordered_positions
+end
+
+local function any_entity_contains_point(entities, point, ctx)
+  for _, entity in ipairs(entities or {}) do
+    if entity_contains_point(entity, point, ctx) then
+      return true
+    end
+  end
+
+  return false
+end
+
+local function try_set_probe_recipe(entity, recipe_name)
+  if not (entity and entity.valid and recipe_name and entity.set_recipe) then
+    return false, "entity-or-recipe-missing"
+  end
+
+  local ok, result = pcall(function()
+    return entity.set_recipe(recipe_name)
+  end)
+  if ok then
+    if result ~= false then
+      return true, nil
+    end
+    return false, "set_recipe returned false"
+  end
+
+  local first_error = tostring(result)
+  ok, result = pcall(function()
+    return entity.set_recipe(recipe_name, "normal")
+  end)
+  if ok and result ~= false then
+    return true, nil
+  end
+
+  local second_error = ok and "set_recipe returned false with quality" or tostring(result)
+  return false, first_error .. " / " .. second_error
+end
+
+local function try_probe_layout_entity(surface, force, placement, task, summary, ctx)
+  summary.positions_checked = summary.positions_checked + 1
+
+  if not surface.can_place_entity{
+    name = placement.entity_name,
+    position = placement.build_position,
+    direction = placement.build_direction,
+    force = force
+  } then
+    return nil
+  end
+
+  summary.placeable_positions = summary.placeable_positions + 1
+
+  local probe_entity = surface.create_entity{
+    name = placement.entity_name,
+    position = placement.build_position,
+    direction = placement.build_direction,
+    force = force,
+    create_build_effect_smoke = false,
+    raise_built = false
+  }
+
+  if not probe_entity then
+    return nil
+  end
+
+  if task.forbid_resource_overlap and entity_refs.entity_overlaps_resources(probe_entity) then
+    summary.resource_overlap_rejections = (summary.resource_overlap_rejections or 0) + 1
+    probe_entity.destroy()
+    return nil
+  end
+
+  if placement.recipe_name then
+    local recipe_set, recipe_error = try_set_probe_recipe(probe_entity, placement.recipe_name)
+    if not recipe_set then
+      summary.recipe_unavailable_rejections = (summary.recipe_unavailable_rejections or 0) + 1
+      if summary.recipe_unavailable_rejections <= 5 then
+        ctx.debug_log(
+          "assembly probe recipe failure for " .. placement.entity_name ..
+          " recipe=" .. placement.recipe_name ..
+          " enabled=" .. tostring(
+            force and force.recipes and force.recipes[placement.recipe_name] and force.recipes[placement.recipe_name].enabled
+          ) ..
+          " categories=" .. table.concat((probe_entity.prototype and probe_entity.prototype.crafting_categories) or {}, ",") ..
+          " reason=" .. tostring(recipe_error)
+        )
+      end
+      probe_entity.destroy()
+      return nil
+    end
+  end
+
+  return probe_entity
+end
+
+local function build_assembly_block_candidate(surface, force, build_position, orientation, anchor_entity, power_anchor_pole, source_sites_by_item, task, summary, ctx)
+  local assembly_target = task.assembly_target
+  local placements = {}
+  local probe_entities = {}
+  local probe_entities_by_id = {}
+  local route_belt_entities = {}
+  local local_pole_by_id = {}
+
+  local function destroy_probes()
+    entity_refs.destroy_entities(probe_entities)
+  end
+
+  local function add_probe(placement)
+    local probe_entity = try_probe_layout_entity(surface, force, placement, task, summary, ctx)
+    if not probe_entity then
+      if (summary.failed_source_routes or 0) < 5 then
+        ctx.debug_log(
+          "assembly probe blocked for " .. placement.id ..
+          " (" .. placement.entity_name .. ") at " .. ctx.format_position(placement.build_position) ..
+          " orientation=" .. tostring(orientation)
+        )
+      end
+      return false
+    end
+
+    probe_entities[#probe_entities + 1] = probe_entity
+    probe_entities_by_id[placement.id] = probe_entity
+    placements[#placements + 1] = placement
+    return true
+  end
+
+  for _, pole_spec in ipairs(assembly_target.local_poles or {}) do
+    local rotated_offset = ctx.rotate_offset(pole_spec.offset, orientation)
+    local placement = {
+      id = pole_spec.id,
+      site_role = pole_spec.site_role,
+      entity_name = pole_spec.entity_name,
+      item_name = pole_spec.item_name or pole_spec.entity_name,
+      build_position = {
+        x = build_position.x + rotated_offset.x,
+        y = build_position.y + rotated_offset.y
+      }
+    }
+
+    if not add_probe(placement) then
+      destroy_probes()
+      return nil
+    end
+
+    if pole_spec.is_power_entry then
+      local_pole_by_id.power_entry = probe_entities_by_id[pole_spec.id]
+    end
+  end
+
+  for _, node_spec in ipairs(assembly_target.assembler_nodes or {}) do
+    local rotated_offset = ctx.rotate_offset(node_spec.offset, orientation)
+    local placement = {
+      id = node_spec.id,
+      site_role = node_spec.site_role,
+      entity_name = node_spec.entity_name,
+      item_name = node_spec.item_name or node_spec.entity_name,
+      recipe_name = node_spec.recipe_name,
+      build_position = {
+        x = build_position.x + rotated_offset.x,
+        y = build_position.y + rotated_offset.y
+      }
+    }
+
+    if not add_probe(placement) then
+      destroy_probes()
+      return nil
+    end
+  end
+
+  for _, route_spec in ipairs(assembly_target.raw_input_routes or {}) do
+    local local_belt_positions = transform_offset_positions(build_position, route_spec.local_belt_offsets, orientation, ctx)
+    local belt_placements = create_ordered_belt_placements_from_positions(
+      local_belt_positions,
+      task,
+      route_spec.id .. "-local-belt",
+      "assembly-input-belt",
+      route_spec.local_belt_direction_name and ctx.rotate_direction_name(route_spec.local_belt_direction_name, orientation) or nil,
+      ctx
+    )
+    route_belt_entities[route_spec.id] = {}
+    for _, placement in ipairs(belt_placements) do
+      placement.route_id = route_spec.id
+    end
+
+    for _, placement in ipairs(belt_placements) do
+      if not add_probe(placement) then
+        destroy_probes()
+        return nil
+      end
+
+      route_belt_entities[route_spec.id][#route_belt_entities[route_spec.id] + 1] = probe_entities_by_id[placement.id]
+    end
+
+    for _, inserter_spec in ipairs(route_spec.input_inserters or {}) do
+      local rotated_offset = ctx.rotate_offset(inserter_spec.offset, orientation)
+      local direction_name = ctx.rotate_direction_name(inserter_spec.direction_name, orientation)
+      local placement = {
+        id = inserter_spec.id,
+        site_role = inserter_spec.site_role,
+        entity_name = inserter_spec.entity_name,
+        item_name = inserter_spec.item_name or inserter_spec.entity_name,
+        build_position = {
+          x = build_position.x + rotated_offset.x,
+          y = build_position.y + rotated_offset.y
+        },
+        build_direction = direction_name and ctx.direction_by_name[direction_name] or nil,
+        fuel = inserter_spec.fuel,
+        target_node_id = inserter_spec.target_node_id,
+        route_id = route_spec.id
+      }
+
+      if not add_probe(placement) then
+        destroy_probes()
+        return nil
+      end
+    end
+  end
+
+  for _, inserter_spec in ipairs(assembly_target.internal_inserters or {}) do
+    local rotated_offset = ctx.rotate_offset(inserter_spec.offset, orientation)
+    local direction_name = ctx.rotate_direction_name(inserter_spec.direction_name, orientation)
+    local placement = {
+      id = inserter_spec.id,
+      site_role = inserter_spec.site_role,
+      entity_name = inserter_spec.entity_name,
+      item_name = inserter_spec.item_name or inserter_spec.entity_name,
+      build_position = {
+        x = build_position.x + rotated_offset.x,
+        y = build_position.y + rotated_offset.y
+      },
+      build_direction = direction_name and ctx.direction_by_name[direction_name] or nil,
+      fuel = inserter_spec.fuel,
+      source_node_id = inserter_spec.source_node_id,
+      target_node_id = inserter_spec.target_node_id
+    }
+
+    if not add_probe(placement) then
+      destroy_probes()
+      return nil
+    end
+  end
+
+  for _, inserter_spec in ipairs(assembly_target.internal_inserters or {}) do
+    local probe_inserter = probe_entities_by_id[inserter_spec.id]
+    local source_node = probe_entities_by_id[inserter_spec.source_node_id]
+    local target_node = probe_entities_by_id[inserter_spec.target_node_id]
+    if not (probe_inserter and source_node and target_node) or
+      not entity_contains_point(source_node, probe_inserter.pickup_position, ctx) or
+      not entity_contains_point(target_node, probe_inserter.drop_position, ctx)
+    then
+      summary.failed_inserter_geometry = (summary.failed_inserter_geometry or 0) + 1
+      if summary.failed_inserter_geometry <= 5 then
+        ctx.debug_log(
+          "assembly internal geometry failure: inserter=" .. inserter_spec.id ..
+          " pos=" .. ctx.format_position(probe_inserter and probe_inserter.position or {x = 0, y = 0}) ..
+          " pickup=" .. ctx.format_position(probe_inserter and probe_inserter.pickup_position or {x = 0, y = 0}) ..
+          " drop=" .. ctx.format_position(probe_inserter and probe_inserter.drop_position or {x = 0, y = 0}) ..
+          " source=" .. ctx.format_position(source_node and source_node.position or {x = 0, y = 0}) ..
+          " target=" .. ctx.format_position(target_node and target_node.position or {x = 0, y = 0}) ..
+          " orientation=" .. tostring(orientation)
+        )
+      end
+      destroy_probes()
+      return nil
+    end
+  end
+
+  for _, route_spec in ipairs(assembly_target.raw_input_routes or {}) do
+    for _, inserter_spec in ipairs(route_spec.input_inserters or {}) do
+      local probe_inserter = probe_entities_by_id[inserter_spec.id]
+      local target_node = probe_entities_by_id[inserter_spec.target_node_id]
+      local source_belts = route_belt_entities[route_spec.id]
+      if not (probe_inserter and target_node) or
+        not any_entity_contains_point(source_belts, probe_inserter.pickup_position, ctx) or
+        not entity_contains_point(target_node, probe_inserter.drop_position, ctx)
+      then
+        summary.failed_inserter_geometry = (summary.failed_inserter_geometry or 0) + 1
+        if summary.failed_inserter_geometry <= 5 then
+          ctx.debug_log(
+            "assembly input geometry failure: inserter=" .. inserter_spec.id ..
+            " pos=" .. ctx.format_position(probe_inserter and probe_inserter.position or {x = 0, y = 0}) ..
+            " pickup=" .. ctx.format_position(probe_inserter and probe_inserter.pickup_position or {x = 0, y = 0}) ..
+            " drop=" .. ctx.format_position(probe_inserter and probe_inserter.drop_position or {x = 0, y = 0}) ..
+            " target=" .. ctx.format_position(target_node and target_node.position or {x = 0, y = 0}) ..
+            " orientation=" .. tostring(orientation) ..
+            " route=" .. route_spec.id
+          )
+        end
+        destroy_probes()
+        return nil
+      end
+    end
+  end
+
+  local entry_pole = local_pole_by_id.power_entry
+  if not (entry_pole and entry_pole.valid) then
+    destroy_probes()
+    return nil
+  end
+
+  local bridge_positions = build_power_bridge_positions(
+    surface,
+    force,
+    power_anchor_pole.position,
+    entry_pole.position,
+    assembly_target.power_anchor_entity_name,
+    ctx
+  )
+
+  if bridge_positions == nil then
+    summary.failed_power_bridge = (summary.failed_power_bridge or 0) + 1
+    destroy_probes()
+    return nil
+  end
+
+  for bridge_index, bridge_position in ipairs(bridge_positions) do
+    local placement = {
+      id = "power-bridge-" .. tostring(bridge_index),
+      site_role = "power-pole",
+      entity_name = assembly_target.power_anchor_entity_name,
+      item_name = assembly_target.power_anchor_entity_name,
+      build_position = bridge_position
+    }
+
+    if not add_probe(placement) then
+      summary.failed_power_bridge = (summary.failed_power_bridge or 0) + 1
+      destroy_probes()
+      return nil
+    end
+  end
+
+  local source_network_id = power_anchor_pole.electric_network_id or 0
+  for _, node_spec in ipairs(assembly_target.assembler_nodes or {}) do
+    local probe_assembler = probe_entities_by_id[node_spec.id]
+    if not (probe_assembler and probe_assembler.valid and probe_assembler.electric_network_id and probe_assembler.electric_network_id ~= 0) then
+      summary.failed_power_network = (summary.failed_power_network or 0) + 1
+      destroy_probes()
+      return nil
+    end
+
+    if source_network_id ~= 0 and probe_assembler.electric_network_id ~= source_network_id then
+      summary.failed_power_network = (summary.failed_power_network or 0) + 1
+      destroy_probes()
+      return nil
+    end
+  end
+
+  destroy_probes()
+  return {
+    anchor_entity = anchor_entity,
+    power_anchor_pole = power_anchor_pole,
+    build_position = ctx.clone_position(build_position),
+    placements = placements
+  }
+end
+
+local function get_production_site_identity_key(site)
+  if not site then
+    return nil
+  end
+
+  local entity = site.output_machine or site.root_assembler or site.anchor_entity or site.downstream_machine
+  if entity and entity.valid and entity.unit_number then
+    return tostring(entity.unit_number)
+  end
+
+  local position = entity and entity.valid and entity.position or site.hub_position
+  if position then
+    return string.format("%.2f:%.2f:%s", position.x, position.y, site.site_type or "site")
+  end
+
+  return nil
+end
+
+local function get_assembly_route_target_position(local_connection_entity, ctx)
+  if not (local_connection_entity and local_connection_entity.valid) then
+    return nil
+  end
+
+  local direction_vector = get_direction_vector_from_direction(local_connection_entity.direction, ctx)
+  return {
+    x = local_connection_entity.position.x - direction_vector.x,
+    y = local_connection_entity.position.y - direction_vector.y
+  }
+end
+
+function queries.find_assembly_input_route_site(builder_state, task, ctx)
+  local builder = builder_state.entity
+  local anchor_origin = task.manual_anchor_position or builder.position
+  local summary = {
+    anchor_entities_considered = 0,
+    anchors_skipped_blocked = 0,
+    anchors_skipped_registered = 0,
+    positions_checked = 0,
+    placeable_positions = 0,
+    resource_overlap_rejections = 0,
+    failed_belt_paths = 0,
+    failed_source_extractors = 0,
+    source_sites_considered = 0,
+    failed_anchor_entity = nil
+  }
+
+  local production_sites = storage_helpers.ensure_production_sites()
+  local assembly_sites = {}
+
+  for _, site in ipairs(production_sites) do
+    if site.site_type == "assembly-block" and site.root_assembler and site.root_assembler.valid then
+      assembly_sites[#assembly_sites + 1] = {
+        site = site,
+        anchor_entity = site.root_assembler,
+        distance = ctx.square_distance(anchor_origin, site.root_assembler.position)
+      }
+    end
+  end
+
+  table.sort(assembly_sites, function(left, right)
+    return left.distance < right.distance
+  end)
+
+  local max_anchor_entities = task.max_anchor_entities or #assembly_sites
+  for _, assembly_candidate in ipairs(assembly_sites) do
+    if summary.anchor_entities_considered >= max_anchor_entities then
+      break
+    end
+
+    local assembly_site = assembly_candidate.site
+    local anchor_entity = assembly_candidate.anchor_entity
+    local route_spec = assembly_site.route_specs_by_id and assembly_site.route_specs_by_id[task.route_id] or nil
+
+    if route_spec then
+      if anchor_is_blocked_for_layout(builder_state, task, anchor_entity) then
+        summary.anchors_skipped_blocked = summary.anchors_skipped_blocked + 1
+      elseif assembly_site.route_connections_by_id and assembly_site.route_connections_by_id[task.route_id] then
+        summary.anchors_skipped_registered = summary.anchors_skipped_registered + 1
+      else
+        local local_route_belts = assembly_site.route_local_belts_by_id and assembly_site.route_local_belts_by_id[task.route_id] or nil
+        local local_connection_entity = local_route_belts and local_route_belts[1] or nil
+        local route_target_position = get_assembly_route_target_position(local_connection_entity, ctx)
+
+        if local_connection_entity and route_target_position then
+          summary.anchor_entities_considered = summary.anchor_entities_considered + 1
+          summary.failed_anchor_entity = anchor_entity
+
+          local used_source_site_keys = {}
+          for _, connection in pairs(assembly_site.route_connections_by_id or {}) do
+            if connection.source_site_key then
+              used_source_site_keys[connection.source_site_key] = true
+            end
+          end
+
+          local source_candidates = {}
+          for _, source_site in ipairs(production_sites) do
+            if source_site.site_type == "smelting-output-belt" and get_site_output_item_name(source_site) == route_spec.item_name then
+              local source_site_key = get_production_site_identity_key(source_site)
+              if not used_source_site_keys[source_site_key] then
+                for _, route_start in ipairs(get_output_belt_connection_positions(source_site, ctx)) do
+                  source_candidates[#source_candidates + 1] = {
+                    site = source_site,
+                    source_site_key = source_site_key,
+                    route_start_position = route_start.position,
+                    source_terminal_belt = route_start.terminal_belt,
+                    distance = ctx.square_distance(route_start.position, route_target_position)
+                  }
+                end
+              end
+            end
+          end
+
+          table.sort(source_candidates, function(left, right)
+            return left.distance < right.distance
+          end)
+
+          summary.source_sites_considered = summary.source_sites_considered + #source_candidates
+
+          for _, candidate in ipairs(source_candidates) do
+            local source_entry_options = build_source_route_entry_options(
+              builder.surface,
+              builder.force,
+              candidate.source_terminal_belt,
+              route_target_position,
+              task,
+              summary,
+              ctx
+            )
+
+            for _, source_entry in ipairs(source_entry_options) do
+              local route_placements = build_belt_path_placements_between_positions(
+                builder.surface,
+                builder.force,
+                source_entry.path_start_position,
+                route_target_position,
+                task,
+                summary,
+                nil,
+                ctx
+              )
+
+              if route_placements and #route_placements > 0 then
+                for _, prefix_placement in ipairs(source_entry.prefix_placements or {}) do
+                  table.insert(route_placements, 1, prefix_placement)
+                end
+                for _, suffix_placement in ipairs(source_entry.suffix_placements or {}) do
+                  route_placements[#route_placements + 1] = suffix_placement
+                end
+
+                local last_route_placement = route_placements[#route_placements]
+                if last_route_placement.site_role == "assembly-source-inserter" and #route_placements > 1 then
+                  last_route_placement = route_placements[#route_placements - 1]
+                end
+                local direction_name = get_direction_name_from_delta(
+                  local_connection_entity.position.x - last_route_placement.build_position.x,
+                  local_connection_entity.position.y - last_route_placement.build_position.y
+                )
+                if direction_name then
+                  last_route_placement.build_direction = ctx.direction_by_name[direction_name]
+                end
+
+                for placement_index, route_placement in ipairs(route_placements) do
+                  route_placement.id = task.route_id .. "-source-belt-" .. tostring(placement_index)
+                  route_placement.route_id = task.route_id
+                  route_placement.site_role = route_placement.site_role or "assembly-source-belt"
+                end
+
+                return {
+                  assembly_site = assembly_site,
+                  anchor_entity = anchor_entity,
+                  build_position = ctx.clone_position(route_placements[1].build_position),
+                  placements = route_placements,
+                  route_id = task.route_id,
+                  route_spec = route_spec,
+                  source_site = candidate.site,
+                  summary = summary
+                }, summary
+              end
+            end
+          end
+
+          summary.failed_belt_paths = (summary.failed_belt_paths or 0) + 1
+          if (summary.failed_belt_paths or 0) <= 5 then
+            ctx.debug_log(
+              "assembly source route failed for " .. tostring(task.route_id) ..
+              " item=" .. tostring(route_spec.item_name) ..
+              " target=" .. ctx.format_position(route_target_position) ..
+              " candidates=" .. tostring(#source_candidates)
+            )
+          end
+        end
+      end
+    end
+  end
+
+  return nil, summary
+end
+
+function queries.find_assembly_block_site(builder_state, task, ctx)
+  local builder = builder_state.entity
+  local assembly_target = task.assembly_target
+  local anchor_origin = task.manual_anchor_position or builder.position
+  local summary = {
+    anchor_entities_considered = 0,
+    anchors_skipped_registered = 0,
+    anchors_skipped_blocked = 0,
+    anchors_missing_power = 0,
+    clearance_headings_considered = 0,
+    clearance_origins_found = 0,
+    orientations_considered = 0,
+    positions_checked = 0,
+    placeable_positions = 0,
+    resource_overlap_rejections = 0,
+    failed_inserter_geometry = 0,
+    failed_power_bridge = 0,
+    failed_power_network = 0,
+    failed_source_routes = 0,
+    source_sites_considered = 0,
+    recipe_unavailable_rejections = 0,
+    failed_anchor_entity = nil
+  }
+
+  if not (assembly_target and assembly_target.assembler_nodes and #assembly_target.assembler_nodes > 0) then
+    return nil, summary
+  end
+
+  local anchor_candidates = {}
+  if assembly_target.anchor_mode == "source-cluster" then
+    anchor_candidates = build_source_cluster_anchor_candidates(builder_state, task, summary, ctx)
+  else
+    for _, anchor_entity in ipairs(builder.surface.find_entities_filtered{
+      force = builder.force,
+      name = task.anchor_entity_names or assembly_target.anchor_entity_names
+    }) do
+      anchor_candidates[#anchor_candidates + 1] = {
+        anchor_entity = anchor_entity,
+        distance = ctx.square_distance(anchor_origin, anchor_entity.position)
+      }
+    end
+
+    table.sort(anchor_candidates, function(left, right)
+      return left.distance < right.distance
+    end)
+  end
+
+  local max_anchor_entities = task.max_anchor_entities or #anchor_candidates
+  for _, anchor_candidate in ipairs(anchor_candidates) do
+    if summary.anchor_entities_considered >= max_anchor_entities then
+      break
+    end
+
+    local anchor_entity = anchor_candidate.anchor_entity
+    if anchor_entity and anchor_entity.valid then
+      if anchor_is_blocked_for_layout(builder_state, task, anchor_entity) then
+        summary.anchors_skipped_blocked = summary.anchors_skipped_blocked + 1
+      elseif anchor_has_registered_site(anchor_entity, task.require_missing_registered_site) then
+        summary.anchors_skipped_registered = summary.anchors_skipped_registered + 1
+      else
+        local power_anchor_pole = anchor_candidate.power_anchor_pole
+        if not power_anchor_pole then
+          local power_anchor_entities = builder.surface.find_entities_filtered{
+            position = anchor_entity.position,
+            radius = task.power_anchor_search_radius or 16,
+            force = builder.force,
+            name = assembly_target.power_anchor_entity_name or task.power_anchor_entity_name
+          }
+
+          table.sort(power_anchor_entities, function(left, right)
+            return ctx.square_distance(anchor_entity.position, left.position) < ctx.square_distance(anchor_entity.position, right.position)
+          end)
+
+          power_anchor_pole = power_anchor_entities[1]
+        end
+
+        if not (power_anchor_pole and power_anchor_pole.valid) then
+          summary.anchors_missing_power = summary.anchors_missing_power + 1
+          goto continue
+        end
+
+        summary.anchor_entities_considered = summary.anchor_entities_considered + 1
+        summary.failed_anchor_entity = anchor_entity
+
+        local search_origins
+        if task.manual_target_position then
+          search_origins = {{
+            center = ctx.clone_position(task.manual_target_position),
+            search_radius = task.manual_target_search_radius or task.placement_search_radius or 0,
+            placement_step = task.manual_target_search_step or task.placement_step or 1
+          }}
+        elseif anchor_candidate.search_center then
+          local source_cluster = assembly_target.source_cluster or task.source_cluster or {}
+          search_origins = build_source_cluster_search_origins(
+            anchor_candidate.search_center,
+            source_cluster,
+            task,
+            anchor_candidate.preferred_direction_vector,
+            ctx
+          )
+        else
+          search_origins = build_resource_clearance_search_origins(
+            builder.surface,
+            builder.force,
+            task,
+            anchor_entity.position,
+            summary,
+            ctx
+          )
+        end
+
+        local source_cluster = assembly_target.source_cluster or task.source_cluster or {}
+        local minimum_build_distance = source_cluster.minimum_build_distance or 0
+        local minimum_build_distance_squared = minimum_build_distance * minimum_build_distance
+
+        for _, search_origin in ipairs(search_origins) do
+          for _, orientation in ipairs(task.layout_orientations or {"north", "east", "south", "west"}) do
+            summary.orientations_considered = summary.orientations_considered + 1
+
+            for _, build_position in ipairs(ctx.build_search_positions(
+              search_origin.center,
+              search_origin.search_radius,
+              search_origin.placement_step
+            )) do
+              local minimum_build_distance_reference =
+                anchor_candidate.minimum_distance_reference or
+                anchor_candidate.search_center or
+                search_origin.center
+              if minimum_build_distance_squared > 0 and
+                ctx.square_distance(build_position, minimum_build_distance_reference) < minimum_build_distance_squared
+              then
+                goto continue_build_position
+              end
+
+              local candidate = build_assembly_block_candidate(
+                builder.surface,
+                builder.force,
+                build_position,
+                orientation,
+                anchor_entity,
+                power_anchor_pole,
+                anchor_candidate.source_sites_by_item,
+                task,
+                summary,
+                ctx
+              )
+
+              if candidate then
+                candidate.summary = summary
+                return candidate, summary
+              end
+
+              ::continue_build_position::
+            end
+          end
+        end
+      end
+    end
+
+    ::continue::
   end
 
   return nil, summary

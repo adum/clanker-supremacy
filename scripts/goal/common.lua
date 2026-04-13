@@ -24,6 +24,17 @@ function common.clone_position(position)
   }
 end
 
+function common.snap_to_tile_center(position)
+  if not position then
+    return nil
+  end
+
+  return {
+    x = math.floor(position.x) + 0.5,
+    y = math.floor(position.y) + 0.5
+  }
+end
+
 function common.humanize_identifier(identifier)
   if not identifier or identifier == "" then
     return "Unknown"

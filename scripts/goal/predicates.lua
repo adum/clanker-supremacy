@@ -44,6 +44,27 @@ function predicates.get_milestone(builder_data, milestone_name)
   return nil
 end
 
+local function unlock_requirements_met(builder_state, unlock, get_resource_site_counts)
+  if not unlock then
+    return true
+  end
+
+  local site_counts = get_resource_site_counts and get_resource_site_counts() or {}
+  for pattern_name, minimum_count in pairs(unlock.minimum_site_counts or {}) do
+    if (site_counts[pattern_name] or 0) < minimum_count then
+      return false
+    end
+  end
+
+  for _, milestone_name in ipairs(unlock.required_completed_milestones or {}) do
+    if not (builder_state and builder_state.completed_scaling_milestones and builder_state.completed_scaling_milestones[milestone_name]) then
+      return false
+    end
+  end
+
+  return true
+end
+
 function predicates.list_component_names(builder_data)
   local names = {}
 
@@ -63,26 +84,36 @@ end
 
 function predicates.get_component_spec(builder_data, component_name)
   local pattern = predicates.get_pattern(builder_data, component_name)
-  if pattern and pattern.build_task then
+  if pattern and (pattern.tasks or pattern.build_task) then
+    local tasks = {}
+    for _, task in ipairs(pattern.tasks or {}) do
+      tasks[#tasks + 1] = common.deep_copy(task)
+    end
+    if #tasks == 0 and pattern.build_task then
+      tasks[1] = common.deep_copy(pattern.build_task)
+    end
     return {
       id = component_name,
       display_name = pattern.display_name or common.humanize_identifier(component_name),
       required_items = common.deep_copy(pattern.required_items or {}),
-      tasks = {
-        common.deep_copy(pattern.build_task)
-      }
+      tasks = tasks
     }
   end
 
   local milestone = predicates.get_milestone(builder_data, component_name)
-  if milestone and milestone.task then
+  if milestone and (milestone.tasks or milestone.task) then
+    local tasks = {}
+    for _, task in ipairs(milestone.tasks or {}) do
+      tasks[#tasks + 1] = common.deep_copy(task)
+    end
+    if #tasks == 0 and milestone.task then
+      tasks[1] = common.deep_copy(milestone.task)
+    end
     return {
       id = component_name,
       display_name = milestone.display_name or common.humanize_identifier(component_name),
       required_items = common.deep_copy(milestone.required_items or {}),
-      tasks = {
-        common.deep_copy(milestone.task)
-      }
+      tasks = tasks
     }
   end
 
@@ -247,6 +278,10 @@ function predicates.should_pursue_milestone(builder_data, builder_state, milesto
   end
 
   return builder_data.scaling and builder_data.scaling.pursue_milestones_proactively == true
+end
+
+function predicates.is_milestone_unlocked(builder_state, milestone, get_resource_site_counts)
+  return unlock_requirements_met(builder_state, milestone and milestone.unlock, get_resource_site_counts)
 end
 
 return predicates

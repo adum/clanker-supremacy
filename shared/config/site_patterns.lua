@@ -95,5 +95,22 @@ return {
       {name = "assembling-machine-1", count = 1}
     },
     build_task = build_tasks.firearm_magazine_outpost
+  },
+  solar_panel_factory = {
+    display_name = "solar panel factory",
+    tasks = {
+      build_tasks.solar_panel_factory,
+      build_tasks.solar_panel_factory_iron_input,
+      build_tasks.solar_panel_factory_copper_cable_input,
+      build_tasks.solar_panel_factory_copper_solar_input,
+      build_tasks.solar_panel_factory_steel_input
+    },
+    required_items = {
+      {name = "assembling-machine-1", count = 3},
+      {name = "burner-inserter", count = 10},
+      {name = "small-electric-pole", count = 8},
+      {name = "transport-belt", count = 256}
+    },
+    build_task = build_tasks.solar_panel_factory
   }
 }

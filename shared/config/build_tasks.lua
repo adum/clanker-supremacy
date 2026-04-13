@@ -1,4 +1,5 @@
 local constants = require("shared.config.constants")
+local assembly_targets = require("shared.config.assembly_targets")
 local deep_copy = require("shared.config.util").deep_copy
 
 local build_tasks = {}
@@ -204,7 +205,7 @@ build_tasks.steel_smelting = {
   search_retry_ticks = 5 * 60,
   arrival_distance = 1.6,
   stuck_retry_ticks = 3 * 60,
-  layout_orientations = {"north", "east", "south", "west"},
+  layout_orientations = {"north"},
   require_missing_registered_site = {
     site_type = "steel-smelting-chain",
     entity_field = "anchor_machine"
@@ -276,6 +277,68 @@ build_tasks.firearm_magazine_outpost = {
     }
   }
 }
+
+build_tasks.solar_panel_factory = {
+  id = "solar-panel-factory-block",
+  type = "place-assembly-block",
+  pattern_name = "solar_panel_factory",
+  target_item_name = "solar-panel",
+  entity_name = "assembling-machine-1",
+  assembly_target_name = "solar_panel_factory",
+  assembly_target = deep_copy(assembly_targets.solar_panel_factory),
+  power_anchor_search_radius = 24,
+  max_anchor_entities = 6,
+  search_retry_ticks = 5 * 60,
+  placement_search_radius = 10,
+  placement_step = 1,
+  layout_orientations = {"north"},
+  belt_route_search_margin = 80,
+  arrival_distance = 1.6,
+  stuck_retry_ticks = 3 * 60,
+  resource_clearance_search = {
+    heading_count = 16,
+    heading_attempts = 8,
+    ray_step = 1,
+    max_distance = 80,
+    extra_distance_min = 20,
+    extra_distance_max = 28,
+    local_search_radius = 6,
+    local_search_step = 1
+  },
+  require_missing_registered_site = {
+    site_type = "assembly-block",
+    entity_field = "anchor_entity"
+  },
+  belt_entity_name = "transport-belt",
+  belt_item_name = "transport-belt",
+  forbid_resource_overlap = true
+}
+
+local function make_assembly_input_route_task(route_id, item_name)
+  return {
+    id = "solar-panel-factory-" .. route_id,
+    type = "place-assembly-input-route",
+    pattern_name = "solar_panel_factory",
+    target_item_name = "solar-panel",
+    route_id = route_id,
+    route_item_name = item_name,
+    assembly_target_name = "solar_panel_factory",
+    assembly_target = deep_copy(assembly_targets.solar_panel_factory),
+    max_anchor_entities = 8,
+    search_retry_ticks = 5 * 60,
+    arrival_distance = 1.6,
+    stuck_retry_ticks = 3 * 60,
+    belt_route_search_margin = 80,
+    belt_entity_name = "transport-belt",
+    belt_item_name = "transport-belt",
+    forbid_resource_overlap = true
+  }
+end
+
+build_tasks.solar_panel_factory_iron_input = make_assembly_input_route_task("iron-plate-line", "iron-plate")
+build_tasks.solar_panel_factory_copper_cable_input = make_assembly_input_route_task("copper-plate-to-cable-line", "copper-plate")
+build_tasks.solar_panel_factory_copper_solar_input = make_assembly_input_route_task("copper-plate-to-solar-line", "copper-plate")
+build_tasks.solar_panel_factory_steel_input = make_assembly_input_route_task("steel-plate-line", "steel-plate")
 
 build_tasks.copper_plate_belt_export = make_fresh_output_belt_task(
   "copper_plate_belt_export",

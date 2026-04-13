@@ -1,5 +1,19 @@
 local pass = {}
 
+local function is_belt_fed_assembly_block_assembler(entity)
+  for _, site in ipairs(storage.production_sites or {}) do
+    if site.site_type == "assembly-block" then
+      for _, assembler in ipairs(site.assemblers or {}) do
+        if assembler == entity then
+          return true
+        end
+      end
+    end
+  end
+
+  return false
+end
+
 function pass.run(builder_state, tick, ctx)
   local supply_settings = ctx.builder_data.logistics and ctx.builder_data.logistics.nearby_machine_input_supply
   if not supply_settings then
@@ -49,6 +63,10 @@ function pass.run(builder_state, tick, ctx)
 
     if entity.valid and entity ~= builder then
       entities_scanned = entities_scanned + 1
+
+      if is_belt_fed_assembly_block_assembler(entity) then
+        goto continue
+      end
 
       local recipe = entity.get_recipe and entity.get_recipe()
       local input_inventory = entity.get_inventory and entity.get_inventory(defines.inventory.assembling_machine_input)
@@ -108,6 +126,8 @@ function pass.run(builder_state, tick, ctx)
         end
       end
     end
+
+    ::continue::
   end
 
   return actions

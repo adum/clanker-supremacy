@@ -33,7 +33,7 @@ return {
   nearby_machine_output_collection = {
     interval_ticks = 4 * 60,
     radius = 24,
-    entity_types = {"furnace"},
+    entity_types = {"furnace", "assembling-machine"},
     minimum_total_items_to_collect = 4,
     own_force_only = true,
     max_entities_per_scan = 12

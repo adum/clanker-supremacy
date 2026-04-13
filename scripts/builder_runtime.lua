@@ -34,11 +34,15 @@ local get_site_collect_position
 local get_site_allowed_items
 local get_site_collect_count
 local pull_inventory_contents_to_builder
+local find_assembly_block_site
+local find_assembly_input_route_site
 local find_layout_site_near_machine
 local find_output_belt_line_site
 local find_machine_site_near_resource_sites
 local find_resource_site
 local find_nearest_resource
+local register_assembly_block_site
+local register_assembly_input_route
 local register_assembler_defense_site
 local register_output_belt_site
 local register_resource_site
@@ -646,9 +650,26 @@ end
 function builder_runtime.handle_task_retry_exhausted(builder_state, task, tick, reason)
   local task_name = task and (task.id or task.type) or "task"
   local message = (reason or ("retry limit reached for " .. task_name))
+  local failed_anchor_entity = builder_state and builder_state.task_state and builder_state.task_state.failed_layout_anchor_entity or nil
+
+  if task and (task.type == "place-layout-near-machine" or task.type == "place-output-belt-line" or task.type == "place-assembly-block" or task.type == "place-assembly-input-route") then
+    if failed_anchor_entity and failed_anchor_entity.valid then
+      local blocked = mark_layout_anchor_blocked(builder_state, task, failed_anchor_entity)
+      builder_runtime.record_recovery(
+        builder_state,
+        "abandoned anchor at " .. format_position(failed_anchor_entity.position) ..
+          "; " .. (blocked and "blocked" or "could not block") ..
+          " anchor for " .. tostring(task_name)
+      )
+      debug_log(
+        "task " .. task_name .. ": " .. message ..
+        "; " .. (blocked and "blocked" or "could not block") ..
+        " anchor at " .. format_position(failed_anchor_entity.position)
+      )
+    end
+  end
 
   if task and task.type == "place-layout-near-machine" and task.completed_scaling_milestone_name == "firearm-magazine-defense" then
-    local failed_anchor_entity = builder_state and builder_state.task_state and builder_state.task_state.failed_layout_anchor_entity or nil
     if failed_anchor_entity and failed_anchor_entity.valid then
       local blocked = mark_layout_anchor_blocked(builder_state, task, failed_anchor_entity)
       builder_state.completed_scaling_milestones["firearm-magazine-assembler"] = nil
@@ -673,7 +694,55 @@ function builder_runtime.handle_task_retry_exhausted(builder_state, task, tick, 
     end
   end
 
+  if task and task.reopen_completed_scaling_milestone_name and failed_anchor_entity and failed_anchor_entity.valid then
+    local blocked = mark_layout_anchor_blocked(builder_state, task, failed_anchor_entity)
+    builder_state.completed_scaling_milestones[task.reopen_completed_scaling_milestone_name] = nil
+    builder_state.scaling_active_task = nil
+    builder_state.task_state = nil
+    if builder_state.goal_engine then
+      builder_state.goal_engine.scaling_display_task = nil
+    end
+    set_idle(builder_state.entity)
+    builder_runtime.record_recovery(
+      builder_state,
+      "abandoned " .. task_name .. " at " .. format_position(failed_anchor_entity.position) ..
+        "; " .. (blocked and "blocked" or "could not block") ..
+        " anchor and reopened " .. tostring(task.reopen_completed_scaling_milestone_name)
+    )
+    debug_log(
+      "task " .. task_name .. ": " .. message ..
+      "; " .. (blocked and "blocked" or "could not block") ..
+      " anchor at " .. format_position(failed_anchor_entity.position) ..
+      " and reopened " .. tostring(task.reopen_completed_scaling_milestone_name)
+    )
+    return
+  end
+
   if task and task.manual_goal_id and builder_state.manual_goal_request and builder_state.manual_goal_request.id == task.manual_goal_id then
+    if task.type == "place-assembly-input-route" and failed_anchor_entity and failed_anchor_entity.valid then
+      local blocked = mark_layout_anchor_blocked(builder_state, task, failed_anchor_entity)
+      builder_state.task_state = nil
+      if builder_state.goal_engine then
+        builder_state.goal_engine.scaling_display_task = nil
+      end
+      builder_state.manual_goal_request.current_task_index = 1
+      set_idle(builder_state.entity)
+      builder_runtime.clear_task_retry_state(builder_state, task)
+      builder_runtime.record_recovery(
+        builder_state,
+        "abandoned assembly block at " .. format_position(failed_anchor_entity.position) ..
+          "; " .. (blocked and "blocked" or "could not block") ..
+          " anchor and restarted manual goal"
+      )
+      debug_log(
+        "task " .. task_name .. ": " .. message ..
+        "; " .. (blocked and "blocked" or "could not block") ..
+        " assembly block at " .. format_position(failed_anchor_entity.position) ..
+        " and restarting manual goal"
+      )
+      return
+    end
+
     builder_state.manual_goal_request = nil
     builder_state.task_state = nil
     if builder_state.goal_engine then
@@ -1831,8 +1900,137 @@ local function place_test_runtime_iron_smelting_site(surface, origin_position)
   }
 end
 
+local function place_test_plate_belt_source(surface, item_name, machine_position)
+  local force = ensure_builder_force()
+  local furnace = surface.create_entity{
+    name = "stone-furnace",
+    position = machine_position,
+    force = force,
+    create_build_effect_smoke = false
+  }
+
+  if not (furnace and furnace.valid) then
+    error("enemy-builder test: failed to create test source furnace for " .. item_name)
+  end
+
+  local inserter = surface.create_entity{
+    name = "burner-inserter",
+    position = {x = machine_position.x + 1, y = machine_position.y},
+    direction = direction_by_name.west,
+    force = force,
+    create_build_effect_smoke = false
+  }
+
+  if not (inserter and inserter.valid) then
+    furnace.destroy()
+    error("enemy-builder test: failed to create test source inserter for " .. item_name)
+  end
+
+  local belts = {}
+  for offset = 2, 5 do
+    local belt = surface.create_entity{
+      name = "transport-belt",
+      position = {x = machine_position.x + offset, y = machine_position.y},
+      direction = direction_by_name.east,
+      force = force,
+      create_build_effect_smoke = false
+    }
+
+    if not (belt and belt.valid) then
+      inserter.destroy()
+      furnace.destroy()
+      error("enemy-builder test: failed to create test source belt for " .. item_name)
+    end
+
+    belts[#belts + 1] = belt
+  end
+
+  insert_entity_fuel(inserter, {name = "coal", count = 8})
+  local output_inventory = furnace.get_output_inventory and furnace.get_output_inventory() or nil
+  if not output_inventory then
+    error("enemy-builder test: failed to get furnace output inventory for " .. item_name)
+  end
+
+  output_inventory.insert{name = item_name, count = 120}
+  register_output_belt_site(
+    {
+      id = "test-" .. item_name .. "-export",
+      output_item_name = item_name
+    },
+    furnace,
+    inserter,
+    belts,
+    belts[#belts].position
+  )
+
+  return {
+    furnace = furnace,
+    inserter = inserter,
+    belts = belts
+  }
+end
+
+local function place_test_powered_firearm_anchor(surface, anchor_position)
+  local force = ensure_builder_force()
+  local assembler = surface.create_entity{
+    name = builder_data.prototypes.firearm_magazine_assembler_name,
+    position = anchor_position,
+    force = force,
+    create_build_effect_smoke = false
+  }
+
+  if not (assembler and assembler.valid) then
+    error("enemy-builder test: failed to create powered firearm anchor assembler")
+  end
+
+  local poles = {}
+  local pole_positions = {
+    {x = anchor_position.x, y = anchor_position.y + 3},
+    {x = anchor_position.x + 5, y = anchor_position.y + 3}
+  }
+
+  for _, pole_position in ipairs(pole_positions) do
+    local pole = surface.create_entity{
+      name = "small-electric-pole",
+      position = pole_position,
+      force = force,
+      create_build_effect_smoke = false
+    }
+    if not (pole and pole.valid) then
+      error("enemy-builder test: failed to create powered firearm anchor pole")
+    end
+    poles[#poles + 1] = pole
+  end
+
+  local solar_positions = {
+    {x = anchor_position.x - 2, y = anchor_position.y + 6},
+    {x = anchor_position.x + 2, y = anchor_position.y + 6},
+    {x = anchor_position.x + 5, y = anchor_position.y + 6},
+    {x = anchor_position.x + 9, y = anchor_position.y + 6}
+  }
+
+  for _, solar_position in ipairs(solar_positions) do
+    local solar_panel = surface.create_entity{
+      name = "solar-panel",
+      position = solar_position,
+      force = force,
+      create_build_effect_smoke = false
+    }
+    if not (solar_panel and solar_panel.valid) then
+      error("enemy-builder test: failed to create powered firearm anchor solar panel")
+    end
+  end
+
+  return {
+    assembler = assembler,
+    poles = poles
+  }
+end
+
 local function setup_manual_test(spec)
   spec = spec or {}
+
+  game.speed = spec.game_speed or 1
 
   ensure_debug_settings()
   ensure_production_sites()
@@ -2304,6 +2502,61 @@ local function setup_iron_plate_belt_export_test_case()
   }
 end
 
+local function setup_solar_panel_factory_test_case()
+  local surface = game.surfaces["nauvis"] or game.surfaces[1]
+  if not surface then
+    error("enemy-builder test: nauvis surface is unavailable")
+  end
+
+  local anchor_position = {x = 0, y = 0}
+  local builder_position = {x = 0, y = -6}
+  local factory_center = {x = 18, y = 0}
+  local area = make_test_area(factory_center, 64, 56)
+
+  surface.always_day = true
+  clear_test_area(surface, area)
+
+  local result = setup_manual_test{
+    case_name = "solar_panel_factory_physical_feed",
+    component_name = "solar_panel_factory",
+    builder_position = builder_position,
+    game_speed = 4,
+    surface_name = surface.name,
+    suppress_player_autospawn = true,
+    disable_nearby_machine_output_collection = true,
+    inventory = {
+      {name = "assembling-machine-1", count = 3},
+      {name = "burner-inserter", count = 10},
+      {name = "small-electric-pole", count = 8},
+      {name = "transport-belt", count = 256},
+      {name = "coal", count = 200}
+    },
+    assertion = {
+      case_name = "solar_panel_factory_physical_feed",
+      surface_name = surface.name,
+      area = area,
+      deadline_offset_ticks = 28800,
+      primary_entity_name = "assembling-machine-1",
+      expected_counts = {
+        ["assembling-machine-1"] = 3,
+        ["burner-inserter"] = 10,
+        ["small-electric-pole"] = 4
+      },
+      output_entity_names = {"assembling-machine-1"},
+      output_item_name = "solar-panel",
+      minimum_output_item_count = 1
+    }
+  }
+
+  place_test_powered_firearm_anchor(surface, anchor_position)
+  place_test_plate_belt_source(surface, "iron-plate", {x = 8, y = -12})
+  place_test_plate_belt_source(surface, "copper-plate", {x = 8, y = -2})
+  place_test_plate_belt_source(surface, "copper-plate", {x = 8, y = 6})
+  place_test_plate_belt_source(surface, "steel-plate", {x = 8, y = 12})
+
+  return result
+end
+
 local function setup_scaling_collect_switches_site_test_case()
   local surface = game.surfaces["nauvis"] or game.surfaces[1]
   if not surface then
@@ -2556,6 +2809,54 @@ end
 
 local function get_test_entity_debug_details(surface, force, area)
   local details = {}
+
+  for _, assembler in ipairs(surface.find_entities_filtered{
+    area = area,
+    force = force,
+    name = "assembling-machine-1"
+  }) do
+    local recipe = assembler.get_recipe and assembler.get_recipe() or nil
+    local input_inventory = assembler.get_inventory and assembler.get_inventory(defines.inventory.assembling_machine_input) or nil
+    local output_inventory = assembler.get_output_inventory and assembler.get_output_inventory() or nil
+    details[#details + 1] = string.format(
+      "assembler(pos=%s recipe=%s status=%s iron=%d copper=%d steel=%d cable=%d circuit=%d solar=%d energy=%.3f progress=%.3f)",
+      format_position(assembler.position),
+      tostring(recipe and recipe.name or "nil"),
+      tostring(assembler.status),
+      input_inventory and input_inventory.get_item_count("iron-plate") or 0,
+      input_inventory and input_inventory.get_item_count("copper-plate") or 0,
+      input_inventory and input_inventory.get_item_count("steel-plate") or 0,
+      input_inventory and input_inventory.get_item_count("copper-cable") or 0,
+      input_inventory and input_inventory.get_item_count("electronic-circuit") or 0,
+      output_inventory and output_inventory.get_item_count("solar-panel") or 0,
+      assembler.energy or 0,
+      assembler.crafting_progress or 0
+    )
+  end
+
+  for _, belt in ipairs(surface.find_entities_filtered{
+    area = area,
+    force = force,
+    type = "transport-belt"
+  }) do
+    local line1 = belt.get_transport_line and belt.get_transport_line(1) or nil
+    local line2 = belt.get_transport_line and belt.get_transport_line(2) or nil
+    local line1_contents = line1 and line1.get_contents and line1.get_contents() or {}
+    local line2_contents = line2 and line2.get_contents and line2.get_contents() or {}
+    local iron_count = (line1_contents["iron-plate"] or 0) + (line2_contents["iron-plate"] or 0)
+    local copper_count = (line1_contents["copper-plate"] or 0) + (line2_contents["copper-plate"] or 0)
+    local steel_count = (line1_contents["steel-plate"] or 0) + (line2_contents["steel-plate"] or 0)
+    if iron_count > 0 or copper_count > 0 or steel_count > 0 then
+      details[#details + 1] = string.format(
+        "belt(pos=%s dir=%s iron=%d copper=%d steel=%d)",
+        format_position(belt.position),
+        tostring(belt.direction),
+        iron_count,
+        copper_count,
+        steel_count
+      )
+    end
+  end
 
   for _, inserter in ipairs(surface.find_entities_filtered{
     area = area,
@@ -2973,6 +3274,7 @@ local test_remote_interface = {
   setup_firearm_outpost_anchored_test_case = setup_firearm_outpost_anchored_test_case,
   setup_tree_blocked_assembler_test_case = setup_tree_blocked_assembler_test_case,
   setup_iron_plate_belt_export_test_case = setup_iron_plate_belt_export_test_case,
+  setup_solar_panel_factory_test_case = setup_solar_panel_factory_test_case,
   setup_scaling_collect_switches_site_test_case = setup_scaling_collect_switches_site_test_case,
   setup_steel_smelting_test_case = setup_steel_smelting_test_case,
   setup_full_run_layout_snapshot_case = setup_full_run_layout_snapshot_case,
@@ -3108,8 +3410,37 @@ find_layout_site_near_machine = function(builder_state, task)
   return world_model.find_layout_site_near_machine(builder_state, task, world_model_context)
 end
 
+find_assembly_block_site = function(builder_state, task)
+  return world_model.find_assembly_block_site(builder_state, task, world_model_context)
+end
+
+find_assembly_input_route_site = function(builder_state, task)
+  return world_model.find_assembly_input_route_site(builder_state, task, world_model_context)
+end
+
 find_output_belt_line_site = function(builder_state, task)
   return world_model.find_output_belt_line_site(builder_state, task, world_model_context)
+end
+
+register_assembly_block_site = function(task, anchor_entity, root_assembler, placed_layout_entities)
+  return world_model.register_assembly_block_site(
+    task,
+    anchor_entity,
+    root_assembler,
+    placed_layout_entities,
+    world_model_context
+  )
+end
+
+register_assembly_input_route = function(task, assembly_site, route_id, belt_entities, source_site)
+  return world_model.register_assembly_input_route(
+    task,
+    assembly_site,
+    route_id,
+    belt_entities,
+    source_site,
+    world_model_context
+  )
 end
 
 register_assembler_defense_site = function(task, assembler, placed_layout_entities)
@@ -3189,6 +3520,8 @@ local task_executor_context = {
   debug_log = debug_log,
   decorative_target_exists = decorative_target_exists,
   find_clearable_build_obstacle = find_clearable_build_obstacle,
+  find_assembly_block_site = find_assembly_block_site,
+  find_assembly_input_route_site = find_assembly_input_route_site,
   destroy_entity_if_valid = destroy_entity_if_valid,
   direction_from_delta = direction_from_delta,
   find_gather_site = find_gather_site,
@@ -3208,6 +3541,8 @@ local task_executor_context = {
   insert_products = insert_products,
   inventory_targets_summary = inventory_targets_summary,
   point_in_area = point_in_area,
+  register_assembly_block_site = register_assembly_block_site,
+  register_assembly_input_route = register_assembly_input_route,
   register_assembler_defense_site = register_assembler_defense_site,
   register_output_belt_site = register_output_belt_site,
   register_resource_site = register_resource_site,
