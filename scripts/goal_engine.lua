@@ -541,57 +541,6 @@ local function plan_scaling_required_items(builder_data, builder_state, required
   return false
 end
 
-local function repeatable_scaling_task_has_site(builder_state, task, adapters)
-  if not task then
-    return false
-  end
-
-  if task.type == "place-layout-near-machine" then
-    local site = adapters.find_layout_site_near_machine(builder_state, task)
-    return site ~= nil
-  end
-
-  if task.type == "place-machine-near-site" then
-    local site = adapters.find_machine_site_near_resource_sites(builder_state, task)
-    return site ~= nil
-  end
-
-  return true
-end
-
-local function scaling_build_task_has_site(builder_state, task, adapters)
-  if not task then
-    return false
-  end
-
-  if task.type == "place-layout-near-machine" then
-    local site = adapters.find_layout_site_near_machine(builder_state, task)
-    return site ~= nil
-  end
-
-  if task.type == "place-machine-near-site" then
-    local site = adapters.find_machine_site_near_resource_sites(builder_state, task)
-    return site ~= nil
-  end
-
-  if task.type == "place-output-belt-line" then
-    local site = adapters.find_output_belt_line_site(builder_state, task)
-    return site ~= nil
-  end
-
-  if task.type == "place-assembly-block" then
-    local site = adapters.find_assembly_block_site(builder_state, task)
-    return site ~= nil
-  end
-
-  if task.type == "place-assembly-input-route" then
-    local site = adapters.find_assembly_input_route_site(builder_state, task)
-    return site ~= nil
-  end
-
-  return true
-end
-
 local function plan_scaling_reserves(builder_data, builder_state, tick, adapters)
   for _, reserve_item in ipairs((builder_data.scaling and builder_data.scaling.reserve_items) or {}) do
     if predicates.unlock_requirements_met(builder_state, reserve_item.unlock, adapters.get_resource_site_counts) then
@@ -629,11 +578,12 @@ local function plan_repeatable_scaling_milestones(builder_data, builder_state, t
     if milestone.repeat_when_eligible and builder_state.completed_scaling_milestones[milestone.name] then
       if not adapters.is_goal_retry_blocked(builder_state, "repeatable-milestone:" .. milestone.name, tick) then
         local task = create_scaling_repeatable_milestone_task(milestone)
-        if task and repeatable_scaling_task_has_site(builder_state, task, adapters) then
+        if task then
           if plan_scaling_required_items(builder_data, builder_state, milestone.required_items, tick, task, adapters) then
             return true
           end
 
+          -- Keep planning cheap. Task start owns the expensive site search and retry behavior.
           start_scaling_subtask(builder_state, task, tick, adapters)
           return true
         end
@@ -720,14 +670,8 @@ local function plan_scaling(builder_data, builder_state, tick, adapters)
     return
   end
 
-  if not scaling_build_task_has_site(builder_state, build_task, adapters) then
-    local reason = "scaling: no buildable site for " .. pattern_name .. "; cooling down pattern"
-    adapters.enter_task_retry_cooldown(builder_state, build_task, tick, reason)
-    adapters.debug_log(reason)
-    plan_scaling(builder_data, builder_state, tick, adapters)
-    return
-  end
-
+  -- Avoid running heavyweight placement searches during planning. The task start
+  -- path performs the real search once and handles backoff if no site exists.
   start_scaling_subtask(builder_state, build_task, tick, adapters)
 end
 
