@@ -12,7 +12,7 @@ local function make_fresh_output_belt_task(pattern_name, resource_name, output_i
     output_item_name = output_item_name,
     miner_name = "burner-mining-drill",
     search_radii = {64, 128, 256, 512},
-    max_resource_candidates_per_radius = 48,
+    max_resource_candidates_per_radius = 4,
     search_retry_ticks = 5 * 60,
     placement_search_radius = 4,
     placement_step = 0.5,
@@ -22,7 +22,7 @@ local function make_fresh_output_belt_task(pattern_name, resource_name, output_i
     site_selection = {
       prefer_middle = true,
       prefer_patch_margin = true,
-      random_candidate_pool = 12
+      random_candidate_pool = 2
     },
     downstream_machine = {
       name = "stone-furnace",
@@ -54,13 +54,13 @@ local function make_fresh_output_belt_task(pattern_name, resource_name, output_i
     belt_entity_name = "transport-belt",
     belt_item_name = "transport-belt",
     belt_hub_search = {
-      heading_count = 16,
-      heading_attempts = 8,
+      heading_count = 8,
+      heading_attempts = 4,
       ray_step = 1,
-      max_distance = 80,
-      extra_distance_min = 18,
-      extra_distance_max = 24,
-      local_search_radius = 4,
+      max_distance = 48,
+      extra_distance_min = 8,
+      extra_distance_max = 12,
+      local_search_radius = 3,
       local_search_step = 1
     },
     belt_terminal_search_radius = 3,

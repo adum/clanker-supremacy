@@ -291,22 +291,7 @@ local function build_randomized_heading_angles(search_config, ctx)
 end
 
 local function candidate_entity_overlaps_resources(surface, force, entity_name, position, direction)
-  local probe_entity = surface.create_entity{
-    name = entity_name,
-    position = position,
-    direction = direction,
-    force = force,
-    create_build_effect_smoke = false,
-    raise_built = false
-  }
-
-  if not probe_entity then
-    return true
-  end
-
-  local overlaps_resources = entity_refs.entity_overlaps_resources(probe_entity)
-  probe_entity.destroy()
-  return overlaps_resources
+  return entity_refs.entity_name_overlaps_resources(surface, entity_name, position)
 end
 
 local function build_resource_clearance_search_origins(surface, force, task, anchor_position, summary, ctx)
@@ -1225,6 +1210,8 @@ build_output_belt_layout_for_anchor = function(surface, force, output_machine, h
 end
 
 local function find_miner_placement(surface, force, task, resource_position, patch, ctx)
+  local site_selection = task.site_selection or {}
+  local valid_candidate_limit = site_selection.max_valid_candidates or math.max(site_selection.random_candidate_pool or 1, 4)
   local stats = {
     positions_checked = 0,
     placeable_positions = 0,
@@ -1244,9 +1231,12 @@ local function find_miner_placement(surface, force, task, resource_position, pat
     valid_belt_paths = 0,
     failed_belt_paths = 0,
     failed_inserter_geometry = 0,
-    resource_overlap_rejections = 0
+    resource_overlap_rejections = 0,
+    valid_candidate_limit = valid_candidate_limit,
+    valid_candidate_limit_reached = false
   }
   local valid_candidates = {}
+  local stop_search = false
 
   for _, position in ipairs(ctx.build_search_positions(resource_position, task.placement_search_radius, task.placement_step)) do
     for _, direction_name in ipairs(task.placement_directions) do
@@ -1356,13 +1346,22 @@ local function find_miner_placement(surface, force, task, resource_position, pat
               search_weight = position.weight,
               direction_name = direction_name
             }
+
+            if #valid_candidates >= valid_candidate_limit then
+              stats.valid_candidate_limit_reached = true
+              stop_search = true
+              break
+            end
           end
         end
       end
     end
+
+    if stop_search then
+      break
+    end
   end
 
-  local site_selection = task.site_selection or {}
   local selected_candidate, pool_size = ctx.select_preferred_candidate(
     valid_candidates,
     site_selection.random_candidate_pool or 1,

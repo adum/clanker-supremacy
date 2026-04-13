@@ -1,5 +1,28 @@
 local entity_refs = {}
 
+local function build_entity_box_area(entity_name, position)
+  local prototype = prototypes and prototypes.entity and prototypes.entity[entity_name] or nil
+  local collision_box = prototype and (prototype.collision_box or prototype.selection_box) or nil
+
+  if not collision_box then
+    return {
+      left_top = {x = position.x - 0.5, y = position.y - 0.5},
+      right_bottom = {x = position.x + 0.5, y = position.y + 0.5}
+    }
+  end
+
+  return {
+    left_top = {
+      x = position.x + collision_box.left_top.x,
+      y = position.y + collision_box.left_top.y
+    },
+    right_bottom = {
+      x = position.x + collision_box.right_bottom.x,
+      y = position.y + collision_box.right_bottom.y
+    }
+  }
+end
+
 function entity_refs.entity_overlaps_resources(entity)
   if not (entity and entity.valid) then
     return false
@@ -7,6 +30,18 @@ function entity_refs.entity_overlaps_resources(entity)
 
   return #entity.surface.find_entities_filtered{
     area = entity.selection_box,
+    type = "resource",
+    limit = 1
+  } > 0
+end
+
+function entity_refs.entity_name_overlaps_resources(surface, entity_name, position)
+  if not (surface and entity_name and position) then
+    return false
+  end
+
+  return #surface.find_entities_filtered{
+    area = build_entity_box_area(entity_name, position),
     type = "resource",
     limit = 1
   } > 0
