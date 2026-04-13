@@ -559,27 +559,40 @@ local function repeatable_scaling_task_has_site(builder_state, task, adapters)
   return true
 end
 
-local function plan_repeatable_scaling_milestones(builder_data, builder_state, tick, adapters)
-  for _, milestone in ipairs((builder_data.scaling and builder_data.scaling.production_milestones) or {}) do
-    if milestone.repeat_when_eligible and builder_state.completed_scaling_milestones[milestone.name] then
-      if not adapters.is_goal_retry_blocked(builder_state, "repeatable-milestone:" .. milestone.name, tick) then
-        local task = create_scaling_repeatable_milestone_task(milestone)
-        if task and repeatable_scaling_task_has_site(builder_state, task, adapters) then
-          if plan_scaling_required_items(builder_data, builder_state, milestone.required_items, tick, task, adapters) then
-            return true
-          end
-
-          start_scaling_subtask(builder_state, task, tick, adapters)
-          return true
-        end
-      end
-    end
+local function scaling_build_task_has_site(builder_state, task, adapters)
+  if not task then
+    return false
   end
 
-  return false
+  if task.type == "place-layout-near-machine" then
+    local site = adapters.find_layout_site_near_machine(builder_state, task)
+    return site ~= nil
+  end
+
+  if task.type == "place-machine-near-site" then
+    local site = adapters.find_machine_site_near_resource_sites(builder_state, task)
+    return site ~= nil
+  end
+
+  if task.type == "place-output-belt-line" then
+    local site = adapters.find_output_belt_line_site(builder_state, task)
+    return site ~= nil
+  end
+
+  if task.type == "place-assembly-block" then
+    local site = adapters.find_assembly_block_site(builder_state, task)
+    return site ~= nil
+  end
+
+  if task.type == "place-assembly-input-route" then
+    local site = adapters.find_assembly_input_route_site(builder_state, task)
+    return site ~= nil
+  end
+
+  return true
 end
 
-local function plan_scaling(builder_data, builder_state, tick, adapters)
+local function plan_scaling_reserves(builder_data, builder_state, tick, adapters)
   for _, reserve_item in ipairs((builder_data.scaling and builder_data.scaling.reserve_items) or {}) do
     if predicates.unlock_requirements_met(builder_state, reserve_item.unlock, adapters.get_resource_site_counts) then
       if adapters.get_item_count(builder_state.entity, reserve_item.name) < reserve_item.count then
@@ -603,11 +616,35 @@ local function plan_scaling(builder_data, builder_state, tick, adapters)
             adapters
           )
         end
-        return
+        return true
       end
     end
   end
 
+  return false
+end
+
+local function plan_repeatable_scaling_milestones(builder_data, builder_state, tick, adapters)
+  for _, milestone in ipairs((builder_data.scaling and builder_data.scaling.production_milestones) or {}) do
+    if milestone.repeat_when_eligible and builder_state.completed_scaling_milestones[milestone.name] then
+      if not adapters.is_goal_retry_blocked(builder_state, "repeatable-milestone:" .. milestone.name, tick) then
+        local task = create_scaling_repeatable_milestone_task(milestone)
+        if task and repeatable_scaling_task_has_site(builder_state, task, adapters) then
+          if plan_scaling_required_items(builder_data, builder_state, milestone.required_items, tick, task, adapters) then
+            return true
+          end
+
+          start_scaling_subtask(builder_state, task, tick, adapters)
+          return true
+        end
+      end
+    end
+  end
+
+  return false
+end
+
+local function plan_scaling(builder_data, builder_state, tick, adapters)
   local milestone = goal_engine.get_pending_scaling_milestone(builder_data, builder_state, tick, adapters)
   if milestone and predicates.should_pursue_milestone(builder_data, builder_state, milestone, adapters.get_item_count, function(item_name)
     return predicates.get_recipe(builder_data, item_name)
@@ -644,8 +681,10 @@ local function plan_scaling(builder_data, builder_state, tick, adapters)
 
   local pattern_name = adapters.get_scaling_pattern_name(builder_state)
   if not pattern_name then
-    set_scaling_display_task(builder_state, nil)
-    adapters.set_idle(builder_state.entity)
+    if not plan_scaling_reserves(builder_data, builder_state, tick, adapters) then
+      set_scaling_display_task(builder_state, nil)
+      adapters.set_idle(builder_state.entity)
+    end
     return
   end
 
@@ -678,6 +717,14 @@ local function plan_scaling(builder_data, builder_state, tick, adapters)
       {id = "pattern-" .. pattern_name, scaling_pattern_name = pattern_name},
       adapters
     )
+    return
+  end
+
+  if not scaling_build_task_has_site(builder_state, build_task, adapters) then
+    local reason = "scaling: no buildable site for " .. pattern_name .. "; cooling down pattern"
+    adapters.enter_task_retry_cooldown(builder_state, build_task, tick, reason)
+    adapters.debug_log(reason)
+    plan_scaling(builder_data, builder_state, tick, adapters)
     return
   end
 

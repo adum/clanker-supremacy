@@ -2708,6 +2708,62 @@ local function setup_scaling_early_expansion_over_coal_reserve_test_case()
   }
 end
 
+local function setup_scaling_builds_before_coal_reserve_test_case()
+  local surface = game.surfaces["nauvis"] or game.surfaces[1]
+  if not surface then
+    error("enemy-builder test: nauvis surface is unavailable")
+  end
+
+  local builder_position = {x = 0, y = 0}
+  local coal_patch_a = {x = 24, y = -16}
+  local coal_patch_b = {x = 24, y = 16}
+  local iron_patch_a = {x = 56, y = -16}
+  local iron_patch_b = {x = 56, y = 16}
+  local extra_iron_patch = {x = 88, y = 0}
+  local area = make_test_area({x = 56, y = 0}, 144, 72)
+
+  surface.always_day = true
+  clear_test_area(surface, area)
+
+  create_test_resource_patch(surface, "coal", coal_patch_a, 3, 5000)
+  create_test_resource_patch(surface, "coal", coal_patch_b, 3, 5000)
+  create_test_resource_patch(surface, "iron-ore", iron_patch_a, 3, 5000)
+  create_test_resource_patch(surface, "iron-ore", iron_patch_b, 3, 5000)
+  create_test_resource_patch(surface, "iron-ore", extra_iron_patch, 3, 5000)
+
+  place_test_runtime_coal_outpost_site(surface, coal_patch_a)
+  place_test_runtime_coal_outpost_site(surface, coal_patch_b)
+  place_test_runtime_iron_smelting_site(surface, iron_patch_a)
+  place_test_runtime_iron_smelting_site(surface, iron_patch_b)
+
+  return setup_scaling_test{
+    case_name = "scaling_builds_before_coal_reserve",
+    builder_position = builder_position,
+    surface_name = surface.name,
+    suppress_player_autospawn = true,
+    disable_nearby_machine_output_collection = true,
+    inventory = {
+      {name = "iron-plate", count = 80},
+      {name = "stone", count = 40},
+      {name = "wood", count = 20}
+    },
+    mutate_builder_state = function(builder_state)
+      builder_state.scaling_pattern_index = 2
+    end,
+    assertion = {
+      case_name = "scaling_builds_before_coal_reserve",
+      surface_name = surface.name,
+      area = area,
+      deadline_offset_ticks = 3600,
+      skip_output_assertion = true,
+      minimum_resource_site_counts = {
+        coal_outpost = 2,
+        iron_smelting = 3
+      }
+    }
+  }
+end
+
 local function finish_manual_test()
   if storage.enemy_builder_test then
     storage.enemy_builder_test.finished = true
@@ -3386,6 +3442,7 @@ local test_remote_interface = {
   setup_solar_panel_factory_test_case = setup_solar_panel_factory_test_case,
   setup_scaling_collect_switches_site_test_case = setup_scaling_collect_switches_site_test_case,
   setup_scaling_early_expansion_over_coal_reserve_test_case = setup_scaling_early_expansion_over_coal_reserve_test_case,
+  setup_scaling_builds_before_coal_reserve_test_case = setup_scaling_builds_before_coal_reserve_test_case,
   setup_steel_smelting_test_case = setup_steel_smelting_test_case,
   setup_full_run_layout_snapshot_case = setup_full_run_layout_snapshot_case,
   finish_manual_test = finish_manual_test,
@@ -3757,8 +3814,12 @@ local goal_engine_adapters = {
   debug_log = debug_log,
   direction_from_delta = direction_from_delta,
   discover_resource_sites = discover_resource_sites,
+  enter_task_retry_cooldown = builder_runtime.enter_task_retry_cooldown,
+  find_assembly_block_site = find_assembly_block_site,
+  find_assembly_input_route_site = find_assembly_input_route_site,
   find_layout_site_near_machine = find_layout_site_near_machine,
   find_machine_site_near_resource_sites = find_machine_site_near_resource_sites,
+  find_output_belt_line_site = find_output_belt_line_site,
   format_position = format_position,
   format_products = format_products,
   get_item_count = get_item_count,
