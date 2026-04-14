@@ -94,7 +94,7 @@ return {
   wait_patrol = {
     item_site_patterns = {
       ["coal"] = {"coal_outpost"},
-      ["iron-plate"] = {"iron_smelting", "coal_outpost"},
+      ["iron-plate"] = {"iron_smelting"},
       ["copper-plate"] = {"copper_smelting", "coal_outpost"},
       ["steel-plate"] = {"steel_smelting", "iron_smelting", "coal_outpost"}
     },

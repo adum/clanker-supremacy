@@ -192,6 +192,80 @@ local function find_collectable_site(builder_state, item_name, allow_empty, adap
   return best_site
 end
 
+local function get_collectable_site_key(site)
+  if not site then
+    return nil
+  end
+
+  local identity_entity = site.identity_entity or site.downstream_machine or site.output_container or site.miner
+  if identity_entity and identity_entity.valid and identity_entity.unit_number then
+    return tostring(identity_entity.unit_number)
+  end
+
+  local collect_position = site.output_container and site.output_container.valid and site.output_container.position or
+    site.downstream_machine and site.downstream_machine.valid and site.downstream_machine.position or
+    site.miner and site.miner.valid and site.miner.position or
+    nil
+
+  if collect_position then
+    return string.format(
+      "%s:%.2f:%.2f",
+      tostring(site.pattern_name or "site"),
+      collect_position.x,
+      collect_position.y
+    )
+  end
+
+  return tostring(site.pattern_name or "site")
+end
+
+local function should_use_scaling_site_crawl(item_name)
+  return item_name == "iron-plate"
+end
+
+local function get_scaling_collection_goal_count(item_name, adapters)
+  local limits = adapters.builder_data and adapters.builder_data.logistics and adapters.builder_data.logistics.inventory_take_limits
+  return limits and limits[item_name] or nil
+end
+
+local function find_random_collection_crawl_site(builder_state, item_name, origin_position, visited_site_keys, adapters)
+  adapters.discover_resource_sites(builder_state)
+
+  local candidates = {}
+  for _, site in ipairs(adapters.cleanup_resource_sites()) do
+    local site_key = get_collectable_site_key(site)
+    local allowed_item_names = adapters.get_site_allowed_items(site)
+    if
+      site_key and
+      (not (visited_site_keys and visited_site_keys[site_key])) and
+      (not item_name or (allowed_item_names and allowed_item_names[item_name]))
+    then
+      local collect_position = adapters.get_site_collect_position(site)
+      local collect_count = adapters.get_site_collect_count(site, item_name)
+      if collect_position and collect_count > 0 then
+        candidates[#candidates + 1] = {
+          site = site,
+          collect_position = collect_position,
+          distance = adapters.square_distance(origin_position, collect_position)
+        }
+      end
+    end
+  end
+
+  if #candidates == 0 then
+    return nil, 0, 0
+  end
+
+  table.sort(candidates, function(left, right)
+    return left.distance < right.distance
+  end)
+
+  local selection_pool_size = math.min(#candidates, 4)
+  local selection_index = adapters.next_random_index and adapters.next_random_index(selection_pool_size) or 1
+  local selected = candidates[selection_index]
+  return selected and selected.site or nil, selection_pool_size, #candidates
+end
+
 local function get_wait_patrol_patterns(builder_data, item_name)
   local wait_patrol = builder_data.scaling and builder_data.scaling.wait_patrol
   if not wait_patrol then
@@ -301,13 +375,22 @@ local function start_scaling_collection(builder_state, site, item_name, tick, al
     focus_kind = "collect",
     focus_name = item_name
   })
+  local collection_mode = options and options.collection_mode or "collect"
+  local crawl_visited_site_keys = options and options.crawl_visited_site_keys or nil
+  local collection_goal_count = options and options.collection_goal_count or nil
+  if collection_mode == "site-crawl" then
+    crawl_visited_site_keys = crawl_visited_site_keys or {}
+    collection_goal_count = collection_goal_count or get_scaling_collection_goal_count(item_name, adapters)
+  end
   builder_state.task_state = {
     phase = "scaling-moving-to-site",
     scaling_site = site,
     target_item_name = item_name,
     allowed_item_names = adapters.get_site_allowed_items(site),
     allow_wait_for_items = allow_wait_for_items == true,
-    collection_mode = options and options.collection_mode or "collect",
+    collection_mode = collection_mode,
+    crawl_visited_site_keys = crawl_visited_site_keys,
+    collection_goal_count = collection_goal_count,
     target_position = collect_position,
     approach_position = adapters.create_task_approach_position(nil, collect_position, 1.1),
     last_position = common.clone_position(builder_state.entity.position),
@@ -322,7 +405,8 @@ local function start_scaling_collection(builder_state, site, item_name, tick, al
   else
     adapters.debug_log(
       "scaling: moving to " .. (site.pattern_name or "site") .. " at " ..
-      adapters.format_position(collect_position) .. " to collect " .. (item_name or "items")
+      adapters.format_position(collect_position) .. " to collect " .. (item_name or "items") ..
+      (collection_mode == "site-crawl" and collection_goal_count and (" while crawling sites up to " .. tostring(collection_goal_count)) or "")
     )
   end
 end
@@ -346,7 +430,88 @@ local function start_scaling_wait_patrol(builder_data, builder_state, item_name,
   return true
 end
 
+local function continue_scaling_site_crawl(builder_state, tick, task_state, display_task, adapters)
+  if not (task_state and task_state.collection_mode == "site-crawl" and task_state.target_item_name) then
+    return false
+  end
+
+  local visited_site_keys = task_state.crawl_visited_site_keys or {}
+  task_state.crawl_visited_site_keys = visited_site_keys
+
+  local current_site_key = get_collectable_site_key(task_state.scaling_site)
+  if current_site_key then
+    visited_site_keys[current_site_key] = true
+  end
+
+  local goal_count = task_state.collection_goal_count or get_scaling_collection_goal_count(task_state.target_item_name, adapters)
+  if goal_count and adapters.get_item_count(builder_state.entity, task_state.target_item_name) >= goal_count then
+    adapters.debug_log(
+      "scaling: site crawl reached " .. task_state.target_item_name ..
+      " cap " .. tostring(goal_count)
+    )
+    builder_state.task_state = nil
+    return true
+  end
+
+  local next_site, pool_size, candidate_count = find_random_collection_crawl_site(
+    builder_state,
+    task_state.target_item_name,
+    task_state.target_position or builder_state.entity.position,
+    visited_site_keys,
+    adapters
+  )
+
+  if next_site then
+    adapters.debug_log(
+      "scaling: site crawl moving on to " .. (next_site.pattern_name or "site") ..
+      " from a pool of " .. tostring(pool_size) ..
+      " nearby candidates (" .. tostring(candidate_count) .. " total remaining)"
+    )
+    start_scaling_collection(
+      builder_state,
+      next_site,
+      task_state.target_item_name,
+      tick,
+      false,
+      display_task,
+      adapters,
+      {
+        collection_mode = "site-crawl",
+        crawl_visited_site_keys = visited_site_keys,
+        collection_goal_count = goal_count
+      }
+    )
+    return true
+  end
+
+  adapters.debug_log("scaling: site crawl exhausted " .. task_state.target_item_name .. " sites")
+  builder_state.task_state = nil
+  return true
+end
+
+local function normalize_scaling_collection_task_state(task_state, adapters)
+  if not (task_state and should_use_scaling_site_crawl(task_state.target_item_name)) then
+    return
+  end
+
+  if task_state.collection_mode == nil then
+    task_state.collection_mode = "site-crawl"
+  end
+
+  if task_state.collection_mode == "site-crawl" then
+    task_state.crawl_visited_site_keys = task_state.crawl_visited_site_keys or {}
+    task_state.collection_goal_count = task_state.collection_goal_count or
+      get_scaling_collection_goal_count(task_state.target_item_name, adapters)
+  end
+end
+
 local function handle_empty_scaling_collection_site(builder_data, builder_state, tick, task_state, display_task, adapters)
+  normalize_scaling_collection_task_state(task_state, adapters)
+
+  if continue_scaling_site_crawl(builder_state, tick, task_state, display_task, adapters) then
+    return true
+  end
+
   local item_name = task_state and task_state.target_item_name or nil
   local current_site = task_state and task_state.scaling_site or nil
   local alternate_site = find_collectable_site(builder_state, item_name, false, adapters)
@@ -354,7 +519,7 @@ local function handle_empty_scaling_collection_site(builder_data, builder_state,
   if alternate_site and alternate_site ~= current_site then
     adapters.debug_log(
       "scaling: " .. ((current_site and current_site.pattern_name) or "site") ..
-      " was empty on arrival; switching to " .. (alternate_site.pattern_name or "site")
+      " yielded no collectable items on arrival; switching to " .. (alternate_site.pattern_name or "site")
     )
     start_scaling_collection(builder_state, alternate_site, item_name, tick, false, display_task, adapters)
     return true
@@ -363,7 +528,7 @@ local function handle_empty_scaling_collection_site(builder_data, builder_state,
   if start_scaling_wait_patrol(builder_data, builder_state, item_name, tick, display_task, adapters, current_site) then
     adapters.debug_log(
       "scaling: " .. ((current_site and current_site.pattern_name) or "site") ..
-      " was empty on arrival; patrolling other sites for " .. (item_name or "items")
+      " yielded no collectable items on arrival; patrolling other sites for " .. (item_name or "items")
     )
     return true
   end
@@ -471,7 +636,14 @@ local function plan_scaling_required_items(builder_data, builder_state, required
   if action.kind == "collect-ingredient" then
     local site = find_collectable_site(builder_state, action.item_name, false, adapters)
     if site then
-      start_scaling_collection(builder_state, site, action.item_name, tick, false, display_task, adapters)
+      local collection_options = nil
+      if should_use_scaling_site_crawl(action.item_name) then
+        collection_options = {
+          collection_mode = "site-crawl",
+          collection_goal_count = get_scaling_collection_goal_count(action.item_name, adapters)
+        }
+      end
+      start_scaling_collection(builder_state, site, action.item_name, tick, false, display_task, adapters, collection_options)
       return true
     end
 
@@ -677,6 +849,7 @@ end
 
 local function advance_scaling(builder_data, builder_state, tick, adapters)
   if builder_state.scaling_active_task and builder_state.task_state then
+    normalize_scaling_collection_task_state(builder_state.task_state, adapters)
     set_scaling_display_task(builder_state, builder_state.scaling_active_task)
     adapters.advance_task_phase(builder_state, builder_state.scaling_active_task, tick)
     return
@@ -701,6 +874,7 @@ local function advance_scaling(builder_data, builder_state, tick, adapters)
   if phase == "scaling-moving-to-site" then
     local entity = builder_state.entity
     local task_state = builder_state.task_state
+    normalize_scaling_collection_task_state(task_state, adapters)
     local destination_position = task_state.target_position
     local movement_position = task_state.approach_position or destination_position
 
@@ -745,6 +919,7 @@ local function advance_scaling(builder_data, builder_state, tick, adapters)
 
   if phase == "scaling-collecting-site" then
     local task_state = builder_state.task_state
+    normalize_scaling_collection_task_state(task_state, adapters)
     local site = task_state.scaling_site
     local inventory = site and adapters.get_site_collect_inventory(site) or nil
 
@@ -806,6 +981,17 @@ local function advance_scaling(builder_data, builder_state, tick, adapters)
     end
 
     adapters.debug_log("scaling: " .. reason .. "; moved " .. adapters.format_products(moved_items))
+    if continue_scaling_site_crawl(
+        builder_state,
+        tick,
+        task_state,
+        instances.ensure_state(builder_state).scaling_display_task,
+        adapters
+      )
+    then
+      return
+    end
+
     builder_state.task_state = nil
     return
   end
@@ -818,6 +1004,7 @@ local function advance_scaling(builder_data, builder_state, tick, adapters)
   end
 
   if phase == "scaling-waiting-at-site" then
+    normalize_scaling_collection_task_state(builder_state.task_state, adapters)
     if tick >= (builder_state.task_state.next_attempt_tick or 0) then
       builder_state.task_state.phase = "scaling-collecting-site"
     end

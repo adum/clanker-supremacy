@@ -207,6 +207,40 @@ local function format_item_stack_name(item_stack)
   return item_stack.name
 end
 
+local function normalize_inventory_content_entry(content_key, content_value)
+  if type(content_value) == "table" then
+    local item_name = content_value.name or (type(content_key) == "string" and content_key) or nil
+    if not item_name then
+      return nil
+    end
+
+    return {
+      name = item_name,
+      quality = content_value.quality,
+      count = content_value.count or 0
+    }
+  end
+
+  if type(content_value) == "number" then
+    if type(content_key) == "string" then
+      return {
+        name = content_key,
+        count = content_value
+      }
+    end
+
+    if type(content_key) == "table" and content_key.name then
+      return {
+        name = content_key.name,
+        quality = content_key.quality,
+        count = content_value
+      }
+    end
+  end
+
+  return nil
+end
+
 local function humanize_identifier(identifier)
   if not identifier then
     return "unknown"
@@ -234,8 +268,11 @@ end
 local function get_sorted_item_stacks(contents)
   local item_stacks = {}
 
-  for _, item_stack in pairs(contents) do
-    item_stacks[#item_stacks + 1] = item_stack
+  for content_key, content_value in pairs(contents) do
+    local item_stack = normalize_inventory_content_entry(content_key, content_value)
+    if item_stack and item_stack.count > 0 then
+      item_stacks[#item_stacks + 1] = item_stack
+    end
   end
 
   table.sort(item_stacks, function(left, right)
@@ -4015,6 +4052,7 @@ local goal_engine_adapters = {
   get_site_pattern = get_site_pattern,
   insert_item = insert_item,
   is_goal_retry_blocked = builder_runtime.is_goal_retry_blocked,
+  next_random_index = next_random_index,
   pull_inventory_contents_to_builder = pull_inventory_contents_to_builder,
   record_recovery = builder_runtime.record_recovery,
   set_idle = set_idle,
