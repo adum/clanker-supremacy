@@ -479,16 +479,64 @@ function action_build.finish_place_machine_near_site_task(builder_state, task, t
     return
   end
 
+  local valid_layout_entities = {}
+  for _, placement in ipairs(task_state.placed_layout_entities or {}) do
+    if placement.entity and placement.entity.valid then
+      valid_layout_entities[#valid_layout_entities + 1] = placement
+    end
+  end
+
+  local seeded_items = {}
+  if task.seed_anchor_items and #task.seed_anchor_items > 0 then
+    seeded_items = seed_entity_from_builder_inventory(
+      builder_state.entity,
+      placed_entity,
+      task.seed_anchor_items,
+      "seeded " .. placed_entity.name .. " at " .. ctx.format_position(placed_entity.position),
+      ctx
+    )
+  end
+
+  local full_reserved_layout_built = false
+  if task.build_reserved_layout then
+    local expected_layout_count = #(task_state.layout_placements or {})
+    full_reserved_layout_built =
+      not task_state.reserved_layout_failed and
+      expected_layout_count > 0 and
+      #valid_layout_entities >= expected_layout_count
+
+    if full_reserved_layout_built and task.register_reserved_layout_as_assembler_defense then
+      ctx.register_assembler_defense_site(task, placed_entity, valid_layout_entities)
+    end
+  end
+
   if task.completed_scaling_milestone_name then
     ctx.builder_runtime.ensure_builder_state_fields(builder_state)
     builder_state.completed_scaling_milestones[task.completed_scaling_milestone_name] = true
   end
 
+  local completion_message =
+    "placed " .. task.entity_name .. " at " .. ctx.format_position(placed_entity.position) ..
+    (task.recipe_name and " with recipe " .. task.recipe_name or "")
+
+  if task.build_reserved_layout and #valid_layout_entities > 0 then
+    completion_message = completion_message ..
+      (full_reserved_layout_built and " with " or "; left ") ..
+      tostring(#valid_layout_entities) .. " support entities"
+  end
+
+  if task_state.reserved_layout_failed then
+    completion_message = completion_message .. "; abandoned remaining defense after " .. task_state.reserved_layout_failed
+  end
+
+  if #seeded_items > 0 then
+    completion_message = completion_message .. "; seeded " .. ctx.format_products(seeded_items)
+  end
+
   ctx.complete_current_task(
     builder_state,
     task,
-    "placed " .. task.entity_name .. " at " .. ctx.format_position(placed_entity.position) ..
-    (task.recipe_name and " with recipe " .. task.recipe_name or "")
+    completion_message
   )
 end
 
@@ -873,6 +921,15 @@ function action_build.place_machine_near_site(builder_state, task, tick, ctx, re
   local surface = entity.surface
   local consumed_item_name = ctx.get_task_consumed_item_name(task)
 
+  local function record_consumed_build_item(item_name, count)
+    if not task.consume_items_on_place then
+      return
+    end
+
+    task_state.consumed_build_items = task_state.consumed_build_items or {}
+    task_state.consumed_build_items[item_name] = (task_state.consumed_build_items[item_name] or 0) + (count or 1)
+  end
+
   local function refund_consumed_build_item(reason)
     if task_state.consumed_machine_item then
       ctx.insert_item(entity, consumed_item_name, task_state.consumed_machine_item, reason)
@@ -880,15 +937,46 @@ function action_build.place_machine_near_site(builder_state, task, tick, ctx, re
     end
   end
 
+  local function refund_consumed_layout_items(reason)
+    if not task_state.consumed_build_items then
+      return
+    end
+
+    for item_name, count in pairs(task_state.consumed_build_items) do
+      ctx.insert_item(entity, item_name, count, reason)
+    end
+
+    task_state.consumed_build_items = nil
+  end
+
+  local function destroy_placed_layout_entities()
+    for _, placement in ipairs(task_state.placed_layout_entities or {}) do
+      ctx.destroy_entity_if_valid(placement.entity)
+    end
+
+    task_state.placed_layout_entities = {}
+  end
+
   local function abort_build(reason)
+    refund_consumed_layout_items("refunded after aborted reserved layout for " .. task.id)
     refund_consumed_build_item("refunded after aborted build for " .. task.id)
+    destroy_placed_layout_entities()
     ctx.destroy_entity_if_valid(task_state.placed_entity)
     refresh_task(builder_state, task, tick, ctx)
     ctx.debug_log("task " .. task.id .. ": " .. reason)
   end
 
+  local function complete_partial_site(reason)
+    task_state.reserved_layout_failed = reason
+    task_state.layout_resolution_complete = true
+    ctx.debug_log("task " .. task.id .. ": " .. reason .. "; leaving partial site in place")
+    action_build.finish_place_machine_near_site_task(builder_state, task, tick, ctx, refresh_task)
+  end
+
   local function schedule_retry(wait_reason, reason)
+    refund_consumed_layout_items("refunded after delayed retry for " .. task.id)
     refund_consumed_build_item("refunded after delayed retry for " .. task.id)
+    destroy_placed_layout_entities()
     ctx.destroy_entity_if_valid(task_state.placed_entity)
     builder_state.task_state = {
       phase = "waiting-for-resource",
@@ -976,8 +1064,160 @@ function action_build.place_machine_near_site(builder_state, task, tick, ctx, re
       " at " .. ctx.format_position(placed_entity.position) ..
       (task.recipe_name and " with recipe " .. task.recipe_name or "")
     )
-    begin_post_place_pause(builder_state, task, tick, "build-complete", placed_entity, ctx)
+    begin_post_place_pause(
+      builder_state,
+      task,
+      tick,
+      task.build_reserved_layout and "building" or "build-complete",
+      placed_entity,
+      ctx
+    )
     return
+  end
+
+  if task.build_reserved_layout then
+    task_state.placed_layout_entities = task_state.placed_layout_entities or {}
+    task_state.layout_index = task_state.layout_index or 1
+
+    if not task_state.layout_resolution_complete then
+      local layout_site = ctx.find_reserved_layout_placements and
+        ctx.find_reserved_layout_placements(surface, entity.force, task, task_state.placed_entity) or nil
+
+      task_state.layout_resolution_complete = true
+
+      if not layout_site then
+        if task.abandon_partial_site_on_failure then
+          complete_partial_site(
+            "could not resolve reserved defense layout around " ..
+              task.entity_name .. " at " .. ctx.format_position(task_state.placed_entity.position)
+          )
+          return
+        end
+
+        abort_build("missing reserved defense layout")
+        return
+      end
+
+      task_state.layout_orientation = layout_site.orientation
+      task_state.layout_placements = layout_site.placements or {}
+      ctx.debug_log(
+        "task " .. task.id .. ": resolved reserved defense layout using orientation " ..
+          tostring(task_state.layout_orientation) ..
+          " with " .. tostring(#task_state.layout_placements) .. " support placements"
+      )
+
+      if #task_state.layout_placements == 0 then
+        action_build.finish_place_machine_near_site_task(builder_state, task, tick, ctx, refresh_task)
+        return
+      end
+    end
+
+    local placement = task_state.layout_placements and task_state.layout_placements[task_state.layout_index]
+    if placement then
+      if not surface.can_place_entity{
+        name = placement.entity_name,
+        position = placement.build_position,
+        direction = placement.build_direction,
+        force = entity.force
+      } then
+        if try_clear_blocking_obstacle(builder_state, task, tick, placement.entity_name, placement.build_position, ctx) then
+          return
+        end
+
+        if task.abandon_partial_site_on_failure then
+          complete_partial_site(
+            "reserved defense position became invalid for " ..
+              placement.entity_name .. " at " .. ctx.format_position(placement.build_position)
+          )
+          return
+        end
+
+        abort_build("reserved defense position became invalid for " .. placement.entity_name .. " at " .. ctx.format_position(placement.build_position))
+        return
+      end
+
+      local placed_support_entity = surface.create_entity{
+        name = placement.entity_name,
+        position = placement.build_position,
+        direction = placement.build_direction,
+        force = entity.force,
+        create_build_effect_smoke = false
+      }
+
+      if not placed_support_entity then
+        if task.abandon_partial_site_on_failure then
+          complete_partial_site("failed to place " .. placement.entity_name .. " at " .. ctx.format_position(placement.build_position))
+          return
+        end
+
+        abort_build("failed to place " .. placement.entity_name .. " at " .. ctx.format_position(placement.build_position))
+        return
+      end
+
+      if placement.recipe_name then
+        local recipe_set, recipe_error = try_set_entity_recipe(placed_support_entity, placement.recipe_name)
+        if not recipe_set then
+          placed_support_entity.destroy()
+          if task.abandon_partial_site_on_failure then
+            complete_partial_site(
+              "failed to set recipe " .. placement.recipe_name ..
+                " on " .. placement.entity_name .. ": " .. tostring(recipe_error)
+            )
+            return
+          end
+
+          abort_build("failed to set recipe " .. placement.recipe_name .. " on " .. placement.entity_name .. ": " .. tostring(recipe_error))
+          return
+        end
+      end
+
+      if task.consume_items_on_place then
+        local removed_count = ctx.remove_item(
+          entity,
+          placement.item_name,
+          1,
+          "placed " .. placement.item_name .. " at " .. ctx.format_position(placed_support_entity.position)
+        )
+        if removed_count < 1 then
+          placed_support_entity.destroy()
+          if task.abandon_partial_site_on_failure then
+            complete_partial_site("missing " .. placement.item_name .. " in builder inventory")
+            return
+          end
+
+          abort_build("missing " .. placement.item_name .. " in builder inventory")
+          return
+        end
+
+        record_consumed_build_item(placement.item_name, removed_count)
+      end
+
+      ctx.insert_entity_fuel(placed_support_entity, placement.fuel)
+
+      task_state.placed_layout_entities[#task_state.placed_layout_entities + 1] = {
+        id = placement.id,
+        site_role = placement.site_role,
+        route_id = placement.route_id,
+        entity = placed_support_entity
+      }
+
+      ctx.debug_log(
+        "task " .. task.id .. ": placed reserved " .. placement.entity_name ..
+          " at " .. ctx.format_position(placed_support_entity.position) ..
+          (placement.site_role and " as " .. placement.site_role or "")
+      )
+
+      task_state.layout_index = task_state.layout_index + 1
+      begin_post_place_pause(
+        builder_state,
+        task,
+        tick,
+        task_state.layout_index > #(task_state.layout_placements or {}) and "build-complete" or "building",
+        placed_support_entity,
+        ctx
+      )
+      return
+    end
   end
 
   action_build.finish_place_machine_near_site_task(builder_state, task, tick, ctx, refresh_task)

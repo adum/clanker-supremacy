@@ -1,4 +1,20 @@
 local build_tasks = require("shared.config.build_tasks")
+local constants = require("shared.config.constants")
+
+local function combine_required_items(...)
+  local merged = {}
+
+  for _, item_list in ipairs({...}) do
+    for _, item in ipairs(item_list or {}) do
+      merged[#merged + 1] = {
+        name = item.name,
+        count = item.count
+      }
+    end
+  end
+
+  return merged
+end
 
 return {
   coal_outpost = {
@@ -91,9 +107,12 @@ return {
   },
   firearm_magazine_outpost = {
     display_name = "firearm magazine outpost",
-    required_items = {
-      {name = "assembling-machine-1", count = 1}
-    },
+    required_items = combine_required_items(
+      {
+        {name = "assembling-machine-1", count = 1}
+      },
+      constants.ammo_defense_required_items
+    ),
     build_task = build_tasks.firearm_magazine_outpost
   },
   solar_panel_factory = {

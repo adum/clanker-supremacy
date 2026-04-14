@@ -368,19 +368,20 @@ local function build_resource_clearance_search_origins(surface, force, task, anc
   return search_origins
 end
 
-local function layout_fits_around_anchor_entity(builder, anchor_entity, layout_config, summary, ctx)
+local function build_layout_placements_around_anchor_entity(surface, force, anchor_entity, layout_config, summary, ctx)
   if not layout_config then
-    return true
+    return {}, "north"
   end
 
   if layout_config.forbid_resource_overlap and entity_refs.entity_overlaps_resources(anchor_entity) then
     if summary then
       summary.resource_overlap_rejections = (summary.resource_overlap_rejections or 0) + 1
     end
-    return false
+    return nil, nil
   end
 
   for _, orientation in ipairs(layout_config.layout_orientations or {"north"}) do
+    local placements = {}
     local probe_entities = {}
     local layout_valid = true
 
@@ -391,9 +392,9 @@ local function layout_fits_around_anchor_entity(builder, anchor_entity, layout_c
         y = anchor_entity.position.y + rotated_offset.y
       }
       local direction_name = ctx.rotate_direction_name(element.direction_name, orientation)
-      local build_position, build_direction = find_entity_placement_near_anchor(
-        builder.surface,
-        builder.force,
+      local build_position, build_direction, placement_stats = find_entity_placement_near_anchor(
+        surface,
+        force,
         element.entity_name,
         desired_position,
         element.placement_search_radius or 0,
@@ -403,16 +404,21 @@ local function layout_fits_around_anchor_entity(builder, anchor_entity, layout_c
         ctx
       )
 
+      if summary and placement_stats then
+        summary.positions_checked = summary.positions_checked + (placement_stats.positions_checked or 0)
+        summary.placeable_positions = summary.placeable_positions + (placement_stats.placeable_positions or 0)
+      end
+
       if not build_position then
         layout_valid = false
         break
       end
 
-      local probe_entity = builder.surface.create_entity{
+      local probe_entity = surface.create_entity{
         name = element.entity_name,
         position = build_position,
         direction = build_direction,
-        force = builder.force,
+        force = force,
         create_build_effect_smoke = false,
         raise_built = false
       }
@@ -431,16 +437,44 @@ local function layout_fits_around_anchor_entity(builder, anchor_entity, layout_c
         layout_valid = false
         break
       end
+
+      placements[#placements + 1] = {
+        id = element.id or ("layout-" .. tostring(#placements + 1)),
+        site_role = element.site_role,
+        entity_name = element.entity_name,
+        item_name = element.item_name or element.entity_name,
+        build_position = ctx.clone_position(build_position),
+        build_direction = build_direction,
+        recipe_name = element.recipe_name,
+        fuel = element.fuel
+      }
+    end
+
+    if layout_valid and layout_config.layout_site_kind == "steel-smelting-chain" then
+      layout_valid = steel_layout_geometry_is_valid(anchor_entity, probe_entities, ctx)
     end
 
     entity_refs.destroy_entities(probe_entities)
 
     if layout_valid then
-      return true
+      return placements, orientation
     end
   end
 
-  return false
+  return nil, nil
+end
+
+local function layout_fits_around_anchor_entity(builder, anchor_entity, layout_config, summary, ctx)
+  local placements = build_layout_placements_around_anchor_entity(
+    builder.surface,
+    builder.force,
+    anchor_entity,
+    layout_config,
+    summary,
+    ctx
+  )
+
+  return placements ~= nil
 end
 
 local function machine_site_candidate_is_valid(builder, task, position, direction, summary, ctx)
@@ -2094,6 +2128,32 @@ function queries.find_machine_site_near_resource_sites(builder_state, task, ctx)
   end
 
   return nil, summary
+end
+
+function queries.find_reserved_layout_placements(surface, force, task, anchor_entity, ctx)
+  if not (task and task.layout_reservation and anchor_entity and anchor_entity.valid) then
+    return nil
+  end
+
+  local placements, orientation = build_layout_placements_around_anchor_entity(
+    surface,
+    force,
+    anchor_entity,
+    task.layout_reservation,
+    nil,
+    ctx
+  )
+
+  if not placements then
+    return nil
+  end
+
+  return {
+    anchor_entity = anchor_entity,
+    anchor_position = ctx.clone_position(anchor_entity.position),
+    orientation = orientation,
+    placements = placements
+  }
 end
 
 function queries.find_layout_site_near_machine(builder_state, task, ctx)

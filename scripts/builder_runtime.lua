@@ -42,6 +42,7 @@ local find_output_belt_line_site
 local find_machine_site_near_resource_sites
 local find_downstream_machine_site
 local find_output_belt_layout_for_miner_site
+local find_reserved_layout_placements
 local find_resource_site
 local find_nearest_resource
 local register_assembly_block_site
@@ -847,31 +848,6 @@ function builder_runtime.handle_task_retry_exhausted(builder_state, task, tick, 
         "; " .. (blocked and "blocked" or "could not block") ..
         " anchor at " .. format_position(failed_anchor_entity.position)
       )
-    end
-  end
-
-  if task and task.type == "place-layout-near-machine" and task.completed_scaling_milestone_name == "firearm-magazine-defense" then
-    if failed_anchor_entity and failed_anchor_entity.valid then
-      local blocked = mark_layout_anchor_blocked(builder_state, task, failed_anchor_entity)
-      builder_state.completed_scaling_milestones["firearm-magazine-assembler"] = nil
-      builder_state.scaling_active_task = nil
-      builder_state.task_state = nil
-      if builder_state.goal_engine then
-        builder_state.goal_engine.scaling_display_task = nil
-      end
-      set_idle(builder_state.entity)
-      builder_runtime.record_recovery(
-        builder_state,
-        "abandoned firearm magazine defense at " .. format_position(failed_anchor_entity.position) ..
-          "; assembler site blocked for defense and assembler milestone reopened"
-      )
-      debug_log(
-        "task " .. task_name .. ": " .. message ..
-        "; " .. (blocked and "blocked" or "could not block") ..
-        " assembler at " .. format_position(failed_anchor_entity.position) ..
-        " and reopened firearm-magazine-assembler milestone"
-      )
-      return
     end
   end
 
@@ -2599,13 +2575,17 @@ local function setup_tree_blocked_assembler_test_case()
     suppress_player_autospawn = true,
     inventory = {
       {name = "assembling-machine-1", count = 1},
-      {name = "iron-plate", count = 40}
+      {name = "coal", count = 20},
+      {name = "copper-plate", count = 120},
+      {name = "iron-plate", count = 180},
+      {name = "steel-plate", count = 20},
+      {name = "wood", count = 20}
     },
     assertion = {
       case_name = "tree_blocked_machine_placement",
       surface_name = surface.name,
       area = area,
-      deadline_offset_ticks = 1800,
+      deadline_offset_ticks = 3600,
       skip_output_assertion = true,
       primary_entity_name = builder_data.prototypes.firearm_magazine_assembler_name,
       required_recipe_name = "firearm-magazine",
@@ -3870,6 +3850,10 @@ find_output_belt_layout_for_miner_site = function(surface, force, task, miner, o
   )
 end
 
+find_reserved_layout_placements = function(surface, force, task, anchor_entity)
+  return world_model.find_reserved_layout_placements(surface, force, task, anchor_entity, world_model_context)
+end
+
 find_nearest_resource = function(surface, origin, task)
   return world_model.find_nearest_resource(surface, origin, task, world_model_context)
 end
@@ -3897,6 +3881,7 @@ local task_executor_context = {
   find_downstream_machine_site = find_downstream_machine_site,
   find_nearest_resource = find_nearest_resource,
   find_output_belt_layout_for_miner_site = find_output_belt_layout_for_miner_site,
+  find_reserved_layout_placements = find_reserved_layout_placements,
   find_resource_site = find_resource_site,
   format_position = format_position,
   format_products = format_products,

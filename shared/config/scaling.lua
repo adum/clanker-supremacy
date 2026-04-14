@@ -1,5 +1,4 @@
 local build_tasks = require("shared.config.build_tasks")
-local constants = require("shared.config.constants")
 local site_patterns = require("shared.config.site_patterns")
 local deep_copy = require("shared.config.util").deep_copy
 
@@ -77,7 +76,7 @@ return {
       }
     },
     firearm_magazine_outpost = {
-      required_completed_milestones = {"firearm-magazine-defense"}
+      required_completed_milestones = {"firearm-magazine-assembler"}
     }
   },
   reserve_items = {
@@ -116,43 +115,15 @@ return {
         {name = "iron-plate", count = 200},
         {name = "copper-plate", count = 200}
       },
-      required_items = {
-        {name = "assembling-machine-1", count = 1}
-      },
+      required_items = deep_copy(site_patterns.firearm_magazine_outpost.required_items),
       task = firearm_magazine_assembler_task
-    },
-    {
-      name = "firearm-magazine-defense",
-      display_name = "Fortify firearm magazine assembler",
-      pursue_proactively = true,
-      repeat_when_eligible = true,
-      required_items = deep_copy(constants.ammo_defense_required_items),
-      task = {
-        id = "scale-place-firearm-magazine-defense",
-        type = "place-layout-near-machine",
-        anchor_entity_names = {constants.firearm_magazine_assembler_name},
-        max_anchor_entities = 8,
-        search_retry_ticks = 5 * 60,
-        arrival_distance = 1.6,
-        stuck_retry_ticks = 3 * 60,
-        layout_orientations = {"north", "east", "south", "west"},
-        require_missing_registered_site = {
-          site_type = "assembler-defense",
-          entity_field = "assembler"
-        },
-        forbid_resource_overlap = true,
-        seed_anchor_items = {
-          {name = "iron-plate", count = 80}
-        },
-        layout_elements = deep_copy(constants.ammo_defense_layout_elements)
-      }
     },
     {
       name = "solar-panel-factory-block",
       display_name = "Place solar panel factory block",
       pursue_proactively = true,
       unlock = {
-        required_completed_milestones = {"firearm-magazine-defense"},
+        required_completed_milestones = {"firearm-magazine-assembler"},
         minimum_site_counts = {
           iron_plate_belt_export = 2,
           copper_plate_belt_export = 2,

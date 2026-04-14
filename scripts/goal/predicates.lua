@@ -120,15 +120,22 @@ function predicates.get_component_spec(builder_data, component_name)
   if component_name == "firearm_magazine_site" then
     local assembler_milestone = predicates.get_milestone(builder_data, "firearm-magazine-assembler")
     local defense_milestone = predicates.get_milestone(builder_data, "firearm-magazine-defense")
-    if assembler_milestone and defense_milestone then
+    if assembler_milestone then
+      local required_items = common.deep_copy(assembler_milestone.required_items or {})
+      local tasks = {
+        common.deep_copy(assembler_milestone.task)
+      }
+
+      if defense_milestone then
+        required_items = predicates.merge_required_items(required_items, defense_milestone.required_items)
+        tasks[#tasks + 1] = common.deep_copy(defense_milestone.task)
+      end
+
       return {
         id = component_name,
         display_name = "Firearm Magazine Site",
-        required_items = predicates.merge_required_items(assembler_milestone.required_items, defense_milestone.required_items),
-        tasks = {
-          common.deep_copy(assembler_milestone.task),
-          common.deep_copy(defense_milestone.task)
-        }
+        required_items = required_items,
+        tasks = tasks
       }
     end
   end

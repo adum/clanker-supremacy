@@ -268,6 +268,12 @@ build_tasks.firearm_magazine_outpost = {
   arrival_distance = 1.6,
   stuck_retry_ticks = 3 * 60,
   forbid_resource_overlap = true,
+  build_reserved_layout = true,
+  register_reserved_layout_as_assembler_defense = true,
+  abandon_partial_site_on_failure = true,
+  seed_anchor_items = {
+    {name = "iron-plate", count = 80}
+  },
   layout_reservation = {
     layout_orientations = {"north", "east", "south", "west"},
     forbid_resource_overlap = true,

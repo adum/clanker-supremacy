@@ -257,6 +257,8 @@ local function start_place_machine_near_site_task(builder_state, task, tick, ctx
     build_direction = site.build_direction,
     anchor_position = ctx.clone_position(site.anchor_position),
     anchor_pattern_name = site.site.pattern_name,
+    layout_index = 1,
+    placed_layout_entities = {},
     last_position = ctx.clone_position(entity.position),
     last_progress_tick = tick
   }
