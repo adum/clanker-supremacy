@@ -217,6 +217,7 @@ run_case "firearm_outpost_anchor_clearance" "setup_firearm_outpost_anchored_test
 run_case "tree_blocked_machine_placement" "setup_tree_blocked_assembler_test_case" "34199"
 run_case "iron_plate_belt_export_physical_feed" "setup_iron_plate_belt_export_test_case" "34200"
 run_case "solar_panel_factory_physical_feed" "setup_solar_panel_factory_test_case" "34206"
+run_case "solar_panel_factory_missing_sources_reports_blocker" "setup_solar_panel_factory_missing_sources_reports_blocker_test_case" "34215"
 run_case "scaling_collect_switches_site" "setup_scaling_collect_switches_site_test_case" "34205"
 run_case "assembler_output_collection_limits" "setup_assembler_output_collection_limits_test_case" "34209"
 run_case "wait_patrol_avoids_close_reposition" "setup_wait_patrol_avoids_close_reposition_test_case" "34210"

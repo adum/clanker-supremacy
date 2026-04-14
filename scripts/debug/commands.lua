@@ -113,6 +113,9 @@ local function describe_builder_state(builder_state, context)
     if task_state.wait_reason then
       lines[#lines + 1] = "wait-reason=" .. task_state.wait_reason
     end
+    if task_state.wait_detail then
+      lines[#lines + 1] = "wait-detail=" .. task_state.wait_detail
+    end
     if task_state.resource_position then
       lines[#lines + 1] = "resource-position=" .. context.format_position(task_state.resource_position)
     end

@@ -379,6 +379,9 @@ function entry_timing.build_context_line(extra_context)
     if task_state and task_state.wait_reason then
       parts[#parts + 1] = "wait=" .. task_state.wait_reason
     end
+    if task_state and task_state.wait_detail then
+      parts[#parts + 1] = "wait-detail=" .. task_state.wait_detail
+    end
 
     if builder_state.goal_model_root then
       parts[#parts + 1] = "goal=" .. goal_tree.get_root_goal_line(builder_state.goal_model_root)
@@ -2914,6 +2917,46 @@ local function setup_solar_panel_factory_test_case()
   return result
 end
 
+local function setup_solar_panel_factory_missing_sources_reports_blocker_test_case()
+  local surface = game.surfaces["nauvis"] or game.surfaces[1]
+  if not surface then
+    error("enemy-builder test: nauvis surface is unavailable")
+  end
+
+  local factory_center = {x = 18, y = 0}
+  local builder_position = {x = 0, y = -6}
+  local area = make_test_area(factory_center, 64, 56)
+
+  surface.always_day = true
+  clear_test_area(surface, area)
+
+  return setup_manual_test{
+    case_name = "solar_panel_factory_missing_sources_reports_blocker",
+    component_name = "solar_panel_factory",
+    builder_position = builder_position,
+    game_speed = 4,
+    surface_name = surface.name,
+    suppress_player_autospawn = true,
+    disable_nearby_machine_output_collection = true,
+    inventory = {
+      {name = "assembling-machine-1", count = 3},
+      {name = "burner-inserter", count = 10},
+      {name = "small-electric-pole", count = 8},
+      {name = "transport-belt", count = 256},
+      {name = "coal", count = 200}
+    },
+    assertion = {
+      case_name = "solar_panel_factory_missing_sources_reports_blocker",
+      surface_name = surface.name,
+      area = area,
+      deadline_offset_ticks = 600,
+      skip_output_assertion = true,
+      required_wait_reason = "no-assembly-site",
+      required_wait_detail_contains = "missing source belt sites"
+    }
+  }
+end
+
 local function setup_scaling_collect_switches_site_test_case()
   local surface = game.surfaces["nauvis"] or game.surfaces[1]
   if not surface then
@@ -3899,6 +3942,7 @@ local function format_test_failure_summary(surface, force, assertion)
   local area = assertion.area
   local parts = {}
   local resource_site_counts = get_resource_site_counts and get_resource_site_counts() or {}
+  local builder_state = get_builder_state and get_builder_state() or nil
 
   for entity_name, expected_count in pairs(assertion.expected_counts or {}) do
     parts[#parts + 1] =
@@ -3972,13 +4016,19 @@ local function format_test_failure_summary(surface, force, assertion)
   end
 
   if assertion.require_builder_paused then
-    local builder_state = get_builder_state and get_builder_state() or nil
     parts[#parts + 1] = "builder-paused=" .. tostring(builder_state and builder_state.manual_pause ~= nil)
   end
 
   if assertion.require_no_manual_goal_request then
-    local builder_state = get_builder_state and get_builder_state() or nil
     parts[#parts + 1] = "manual-goal-active=" .. tostring(builder_state and builder_state.manual_goal_request ~= nil)
+  end
+
+  if builder_state and builder_state.task_state and builder_state.task_state.wait_reason then
+    parts[#parts + 1] = "wait=" .. builder_state.task_state.wait_reason
+  end
+
+  if builder_state and builder_state.task_state and builder_state.task_state.wait_detail then
+    parts[#parts + 1] = "wait-detail=" .. builder_state.task_state.wait_detail
   end
 
   if assertion.minimum_primary_distance_from_position then
@@ -4103,6 +4153,27 @@ local function test_assertion_passed(surface, force, assertion)
 
   if assertion.require_builder_paused and not (builder_state and builder_state.manual_pause) then
     return false
+  end
+
+  if assertion.required_wait_reason then
+    if not (builder_state and builder_state.task_state and builder_state.task_state.wait_reason == assertion.required_wait_reason) then
+      return false
+    end
+  end
+
+  if assertion.required_wait_detail_contains then
+    local wait_detail = builder_state and builder_state.task_state and builder_state.task_state.wait_detail or nil
+    if not (
+      wait_detail and
+      string.find(
+        string.lower(wait_detail),
+        string.lower(assertion.required_wait_detail_contains),
+        1,
+        true
+      )
+    ) then
+      return false
+    end
   end
 
   if assertion.require_no_manual_goal_request and builder_state and builder_state.manual_goal_request then
@@ -4293,6 +4364,7 @@ local test_remote_interface = {
   setup_tree_blocked_assembler_test_case = setup_tree_blocked_assembler_test_case,
   setup_iron_plate_belt_export_test_case = setup_iron_plate_belt_export_test_case,
   setup_solar_panel_factory_test_case = setup_solar_panel_factory_test_case,
+  setup_solar_panel_factory_missing_sources_reports_blocker_test_case = setup_solar_panel_factory_missing_sources_reports_blocker_test_case,
   setup_scaling_collect_switches_site_test_case = setup_scaling_collect_switches_site_test_case,
   setup_scaling_early_expansion_over_coal_reserve_test_case = setup_scaling_early_expansion_over_coal_reserve_test_case,
   setup_scaling_builds_before_coal_reserve_test_case = setup_scaling_builds_before_coal_reserve_test_case,

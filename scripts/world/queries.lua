@@ -2815,6 +2815,7 @@ local function build_source_cluster_anchor_candidates(builder_state, task, summa
     end
   end
 
+  local missing_source_items = {}
   for _, item_name in ipairs(route_item_names) do
     local item_sites = sites_by_item[item_name]
     table.sort(item_sites, function(left, right)
@@ -2826,8 +2827,15 @@ local function build_source_cluster_anchor_candidates(builder_state, task, summa
     end
 
     if #item_sites == 0 then
-      return {}
+      missing_source_items[#missing_source_items + 1] = item_name
     end
+  end
+
+  if #missing_source_items > 0 then
+    for _, item_name in ipairs(missing_source_items) do
+      summary.missing_source_items[#summary.missing_source_items + 1] = item_name
+    end
+    return {}
   end
 
   local primary_item_name = route_item_names[1]
@@ -4139,6 +4147,7 @@ function queries.find_assembly_block_site(builder_state, task, ctx)
     anchors_skipped_registered = 0,
     anchors_skipped_blocked = 0,
     anchors_missing_power = 0,
+    missing_source_items = {},
     clearance_headings_considered = 0,
     clearance_origins_found = 0,
     orientations_considered = 0,

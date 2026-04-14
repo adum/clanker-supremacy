@@ -40,11 +40,17 @@ function recovery.derive_runtime_blockers(snapshot)
   local task_state = snapshot.task_state or {}
 
   if task_state.wait_reason then
+    local wait_message = common.humanize_identifier(task_state.wait_reason)
+    if task_state.wait_detail and task_state.wait_detail ~= "" then
+      wait_message = wait_message .. " (" .. task_state.wait_detail .. ")"
+    end
+
     blockers[#blockers + 1] = instances.make_blocker(
       "wait-reason",
-      common.humanize_identifier(task_state.wait_reason),
+      wait_message,
       {
         wait_reason = task_state.wait_reason,
+        wait_detail = task_state.wait_detail,
         next_attempt_tick = task_state.next_attempt_tick
       }
     )

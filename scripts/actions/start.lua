@@ -1,4 +1,101 @@
+local common = require("scripts.goal.common")
+
 local action_start = {}
+
+local function format_humanized_name_list(names)
+  local parts = {}
+  for _, name in ipairs(names or {}) do
+    parts[#parts + 1] = common.humanize_identifier(name)
+  end
+
+  return table.concat(parts, ", ")
+end
+
+local function describe_assembly_block_wait_detail(summary, task)
+  summary = summary or {}
+
+  if summary.missing_source_items and #summary.missing_source_items > 0 then
+    return "missing source belt sites for " .. format_humanized_name_list(summary.missing_source_items)
+  end
+
+  if (summary.anchors_missing_power or 0) > 0 and
+    (summary.anchor_entities_considered or 0) == 0 and
+    (summary.positions_checked or 0) == 0
+  then
+    return "no powered source cluster anchor found"
+  end
+
+  local dominant_failure = nil
+  local dominant_failure_count = 0
+  local failure_messages = {
+    {
+      count = summary.failed_source_routes or 0,
+      message = "source routes could not reach the block"
+    },
+    {
+      count = summary.failed_inserter_geometry or 0,
+      message = "inserter geometry did not line up"
+    },
+    {
+      count = summary.failed_power_bridge or 0,
+      message = "power poles could not bridge to the block"
+    },
+    {
+      count = summary.failed_power_network or 0,
+      message = "assemblers could not join the source power network"
+    },
+    {
+      count = summary.recipe_unavailable_rejections or 0,
+      message = "required recipes were unavailable"
+    },
+    {
+      count = summary.resource_overlap_rejections or 0,
+      message = "candidate layouts overlapped resources"
+    }
+  }
+
+  for _, candidate in ipairs(failure_messages) do
+    if candidate.count > dominant_failure_count then
+      dominant_failure = candidate.message
+      dominant_failure_count = candidate.count
+    end
+  end
+
+  if dominant_failure then
+    return dominant_failure .. " (" .. tostring(dominant_failure_count) .. " attempts)"
+  end
+
+  if (summary.placeable_positions or 0) == 0 and (summary.positions_checked or 0) > 0 then
+    if task and task.manual_target_position then
+      return "no open layout footprint fit near the requested position"
+    end
+    return "no open layout footprint fit near the anchor"
+  end
+
+  if (summary.anchors_skipped_registered or 0) > 0 and
+    (summary.anchor_entities_considered or 0) == 0 and
+    (summary.positions_checked or 0) == 0
+  then
+    return "nearby anchors already host assembly blocks"
+  end
+
+  if (summary.anchors_skipped_blocked or 0) > 0 and
+    (summary.anchor_entities_considered or 0) == 0 and
+    (summary.positions_checked or 0) == 0
+  then
+    return "nearby anchors are temporarily blocked"
+  end
+
+  if (summary.anchors_missing_power or 0) > 0 then
+    return "nearby anchors are missing power"
+  end
+
+  if (summary.anchor_entities_considered or 0) == 0 then
+    return "no candidate source cluster anchors found"
+  end
+
+  return nil
+end
 
 local function get_progressive_search_task(builder_state, task, ctx)
   local search_radii = task and task.search_radii or nil
@@ -408,9 +505,11 @@ local function start_place_assembly_block_task(builder_state, task, tick, ctx)
 
   local site, summary = ctx.find_assembly_block_site(builder_state, task)
   if not site then
+    local wait_detail = describe_assembly_block_wait_detail(summary, task)
     builder_state.task_state = {
       phase = "waiting-for-resource",
       wait_reason = "no-assembly-site",
+      wait_detail = wait_detail,
       next_attempt_tick = tick + task.search_retry_ticks,
       failed_layout_anchor_entity = summary.failed_anchor_entity
     }
@@ -429,7 +528,9 @@ local function start_place_assembly_block_task(builder_state, task, tick, ctx)
       (summary.failed_power_bridge or 0) .. " power-bridge failures, " ..
       (summary.failed_power_network or 0) .. " power-network failures, " ..
       (summary.recipe_unavailable_rejections or 0) .. " recipe failures, " ..
-      (summary.resource_overlap_rejections or 0) .. " resource-overlap rejections; retry at tick " ..
+      (summary.resource_overlap_rejections or 0) .. " resource-overlap rejections" ..
+      (wait_detail and ("; primary blocker: " .. wait_detail) or "") ..
+      "; retry at tick " ..
       builder_state.task_state.next_attempt_tick
     )
     return
