@@ -523,6 +523,10 @@ local function ensure_builder_state_fields(builder_state)
     builder_state.manual_goal_request = nil
   end
 
+  if builder_state.manual_pause == nil then
+    builder_state.manual_pause = nil
+  end
+
   if builder_state.maintenance_state == nil then
     builder_state.maintenance_state = {
       recent_actions = {}
@@ -705,6 +709,45 @@ end
 
 function builder_runtime.clear_recovery(builder_state)
   goal_recovery.clear(builder_state)
+end
+
+function builder_runtime.is_builder_paused(builder_state)
+  return builder_state and builder_state.manual_pause ~= nil or false
+end
+
+function builder_runtime.pause_builder(builder_state, tick, reason)
+  if not builder_state then
+    return false
+  end
+
+  ensure_builder_state_fields(builder_state)
+  builder_state.manual_pause = builder_state.manual_pause or {}
+  builder_state.manual_pause.reason = reason or builder_state.manual_pause.reason or "manual-command"
+  if builder_state.manual_pause.since_tick == nil then
+    builder_state.manual_pause.since_tick = tick or (game and game.tick or 0)
+  end
+
+  builder_state.manual_goal_request = nil
+  builder_state.scaling_active_task = nil
+  builder_state.task_state = nil
+  if builder_state.goal_engine then
+    builder_state.goal_engine.scaling_display_task = nil
+  end
+  if builder_state.entity and builder_state.entity.valid then
+    set_idle(builder_state.entity)
+  end
+  builder_runtime.clear_recovery(builder_state)
+  return true
+end
+
+function builder_runtime.unpause_builder(builder_state)
+  if not builder_state then
+    return false
+  end
+
+  ensure_builder_state_fields(builder_state)
+  builder_state.manual_pause = nil
+  return true
 end
 
 function builder_runtime.get_inventory_contents(entity)
@@ -2529,6 +2572,75 @@ local function setup_firearm_outpost_test_case()
   }
 end
 
+function setup_pause_mode_manual_goal_test_case()
+  local surface = game.surfaces["nauvis"] or game.surfaces[1]
+  if not surface then
+    error("enemy-builder test: nauvis surface is unavailable")
+  end
+
+  local target_position = {x = 32, y = 0}
+  local builder_position = {x = 0, y = 0}
+  local area = make_test_area(target_position, 40, 24)
+
+  surface.always_day = true
+  clear_test_area(surface, area)
+
+  local result = setup_manual_test{
+    case_name = "pause_mode_manual_goal",
+    component_name = "firearm_magazine_site",
+    builder_position = builder_position,
+    target_position = target_position,
+    surface_name = surface.name,
+    suppress_player_autospawn = true,
+    forbid_direct_turret_ammo_transfer = true,
+    inventory = {
+      {name = "coal", count = 20},
+      {name = "copper-plate", count = 250},
+      {name = "iron-plate", count = 400},
+      {name = "steel-plate", count = 30},
+      {name = "wood", count = 20}
+    },
+    assertion = {
+      case_name = "pause_mode_manual_goal",
+      surface_name = surface.name,
+      area = area,
+      deadline_offset_ticks = 3600,
+      primary_entity_name = builder_data.prototypes.firearm_magazine_assembler_name,
+      required_recipe_name = "firearm-magazine",
+      turret_ammo_item_name = "firearm-magazine",
+      minimum_turret_ammo_count = 1,
+      require_builder_paused = true,
+      require_no_manual_goal_request = true,
+      expected_counts = {
+        [builder_data.prototypes.firearm_magazine_assembler_name] = 1,
+        ["gun-turret"] = 2,
+        ["burner-inserter"] = 2,
+        ["small-electric-pole"] = 4,
+        ["solar-panel"] = 4
+      }
+    }
+  }
+
+  local builder_state = get_builder_state()
+  if not builder_state then
+    error("enemy-builder test: failed to get builder state for pause mode case")
+  end
+
+  ensure_builder_state_fields(builder_state)
+  builder_state.manual_pause = {
+    reason = "test-pause",
+    since_tick = game.tick
+  }
+  if builder_state.goal_engine then
+    builder_state.goal_engine.scaling_display_task = nil
+  end
+  set_idle(builder_state.entity)
+  builder_runtime.update_goal_model(builder_state, game.tick)
+  update_builder_map_markers(builder_state, game.tick, true)
+
+  return result
+end
+
 local function setup_firearm_outpost_anchored_test_case()
   local surface = game.surfaces["nauvis"] or game.surfaces[1]
   if not surface then
@@ -3115,6 +3227,214 @@ local function setup_wait_patrol_avoids_close_reposition_test_case()
   }
 end
 
+local function setup_machine_refuel_respects_minimum_batch_test_case()
+  local surface = game.surfaces["nauvis"] or game.surfaces[1]
+  if not surface then
+    error("enemy-builder test: nauvis surface is unavailable")
+  end
+
+  local builder_position = {x = 0, y = 0}
+  local area = make_test_area(builder_position, 24, 24)
+
+  surface.always_day = true
+  clear_test_area(surface, area)
+
+  return setup_scaling_test{
+    case_name = "machine_refuel_respects_minimum_batch",
+    builder_position = builder_position,
+    surface_name = surface.name,
+    suppress_player_autospawn = true,
+    disable_nearby_machine_output_collection = true,
+    inventory = {
+      {name = "coal", count = 10}
+    },
+    mutate_builder_state = function(builder_state, test_surface)
+      builder_state.task_state = {
+        phase = "scaling-waiting",
+        wait_reason = "test-idle",
+        next_attempt_tick = game.tick + 3600
+      }
+      builder_state.next_machine_refuel_tick = game.tick
+
+      local miner = test_surface.create_entity{
+        name = "burner-mining-drill",
+        position = {x = 3, y = 0},
+        force = builder_state.entity.force,
+        create_build_effect_smoke = false
+      }
+      if not (miner and miner.valid) then
+        error("enemy-builder test: failed to create burner-mining-drill for refuel batch case")
+      end
+
+      local fuel_inventory = miner.get_fuel_inventory and miner.get_fuel_inventory() or nil
+      if not fuel_inventory then
+        miner.destroy()
+        error("enemy-builder test: burner-mining-drill missing fuel inventory for refuel batch case")
+      end
+
+      local inserted_count = fuel_inventory.insert{name = "coal", count = 19}
+      if inserted_count ~= 19 then
+        miner.destroy()
+        error("enemy-builder test: failed to seed burner-mining-drill with 19 coal for refuel batch case")
+      end
+    end,
+    assertion = {
+      case_name = "machine_refuel_respects_minimum_batch",
+      surface_name = surface.name,
+      area = area,
+      deadline_offset_ticks = 30,
+      skip_output_assertion = true,
+      minimum_builder_inventory_items = {
+        {name = "coal", count = 10}
+      },
+      maximum_builder_inventory_items = {
+        {name = "coal", count = 10}
+      }
+    }
+  }
+end
+
+function setup_steel_output_retries_blocked_anchors_test_case()
+  local surface = game.surfaces["nauvis"] or game.surfaces[1]
+  if not surface then
+    error("enemy-builder test: nauvis surface is unavailable")
+  end
+
+  local builder_position = {x = 0, y = 0}
+  local anchor_position = {x = 32, y = 0}
+  local area = make_test_area(anchor_position, 48, 32)
+
+  surface.always_day = true
+  clear_test_area(surface, area)
+
+  return setup_scaling_test{
+    case_name = "steel_output_retries_blocked_anchors",
+    builder_position = builder_position,
+    surface_name = surface.name,
+    suppress_player_autospawn = true,
+    disable_nearby_machine_output_collection = true,
+    mutate_builder_state = function(builder_state, test_surface)
+      place_test_iron_smelting_anchor(test_surface, "north", anchor_position)
+      local steel_task = builder_data.site_patterns and builder_data.site_patterns.steel_smelting and
+        builder_data.site_patterns.steel_smelting.build_task or nil
+      if not steel_task then
+        error("enemy-builder test: missing steel_smelting build task")
+      end
+
+      local search_task = deep_copy(steel_task)
+      search_task.layout_orientations = {"north"}
+      search_task.manual_anchor_position = clone_position(anchor_position)
+      search_task.manual_anchor_search_radius = 3
+
+      local steel_layout_site = find_layout_site_near_machine(builder_state, search_task)
+      if not steel_layout_site then
+        error("enemy-builder test: failed to find runtime steel smelting site near " .. format_position(anchor_position))
+      end
+
+      local feed_inserter = nil
+      local steel_furnace = nil
+      for _, placement in ipairs(steel_layout_site.placements or {}) do
+        local placed_entity = test_surface.create_entity{
+          name = placement.entity_name,
+          position = placement.build_position,
+          direction = placement.build_direction,
+          force = builder_state.entity.force,
+          create_build_effect_smoke = false
+        }
+        if not (placed_entity and placed_entity.valid) then
+          error("enemy-builder test: failed to create runtime steel layout entity " .. tostring(placement.entity_name))
+        end
+
+        if placement.fuel then
+          insert_entity_fuel(placed_entity, placement.fuel)
+        end
+
+        if placement.site_role == "steel-feed-inserter" then
+          feed_inserter = placed_entity
+        elseif placement.site_role == "steel-furnace" then
+          steel_furnace = placed_entity
+        end
+      end
+
+      if not (steel_layout_site.site and steel_layout_site.site.miner and steel_layout_site.site.miner.valid) then
+        error("enemy-builder test: missing runtime steel anchor miner")
+      end
+
+      if not (feed_inserter and feed_inserter.valid and steel_furnace and steel_furnace.valid) then
+        error("enemy-builder test: runtime steel smelting site missing inserter or furnace")
+      end
+
+      if not point_in_area(feed_inserter.pickup_position, steel_layout_site.anchor_entity.selection_box) then
+        error("enemy-builder test: runtime steel inserter pickup misses anchor furnace")
+      end
+
+      if not point_in_area(feed_inserter.drop_position, steel_furnace.selection_box) then
+        error("enemy-builder test: runtime steel inserter drop misses steel furnace")
+      end
+
+      register_steel_smelting_site(
+        steel_task,
+        steel_layout_site.anchor_entity,
+        feed_inserter,
+        steel_furnace,
+        steel_layout_site.site.miner
+      )
+      register_resource_site(
+        steel_task,
+        steel_layout_site.site.miner,
+        steel_furnace,
+        nil,
+        {
+          identity_entity = steel_furnace,
+          anchor_machine = steel_layout_site.anchor_entity,
+          feed_inserter = feed_inserter,
+          parent_pattern_name = steel_layout_site.site.pattern_name
+        }
+      )
+
+      local steel_export_task = builder_data.site_patterns and builder_data.site_patterns.steel_plate_belt_export and
+        builder_data.site_patterns.steel_plate_belt_export.build_task or nil
+      if not steel_export_task then
+        error("enemy-builder test: missing steel_plate_belt_export build task")
+      end
+
+      builder_state.blocked_layout_anchors = builder_state.blocked_layout_anchors or {}
+      builder_state.blocked_layout_anchors["smelting-output-belt"] = {
+        [tostring(steel_furnace.unit_number)] = true
+      }
+
+      local site, summary = find_output_belt_line_site(builder_state, steel_export_task)
+      if not site then
+        error(
+          "enemy-builder test: expected steel output site after retrying blocked anchors; " ..
+          "checked=" .. tostring(summary and summary.anchor_entities_considered or 0) ..
+          " blocked=" .. tostring(summary and summary.anchors_skipped_blocked or 0)
+        )
+      end
+
+      if not (site.anchor_entity and site.anchor_entity.valid and site.anchor_entity == steel_furnace) then
+        error("enemy-builder test: steel output search selected the wrong anchor after blocked-anchor retry")
+      end
+
+      builder_state.task_state = {
+        phase = "scaling-waiting",
+        wait_reason = "test-idle",
+        next_attempt_tick = game.tick + 3600
+      }
+    end,
+    assertion = {
+      case_name = "steel_output_retries_blocked_anchors",
+      surface_name = surface.name,
+      area = area,
+      deadline_offset_ticks = 1,
+      skip_output_assertion = true,
+      minimum_resource_site_counts = {
+        steel_smelting = 1
+      }
+    }
+  }
+end
+
 local function setup_copper_smelting_large_patch_open_half_test_case()
   local surface = game.surfaces["nauvis"] or game.surfaces[1]
   if not surface then
@@ -3651,6 +3971,16 @@ local function format_test_failure_summary(surface, force, assertion)
     parts[#parts + 1] = string.format("builder-distance=%.2f/%.2f", actual_distance, maximum_distance)
   end
 
+  if assertion.require_builder_paused then
+    local builder_state = get_builder_state and get_builder_state() or nil
+    parts[#parts + 1] = "builder-paused=" .. tostring(builder_state and builder_state.manual_pause ~= nil)
+  end
+
+  if assertion.require_no_manual_goal_request then
+    local builder_state = get_builder_state and get_builder_state() or nil
+    parts[#parts + 1] = "manual-goal-active=" .. tostring(builder_state and builder_state.manual_goal_request ~= nil)
+  end
+
   if assertion.minimum_primary_distance_from_position then
     local assembler_name = assertion.primary_entity_name or builder_data.prototypes.firearm_magazine_assembler_name
     local assembler = get_primary_test_assembler(surface, force, area, assembler_name)
@@ -3695,6 +4025,7 @@ end
 local function test_assertion_passed(surface, force, assertion)
   local area = assertion.area
   local resource_site_counts = get_resource_site_counts and get_resource_site_counts() or {}
+  local builder_state = get_builder_state and get_builder_state() or nil
 
   for entity_name, expected_count in pairs(assertion.expected_counts or {}) do
     if count_test_entities(surface, force, area, entity_name) < expected_count then
@@ -3768,6 +4099,14 @@ local function test_assertion_passed(surface, force, assertion)
     if get_test_builder_inventory_item_count(requirement.name) > requirement.count then
       return false
     end
+  end
+
+  if assertion.require_builder_paused and not (builder_state and builder_state.manual_pause) then
+    return false
+  end
+
+  if assertion.require_no_manual_goal_request and builder_state and builder_state.manual_goal_request then
+    return false
   end
 
   if assertion.maximum_builder_distance_from_position then
@@ -3949,6 +4288,7 @@ end
 local test_remote_interface = {
   setup_manual_test = setup_manual_test,
   setup_firearm_outpost_test_case = setup_firearm_outpost_test_case,
+  setup_pause_mode_manual_goal_test_case = setup_pause_mode_manual_goal_test_case,
   setup_firearm_outpost_anchored_test_case = setup_firearm_outpost_anchored_test_case,
   setup_tree_blocked_assembler_test_case = setup_tree_blocked_assembler_test_case,
   setup_iron_plate_belt_export_test_case = setup_iron_plate_belt_export_test_case,
@@ -3958,6 +4298,8 @@ local test_remote_interface = {
   setup_scaling_builds_before_coal_reserve_test_case = setup_scaling_builds_before_coal_reserve_test_case,
   setup_assembler_output_collection_limits_test_case = setup_assembler_output_collection_limits_test_case,
   setup_wait_patrol_avoids_close_reposition_test_case = setup_wait_patrol_avoids_close_reposition_test_case,
+  setup_machine_refuel_respects_minimum_batch_test_case = setup_machine_refuel_respects_minimum_batch_test_case,
+  setup_steel_output_retries_blocked_anchors_test_case = setup_steel_output_retries_blocked_anchors_test_case,
   setup_copper_smelting_large_patch_open_half_test_case = setup_copper_smelting_large_patch_open_half_test_case,
   setup_steel_smelting_test_case = setup_steel_smelting_test_case,
   setup_full_run_layout_snapshot_case = setup_full_run_layout_snapshot_case,
@@ -4413,12 +4755,15 @@ debug_command_context = {
   get_entry_timing_settings = entry_timing.get_settings,
   get_item_count = get_item_count,
   get_recipe = get_recipe,
+  is_builder_paused = builder_runtime.is_builder_paused,
+  pause_builder = builder_runtime.pause_builder,
   record_recovery = builder_runtime.record_recovery,
   reply_to_command = reply_to_command,
   run_timed_entry = entry_timing.run,
   set_idle = set_idle,
   set_entry_timing_enabled = entry_timing.set_enabled,
   set_entry_timing_threshold_ms = entry_timing.set_threshold_ms,
+  unpause_builder = builder_runtime.unpause_builder,
   update_goal_model = builder_runtime.update_goal_model
 }
 
@@ -4476,6 +4821,19 @@ maintenance_passes = default_maintenance_passes.build(maintenance_pass_context)
 local function advance_builder(builder_state, tick)
   configure_builder_entity(builder_state.entity)
   process_production_sites(tick)
+
+  if builder_runtime.is_builder_paused(builder_state) then
+    if builder_state.manual_goal_request then
+      goal_engine.advance(builder_data, builder_state, tick, goal_engine_adapters)
+    else
+      if builder_state.goal_engine then
+        builder_state.goal_engine.scaling_display_task = nil
+      end
+      set_idle(builder_state.entity)
+    end
+    return
+  end
+
   maintenance_runner.run(builder_state, tick, maintenance_passes)
   goal_engine.advance(builder_data, builder_state, tick, goal_engine_adapters)
 end

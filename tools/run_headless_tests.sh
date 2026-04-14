@@ -212,6 +212,7 @@ EOF
 }
 
 run_case "firearm_outpost_physical_feed" "setup_firearm_outpost_test_case" "34197"
+run_case "pause_mode_manual_goal" "setup_pause_mode_manual_goal_test_case" "34214"
 run_case "firearm_outpost_anchor_clearance" "setup_firearm_outpost_anchored_test_case" "34198"
 run_case "tree_blocked_machine_placement" "setup_tree_blocked_assembler_test_case" "34199"
 run_case "iron_plate_belt_export_physical_feed" "setup_iron_plate_belt_export_test_case" "34200"
@@ -219,6 +220,8 @@ run_case "solar_panel_factory_physical_feed" "setup_solar_panel_factory_test_cas
 run_case "scaling_collect_switches_site" "setup_scaling_collect_switches_site_test_case" "34205"
 run_case "assembler_output_collection_limits" "setup_assembler_output_collection_limits_test_case" "34209"
 run_case "wait_patrol_avoids_close_reposition" "setup_wait_patrol_avoids_close_reposition_test_case" "34210"
+run_case "machine_refuel_respects_minimum_batch" "setup_machine_refuel_respects_minimum_batch_test_case" "34212"
+run_case "steel_output_retries_blocked_anchors" "setup_steel_output_retries_blocked_anchors_test_case" "34213"
 run_case "copper_smelting_large_patch_open_half" "setup_copper_smelting_large_patch_open_half_test_case" "34211"
 run_case "scaling_early_expansion_over_coal_reserve" "setup_scaling_early_expansion_over_coal_reserve_test_case" "34207"
 run_case "scaling_builds_before_coal_reserve" "setup_scaling_builds_before_coal_reserve_test_case" "34208"

@@ -54,6 +54,7 @@ function world_snapshot.build(builder_data, builder_state, tick, adapter)
     resource_site_count = adapter.get_resource_site_count(),
     resource_site_counts = clone_table(adapter.get_resource_site_counts()),
     manual_goal_request = clone_table(builder_state.manual_goal_request),
+    manual_pause = clone_table(builder_state.manual_pause),
     manual_active_task = builder_state.manual_goal_request and builder_state.manual_goal_request.tasks and
       builder_state.manual_goal_request.tasks[builder_state.manual_goal_request.current_task_index or 1] or nil,
     recent_maintenance_actions = clone_table(

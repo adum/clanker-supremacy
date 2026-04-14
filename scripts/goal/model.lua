@@ -6,7 +6,7 @@ local specs = require("scripts.goal.specs")
 local status = require("scripts.goal.status")
 
 local model = {}
-local MODEL_VERSION = 2
+local MODEL_VERSION = 3
 
 local function new_instance(spec_id, title, kind)
   return {
@@ -33,9 +33,11 @@ local function find_active_execution(node)
   end
 
   for _, child in ipairs(node.children or {}) do
-    local found = find_active_execution(child)
-    if found then
-      return found
+    if child.active then
+      local found = find_active_execution(child)
+      if found then
+        return found
+      end
     end
   end
 
@@ -394,10 +396,11 @@ local function ensure_model(builder_data, builder_state)
 
   local root = new_instance(spec_tree.root.id, spec_tree.root.title, spec_tree.root.kind)
   local manual = new_instance(spec_tree.manual.id, spec_tree.manual.title, spec_tree.manual.kind)
+  local paused = new_instance(spec_tree.paused.id, spec_tree.paused.title, spec_tree.paused.kind)
   local bootstrap = new_instance(spec_tree.bootstrap.id, spec_tree.bootstrap.title, spec_tree.bootstrap.kind)
   local scaling = new_instance(spec_tree.scaling.id, spec_tree.scaling.title, spec_tree.scaling.kind)
 
-  root.children = {manual, bootstrap, scaling}
+  root.children = {manual, paused, bootstrap, scaling}
   ensure_bootstrap_children(bootstrap, builder_data)
 
   state.model = {
@@ -405,12 +408,45 @@ local function ensure_model(builder_data, builder_state)
     specs = spec_tree,
     root = root,
     manual = manual,
+    paused = paused,
     bootstrap = bootstrap,
     scaling = scaling,
     scaling_focus = nil
   }
 
   return state.model
+end
+
+local function sync_paused(model_state, builder_state, snapshot)
+  local paused = model_state.paused
+  reset_instance(paused, false)
+
+  local pause_state = snapshot and snapshot.manual_pause or builder_state.manual_pause
+  if not pause_state then
+    paused.status = "pending"
+    paused.title = "Paused"
+    return
+  end
+
+  paused.title = "Paused"
+  if pause_state.reason and pause_state.reason ~= "" then
+    paused.title = paused.title .. ": " .. common.humanize_identifier(pause_state.reason)
+  end
+
+  paused.status = "blocked"
+  paused.active = true
+  paused.meta.pause_state = common.deep_copy(pause_state)
+  instances.add_blocker(
+    paused,
+    instances.make_blocker(
+      "manual-pause",
+      "builder is paused until manually unpaused or given a manual goal",
+      {
+        reason = pause_state.reason,
+        since_tick = pause_state.since_tick
+      }
+    )
+  )
 end
 
 local function sync_manual(model_state, builder_data, builder_state, snapshot, adapter)
@@ -825,6 +861,7 @@ function model.sync(builder_data, builder_state, options)
   local adapter = options.adapter
 
   sync_manual(model_state, builder_data, builder_state, snapshot, adapter)
+  sync_paused(model_state, builder_state, snapshot)
   sync_bootstrap(model_state, builder_data, builder_state, snapshot)
   sync_scaling_focus_state(model_state, builder_data, builder_state)
   if snapshot and adapter then
@@ -833,12 +870,15 @@ function model.sync(builder_data, builder_state, options)
 
   local root = model_state.root
   reset_instance(root, true)
-  root.children = {model_state.manual, model_state.bootstrap, model_state.scaling}
+  root.children = {model_state.manual, model_state.paused, model_state.bootstrap, model_state.scaling}
   root.active = true
 
   if builder_state.manual_goal_request then
     set_active_child(root, model_state.manual.id)
     root.status = model_state.manual.status
+  elseif builder_state.manual_pause then
+    set_active_child(root, model_state.paused.id)
+    root.status = model_state.paused.status
   elseif model_state.bootstrap.status ~= "completed" then
     set_active_child(root, model_state.bootstrap.id)
     root.status = model_state.bootstrap.status

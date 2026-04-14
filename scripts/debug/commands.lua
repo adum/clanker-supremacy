@@ -95,6 +95,8 @@ local function describe_builder_state(builder_state, context)
   local task = context.get_active_task(builder_state)
   if task then
     lines[#lines + 1] = "task=" .. task.id .. " phase=" .. (builder_state.task_state and builder_state.task_state.phase or "uninitialized")
+  elseif builder_state.manual_pause and not builder_state.manual_goal_request then
+    lines[#lines + 1] = "task=paused phase=manual-pause"
   elseif context.builder_data.scaling and context.builder_data.scaling.enabled then
     local scaling_phase = builder_state.task_state and builder_state.task_state.phase or "planning"
     local cycle_pattern_names = context.builder_data.scaling.cycle_pattern_names or {}
@@ -153,6 +155,16 @@ local function describe_builder_state(builder_state, context)
     end
     if task_state.pause_reason then
       lines[#lines + 1] = "pause-reason=" .. task_state.pause_reason
+    end
+  end
+
+  if builder_state.manual_pause then
+    lines[#lines + 1] = "builder-paused=true"
+    if builder_state.manual_pause.reason then
+      lines[#lines + 1] = "builder-pause-reason=" .. builder_state.manual_pause.reason
+    end
+    if builder_state.manual_pause.since_tick then
+      lines[#lines + 1] = "builder-pause-since-tick=" .. builder_state.manual_pause.since_tick
     end
   end
 
@@ -279,7 +291,11 @@ function commands_module.retask(command, context)
   clear_display_task(builder_state)
   context.set_idle(builder_state.entity)
   context.debug_log("manual retask requested at " .. context.format_position(builder_state.entity.position))
-  context.reply_to_command(command, "builder task state cleared; it will re-evaluate on the next tick")
+  if context.is_builder_paused(builder_state) then
+    context.reply_to_command(command, "builder task state cleared; it remains paused until unpaused or given a manual goal")
+  else
+    context.reply_to_command(command, "builder task state cleared; it will re-evaluate on the next tick")
+  end
 end
 
 function commands_module.goals(command, context)
@@ -358,7 +374,11 @@ function commands_module.manual_build(command, context)
   context.set_idle(builder_state.entity)
   context.record_recovery(builder_state, "manual goal injected for " .. request.display_name)
   context.debug_log("manual goal injected: " .. request.display_name .. (position and " at " .. context.format_position(position) or ""))
-  context.reply_to_command(command, "manual goal queued: " .. request.display_name)
+  if context.is_builder_paused(builder_state) then
+    context.reply_to_command(command, "manual goal queued: " .. request.display_name .. "; builder will return to paused idle afterward")
+  else
+    context.reply_to_command(command, "manual goal queued: " .. request.display_name)
+  end
 end
 
 function commands_module.cancel_manual(command, context)
@@ -374,7 +394,58 @@ function commands_module.cancel_manual(command, context)
   clear_display_task(builder_state)
   context.set_idle(builder_state.entity)
   context.debug_log("manual goal cancelled: " .. display_name)
-  context.reply_to_command(command, "cancelled " .. display_name)
+  if context.is_builder_paused(builder_state) then
+    context.reply_to_command(command, "cancelled " .. display_name .. "; builder remains paused")
+  else
+    context.reply_to_command(command, "cancelled " .. display_name)
+  end
+end
+
+function commands_module.pause(command, context)
+  local builder_state = context.get_builder_state()
+  if not builder_state then
+    context.reply_to_command(command, "no builder entity is active")
+    return
+  end
+
+  local was_paused = context.is_builder_paused(builder_state)
+  local cancelled_manual_name = builder_state.manual_goal_request and
+    (builder_state.manual_goal_request.display_name or builder_state.manual_goal_request.component_name or "manual goal") or nil
+  local had_task = builder_state.task_state ~= nil or builder_state.scaling_active_task ~= nil or context.get_active_task(builder_state) ~= nil
+
+  context.pause_builder(builder_state, game.tick, "manual-command")
+  context.record_recovery(builder_state, "manual pause requested")
+  context.update_goal_model(builder_state, game.tick)
+  context.debug_log("manual pause requested at " .. context.format_position(builder_state.entity.position))
+
+  if cancelled_manual_name then
+    context.reply_to_command(command, "builder paused; cancelled " .. cancelled_manual_name)
+  elseif had_task then
+    context.reply_to_command(command, (was_paused and "builder remains paused" or "builder paused") .. "; current task cleared")
+  elseif was_paused then
+    context.reply_to_command(command, "builder is already paused")
+  else
+    context.reply_to_command(command, "builder paused")
+  end
+end
+
+function commands_module.unpause(command, context)
+  local builder_state = context.get_builder_state()
+  if not builder_state then
+    context.reply_to_command(command, "no builder entity is active")
+    return
+  end
+
+  if not context.is_builder_paused(builder_state) then
+    context.reply_to_command(command, "builder is not paused")
+    return
+  end
+
+  context.unpause_builder(builder_state)
+  context.record_recovery(builder_state, "manual pause cleared")
+  context.update_goal_model(builder_state, game.tick)
+  context.debug_log("manual pause cleared at " .. context.format_position(builder_state.entity.position))
+  context.reply_to_command(command, "builder unpaused")
 end
 
 function commands_module.register(context)
@@ -383,6 +454,8 @@ function commands_module.register(context)
     {"enemy-builder-goals", "Show the current Enemy Builder goal tree.", commands_module.goals},
     {"enemy-builder-debug", "Toggle Enemy Builder debug logging. Use on or off.", commands_module.toggle_debug},
     {"enemy-builder-entry-timing", "Inspect or configure Enemy Builder entry timing logs.", commands_module.entry_timing},
+    {"enemy-builder-pause", "Pause the Enemy Builder until manually resumed or given a manual goal.", commands_module.pause},
+    {"enemy-builder-unpause", "Resume the Enemy Builder after a manual pause.", commands_module.unpause},
     {"enemy-builder-retask", "Clear the current Enemy Builder task state and retry.", commands_module.retask},
     {"enemy-builder-plan", "Preview a manual Enemy Builder component plan.", commands_module.manual_plan},
     {"enemy-builder-build", "Queue a manual Enemy Builder component build.", commands_module.manual_build},

@@ -4,6 +4,10 @@ local instances = require("scripts.goal.instances")
 local status = {}
 
 function status.get_task_phase_status(snapshot)
+  if snapshot.manual_pause and not snapshot.manual_goal_request then
+    return "blocked"
+  end
+
   local task_state = snapshot.task_state or {}
   local phase = task_state.phase
 
@@ -23,6 +27,10 @@ function status.get_task_phase_status(snapshot)
 end
 
 function status.derive_action_summary(snapshot)
+  if snapshot.manual_pause and not snapshot.manual_goal_request then
+    return "Paused"
+  end
+
   local task = snapshot.display_task
   local task_state = snapshot.task_state or {}
 

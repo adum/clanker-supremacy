@@ -25,11 +25,16 @@ function specs.build(builder_data)
       id = "root",
       title = "Operate Builder",
       kind = "selector",
-      children = {"manual", "bootstrap", "scaling"}
+      children = {"manual", "paused", "bootstrap", "scaling"}
     },
     manual = {
       id = "manual",
       title = "Manual Goal",
+      kind = "sequence"
+    },
+    paused = {
+      id = "paused",
+      title = "Paused",
       kind = "sequence"
     },
     bootstrap = {

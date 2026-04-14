@@ -18,6 +18,7 @@ return {
     radius = 24,
     fuel_name = "coal",
     target_fuel_item_count = 20,
+    minimum_item_transfer_count = 4,
     own_force_only = true,
     max_entities_per_scan = 24
   },

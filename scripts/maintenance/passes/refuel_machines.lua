@@ -14,8 +14,9 @@ function pass.run(builder_state, tick, ctx)
 
   local builder = builder_state.entity
   local fuel_name = refuel_settings.fuel_name or "coal"
+  local minimum_transfer_count = refuel_settings.minimum_item_transfer_count or 1
   local available_fuel = ctx.get_item_count(builder, fuel_name)
-  if available_fuel <= 0 then
+  if available_fuel < minimum_transfer_count then
     return {}
   end
 
@@ -48,15 +49,23 @@ function pass.run(builder_state, tick, ctx)
       if fuel_inventory then
         local current_fuel_count = fuel_inventory.get_item_count(fuel_name)
         local wanted_fuel_count = (refuel_settings.target_fuel_item_count or 20) - current_fuel_count
-        if wanted_fuel_count > 0 then
+        if wanted_fuel_count >= minimum_transfer_count then
           local insert_count = math.min(wanted_fuel_count, available_fuel)
-          if insert_count > 0 then
+          if insert_count >= minimum_transfer_count then
             local inserted_count = fuel_inventory.insert{
               name = fuel_name,
               count = insert_count
             }
 
-            if inserted_count > 0 then
+            if inserted_count > 0 and inserted_count < minimum_transfer_count then
+              fuel_inventory.remove{
+                name = fuel_name,
+                count = inserted_count
+              }
+              inserted_count = 0
+            end
+
+            if inserted_count >= minimum_transfer_count then
               local reason = "refueled " .. entity.name .. " at " .. ctx.format_position(entity.position)
               local removed_count = ctx.remove_item(builder, fuel_name, inserted_count, reason)
 
@@ -77,7 +86,7 @@ function pass.run(builder_state, tick, ctx)
                 actions[#actions + 1] = "refueled " .. entity.name .. " at " .. ctx.format_position(entity.position)
               end
 
-              if available_fuel <= 0 then
+              if available_fuel < minimum_transfer_count then
                 break
               end
             end
