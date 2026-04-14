@@ -153,13 +153,19 @@ function overlay.get_inventory_lines(builder_state, context)
   end
 
   local item_stacks = context.get_sorted_item_stacks(inventory.get_contents())
+  local total_slots = #inventory
+  local free_slots = inventory.count_empty_stacks and inventory.count_empty_stacks() or 0
+  local lines = {
+    "Free slots: " .. tostring(free_slots) .. "/" .. tostring(total_slots)
+  }
+
   if #item_stacks == 0 then
-    return {"(empty)"}
+    lines[#lines + 1] = "(empty)"
+    return lines
   end
 
   local settings = get_overlay_settings(context)
   local max_lines = settings.max_inventory_lines or #item_stacks
-  local lines = {}
 
   for index, item_stack in ipairs(item_stacks) do
     if index > max_lines then
