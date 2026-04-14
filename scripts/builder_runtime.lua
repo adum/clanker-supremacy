@@ -2962,6 +2962,86 @@ local function setup_scaling_builds_before_coal_reserve_test_case()
   }
 end
 
+local function setup_assembler_output_collection_limits_test_case()
+  local surface = game.surfaces["nauvis"] or game.surfaces[1]
+  if not surface then
+    error("enemy-builder test: nauvis surface is unavailable")
+  end
+
+  local builder_position = {x = 0, y = 0}
+  local area = make_test_area(builder_position, 24, 24)
+
+  surface.always_day = true
+  clear_test_area(surface, area)
+
+  return setup_scaling_test{
+    case_name = "assembler_output_collection_limits",
+    builder_position = builder_position,
+    surface_name = surface.name,
+    suppress_player_autospawn = true,
+    inventory = {
+      {name = "firearm-magazine", count = 100}
+    },
+    mutate_builder_state = function(builder_state, test_surface)
+      builder_state.task_state = {
+        phase = "scaling-waiting",
+        wait_reason = "test-idle",
+        next_attempt_tick = game.tick + 3600
+      }
+
+      local force = builder_state.entity.force
+
+      local furnace = test_surface.create_entity{
+        name = "stone-furnace",
+        position = {x = 3, y = 0},
+        force = force
+      }
+      local furnace_output = furnace and furnace.valid and furnace.get_output_inventory and furnace.get_output_inventory() or nil
+      if not furnace_output then
+        error("enemy-builder test: failed to create furnace output inventory for assembler output collection case")
+      end
+      furnace_output.insert{name = "iron-plate", count = 12}
+
+      local ammo_assembler = test_surface.create_entity{
+        name = "assembling-machine-1",
+        position = {x = 5, y = 0},
+        force = force
+      }
+      local ammo_output = ammo_assembler and ammo_assembler.valid and ammo_assembler.get_output_inventory and ammo_assembler.get_output_inventory() or nil
+      if not ammo_output then
+        error("enemy-builder test: failed to create ammo assembler output inventory for assembler output collection case")
+      end
+      ammo_output.insert{name = "firearm-magazine", count = 20}
+
+      local solar_assembler = test_surface.create_entity{
+        name = "assembling-machine-1",
+        position = {x = 7, y = 0},
+        force = force
+      }
+      local solar_output = solar_assembler and solar_assembler.valid and solar_assembler.get_output_inventory and solar_assembler.get_output_inventory() or nil
+      if not solar_output then
+        error("enemy-builder test: failed to create solar assembler output inventory for assembler output collection case")
+      end
+      solar_output.insert{name = "solar-panel", count = 3}
+    end,
+    assertion = {
+      case_name = "assembler_output_collection_limits",
+      surface_name = surface.name,
+      area = area,
+      deadline_offset_ticks = 600,
+      skip_output_assertion = true,
+      minimum_builder_inventory_items = {
+        {name = "iron-plate", count = 12},
+        {name = "solar-panel", count = 3},
+        {name = "firearm-magazine", count = 100}
+      },
+      maximum_builder_inventory_items = {
+        {name = "firearm-magazine", count = 100}
+      }
+    }
+  }
+end
+
 local function finish_manual_test()
   if storage.enemy_builder_test then
     storage.enemy_builder_test.finished = true
@@ -3354,6 +3434,12 @@ local function format_test_failure_summary(surface, force, assertion)
       get_test_builder_inventory_item_count(requirement.name) .. "/" .. requirement.count
   end
 
+  for _, requirement in ipairs(assertion.maximum_builder_inventory_items or {}) do
+    parts[#parts + 1] =
+      "builder-" .. requirement.name .. "<=" .. requirement.count ..
+      " actual=" .. get_test_builder_inventory_item_count(requirement.name)
+  end
+
   if assertion.minimum_primary_distance_from_position then
     local assembler_name = assertion.primary_entity_name or builder_data.prototypes.firearm_magazine_assembler_name
     local assembler = get_primary_test_assembler(surface, force, area, assembler_name)
@@ -3461,6 +3547,18 @@ local function test_assertion_passed(surface, force, assertion)
     end
   end
 
+  for _, requirement in ipairs(assertion.minimum_builder_inventory_items or {}) do
+    if get_test_builder_inventory_item_count(requirement.name) < requirement.count then
+      return false
+    end
+  end
+
+  for _, requirement in ipairs(assertion.maximum_builder_inventory_items or {}) do
+    if get_test_builder_inventory_item_count(requirement.name) > requirement.count then
+      return false
+    end
+  end
+
   if assertion.output_item_name and assertion.output_entity_names then
     return get_test_output_item_count(
       surface,
@@ -3486,12 +3584,6 @@ local function test_assertion_passed(surface, force, assertion)
 
   if assertion.skip_output_assertion then
     return true
-  end
-
-  for _, requirement in ipairs(assertion.minimum_builder_inventory_items or {}) do
-    if get_test_builder_inventory_item_count(requirement.name) < requirement.count then
-      return false
-    end
   end
 
   return get_test_turret_ammo_count(
@@ -3641,6 +3733,7 @@ local test_remote_interface = {
   setup_scaling_collect_switches_site_test_case = setup_scaling_collect_switches_site_test_case,
   setup_scaling_early_expansion_over_coal_reserve_test_case = setup_scaling_early_expansion_over_coal_reserve_test_case,
   setup_scaling_builds_before_coal_reserve_test_case = setup_scaling_builds_before_coal_reserve_test_case,
+  setup_assembler_output_collection_limits_test_case = setup_assembler_output_collection_limits_test_case,
   setup_steel_smelting_test_case = setup_steel_smelting_test_case,
   setup_full_run_layout_snapshot_case = setup_full_run_layout_snapshot_case,
   get_entry_timing_settings = entry_timing.get_settings,

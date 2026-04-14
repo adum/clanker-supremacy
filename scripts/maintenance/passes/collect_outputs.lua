@@ -1,17 +1,61 @@
 local pass = {}
 
-local function get_total_item_count(inventory)
+local function get_inventory_content_entry_name(content_key, item_stack)
+  if type(item_stack) == "table" and item_stack.name then
+    return item_stack.name
+  end
+
+  if type(content_key) == "string" then
+    return content_key
+  end
+
+  if type(content_key) == "table" and content_key.name then
+    return content_key.name
+  end
+
+  return nil
+end
+
+local function get_inventory_content_entry_count(item_stack)
+  if type(item_stack) == "number" then
+    return item_stack
+  end
+
+  if type(item_stack) == "table" then
+    return item_stack.count or 0
+  end
+
+  return 0
+end
+
+local function get_total_item_count(inventory, allowed_item_names)
   local total = 0
 
-  for _, item_stack in pairs(inventory.get_contents()) do
-    if type(item_stack) == "number" then
-      total = total + item_stack
-    elseif type(item_stack) == "table" then
-      total = total + (item_stack.count or 0)
+  for content_key, item_stack in pairs(inventory.get_contents()) do
+    local item_name = get_inventory_content_entry_name(content_key, item_stack)
+    if item_name and (not allowed_item_names or allowed_item_names[item_name]) then
+      total = total + get_inventory_content_entry_count(item_stack)
     end
   end
 
   return total
+end
+
+local function get_assembler_output_item_allowlist(entity, builder, collection_settings, ctx)
+  if not (entity and entity.valid and entity.type == "assembling-machine") then
+    return nil
+  end
+
+  local item_limits = collection_settings.assembler_item_limits or {}
+  local allowed_item_names = {}
+
+  for item_name, maximum_count in pairs(item_limits) do
+    if ctx.get_item_count(builder, item_name) < maximum_count then
+      allowed_item_names[item_name] = true
+    end
+  end
+
+  return allowed_item_names
 end
 
 function pass.run(builder_state, tick, ctx)
@@ -71,15 +115,23 @@ function pass.run(builder_state, tick, ctx)
 
       local output_inventory = entity.get_output_inventory and entity.get_output_inventory()
       if output_inventory and not output_inventory.is_empty() then
-        local minimum_total_items = collection_settings.minimum_total_items_to_collect or 1
-        if get_total_item_count(output_inventory) < minimum_total_items then
+        local allowed_item_names = get_assembler_output_item_allowlist(entity, builder, collection_settings, ctx)
+        if allowed_item_names and next(allowed_item_names) == nil then
+          goto continue
+        end
+
+        local minimum_total_items =
+          (entity.type == "assembling-machine" and collection_settings.minimum_assembler_items_to_collect) or
+          collection_settings.minimum_total_items_to_collect or 1
+        if get_total_item_count(output_inventory, allowed_item_names) < minimum_total_items then
           goto continue
         end
 
         local moved_items = ctx.pull_inventory_contents_to_builder(
           output_inventory,
           builder,
-          "collected from " .. entity.name .. " output at " .. ctx.format_position(entity.position)
+          "collected from " .. entity.name .. " output at " .. ctx.format_position(entity.position),
+          allowed_item_names
         )
 
         if #moved_items > 0 then

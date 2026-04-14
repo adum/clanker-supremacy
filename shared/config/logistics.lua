@@ -35,6 +35,11 @@ return {
     radius = 24,
     entity_types = {"furnace", "assembling-machine"},
     minimum_total_items_to_collect = 4,
+    minimum_assembler_items_to_collect = 1,
+    assembler_item_limits = {
+      ["firearm-magazine"] = 100,
+      ["solar-panel"] = 100
+    },
     own_force_only = true,
     max_entities_per_scan = 12
   },
