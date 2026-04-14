@@ -279,6 +279,18 @@ local function get_wait_patrol_patterns(builder_data, item_name)
   return wait_patrol.fallback_site_patterns
 end
 
+local function get_scaling_collection_arrival_distance(builder_data, collection_mode)
+  if collection_mode == "wait-patrol" then
+    local wait_patrol = builder_data.scaling and builder_data.scaling.wait_patrol or nil
+    local patrol_arrival_distance = wait_patrol and wait_patrol.arrival_distance or nil
+    if patrol_arrival_distance and patrol_arrival_distance > 0 then
+      return patrol_arrival_distance
+    end
+  end
+
+  return 1.1
+end
+
 local function site_matches_pattern_names(site, pattern_names)
   if not (site and pattern_names and site.pattern_name) then
     return false
@@ -378,12 +390,18 @@ local function start_scaling_collection(builder_state, site, item_name, tick, al
   local collection_mode = options and options.collection_mode or "collect"
   local crawl_visited_site_keys = options and options.crawl_visited_site_keys or nil
   local collection_goal_count = options and options.collection_goal_count or nil
+  local arrival_distance = get_scaling_collection_arrival_distance(adapters.builder_data, collection_mode)
+  local phase = "scaling-moving-to-site"
   if collection_mode == "site-crawl" then
     crawl_visited_site_keys = crawl_visited_site_keys or {}
     collection_goal_count = collection_goal_count or get_scaling_collection_goal_count(item_name, adapters)
   end
+  if adapters.square_distance(builder_state.entity.position, collect_position) <= (arrival_distance * arrival_distance) then
+    phase = "scaling-collecting-site"
+    adapters.set_idle(builder_state.entity)
+  end
   builder_state.task_state = {
-    phase = "scaling-moving-to-site",
+    phase = phase,
     scaling_site = site,
     target_item_name = item_name,
     allowed_item_names = adapters.get_site_allowed_items(site),
@@ -391,8 +409,9 @@ local function start_scaling_collection(builder_state, site, item_name, tick, al
     collection_mode = collection_mode,
     crawl_visited_site_keys = crawl_visited_site_keys,
     collection_goal_count = collection_goal_count,
+    arrival_distance = arrival_distance,
     target_position = collect_position,
-    approach_position = adapters.create_task_approach_position(nil, collect_position, 1.1),
+    approach_position = adapters.create_task_approach_position(nil, collect_position, arrival_distance),
     last_position = common.clone_position(builder_state.entity.position),
     last_progress_tick = tick
   }
@@ -877,8 +896,9 @@ local function advance_scaling(builder_data, builder_state, tick, adapters)
     normalize_scaling_collection_task_state(task_state, adapters)
     local destination_position = task_state.target_position
     local movement_position = task_state.approach_position or destination_position
+    local arrival_distance = task_state.arrival_distance or 1.1
 
-    if adapters.square_distance(entity.position, destination_position) <= (1.1 * 1.1) then
+    if adapters.square_distance(entity.position, destination_position) <= (arrival_distance * arrival_distance) then
       adapters.set_idle(entity)
       task_state.phase = "scaling-collecting-site"
       adapters.debug_log("scaling: reached collection site at " .. adapters.format_position(destination_position))

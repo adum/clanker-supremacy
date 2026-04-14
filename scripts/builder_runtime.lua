@@ -3042,6 +3042,79 @@ local function setup_assembler_output_collection_limits_test_case()
   }
 end
 
+local function setup_wait_patrol_avoids_close_reposition_test_case()
+  local surface = game.surfaces["nauvis"] or game.surfaces[1]
+  if not surface then
+    error("enemy-builder test: nauvis surface is unavailable")
+  end
+
+  local patrol_arrival_distance = (((builder_data.scaling or {}).wait_patrol or {}).arrival_distance) or 1.1
+  local builder_position = {x = 0, y = 0}
+  local anchor_position = {x = patrol_arrival_distance - 0.1, y = 0}
+  local area = make_test_area({x = (builder_position.x + anchor_position.x) * 0.5, y = 0}, 16, 16)
+
+  surface.always_day = true
+  clear_test_area(surface, area)
+
+  local site = place_test_iron_smelting_anchor(surface, "north", anchor_position)
+  local output_inventory = site.anchor_furnace.get_output_inventory and site.anchor_furnace.get_output_inventory() or nil
+  if not output_inventory then
+    error("enemy-builder test: failed to get furnace output inventory for wait patrol close reposition case")
+  end
+
+  output_inventory.insert{name = "iron-plate", count = 5}
+
+  return setup_scaling_test{
+    case_name = "wait_patrol_avoids_close_reposition",
+    builder_position = builder_position,
+    surface_name = surface.name,
+    suppress_player_autospawn = true,
+    disable_nearby_machine_output_collection = true,
+    mutate_builder_state = function(builder_state)
+      local scaling_site = nil
+      for _, resource_site in ipairs(storage.resource_sites or {}) do
+        if resource_site.pattern_name == "iron_smelting" and resource_site.downstream_machine == site.anchor_furnace then
+          scaling_site = resource_site
+          break
+        end
+      end
+
+      if not scaling_site then
+        error("enemy-builder test: failed to find registered iron smelting site for wait patrol close reposition case")
+      end
+
+      local target_position = clone_position(site.anchor_furnace.position)
+      builder_state.task_state = {
+        phase = "scaling-moving-to-site",
+        scaling_site = scaling_site,
+        target_item_name = "iron-plate",
+        allowed_item_names = {["iron-plate"] = true},
+        allow_wait_for_items = false,
+        collection_mode = "wait-patrol",
+        arrival_distance = patrol_arrival_distance,
+        target_position = target_position,
+        approach_position = clone_position(target_position),
+        last_position = clone_position(builder_state.entity.position),
+        last_progress_tick = game.tick
+      }
+    end,
+    assertion = {
+      case_name = "wait_patrol_avoids_close_reposition",
+      surface_name = surface.name,
+      area = area,
+      deadline_offset_ticks = 60,
+      skip_output_assertion = true,
+      minimum_builder_inventory_items = {
+        {name = "iron-plate", count = 5}
+      },
+      maximum_builder_distance_from_position = {
+        position = clone_position(builder_position),
+        distance = 0.3
+      }
+    }
+  }
+end
+
 local function finish_manual_test()
   if storage.enemy_builder_test then
     storage.enemy_builder_test.finished = true
@@ -3193,6 +3266,15 @@ local function get_test_builder_inventory_item_count(item_name)
   end
 
   return builder_state.entity.get_item_count(item_name)
+end
+
+local function get_test_builder_position()
+  local builder_state = get_builder_state and get_builder_state() or nil
+  if not (builder_state and builder_state.entity and builder_state.entity.valid) then
+    return nil
+  end
+
+  return clone_position(builder_state.entity.position)
 end
 
 local function find_test_resource_site_in_area(pattern_name, area)
@@ -3440,6 +3522,21 @@ local function format_test_failure_summary(surface, force, assertion)
       " actual=" .. get_test_builder_inventory_item_count(requirement.name)
   end
 
+  if assertion.maximum_builder_distance_from_position then
+    local builder_position = get_test_builder_position()
+    local maximum_distance = assertion.maximum_builder_distance_from_position.distance or 0
+    local actual_distance = -1
+
+    if builder_position then
+      actual_distance = math.sqrt(square_distance(
+        builder_position,
+        assertion.maximum_builder_distance_from_position.position
+      ))
+    end
+
+    parts[#parts + 1] = string.format("builder-distance=%.2f/%.2f", actual_distance, maximum_distance)
+  end
+
   if assertion.minimum_primary_distance_from_position then
     local assembler_name = assertion.primary_entity_name or builder_data.prototypes.firearm_magazine_assembler_name
     local assembler = get_primary_test_assembler(surface, force, area, assembler_name)
@@ -3555,6 +3652,18 @@ local function test_assertion_passed(surface, force, assertion)
 
   for _, requirement in ipairs(assertion.maximum_builder_inventory_items or {}) do
     if get_test_builder_inventory_item_count(requirement.name) > requirement.count then
+      return false
+    end
+  end
+
+  if assertion.maximum_builder_distance_from_position then
+    local builder_position = get_test_builder_position()
+    if not builder_position then
+      return false
+    end
+
+    local maximum_distance = assertion.maximum_builder_distance_from_position.distance or 0
+    if square_distance(builder_position, assertion.maximum_builder_distance_from_position.position) > (maximum_distance * maximum_distance) then
       return false
     end
   end
@@ -3734,6 +3843,7 @@ local test_remote_interface = {
   setup_scaling_early_expansion_over_coal_reserve_test_case = setup_scaling_early_expansion_over_coal_reserve_test_case,
   setup_scaling_builds_before_coal_reserve_test_case = setup_scaling_builds_before_coal_reserve_test_case,
   setup_assembler_output_collection_limits_test_case = setup_assembler_output_collection_limits_test_case,
+  setup_wait_patrol_avoids_close_reposition_test_case = setup_wait_patrol_avoids_close_reposition_test_case,
   setup_steel_smelting_test_case = setup_steel_smelting_test_case,
   setup_full_run_layout_snapshot_case = setup_full_run_layout_snapshot_case,
   get_entry_timing_settings = entry_timing.get_settings,

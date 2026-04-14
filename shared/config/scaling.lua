@@ -92,6 +92,7 @@ return {
     }
   },
   wait_patrol = {
+    arrival_distance = 2.5,
     item_site_patterns = {
       ["coal"] = {"coal_outpost"},
       ["iron-plate"] = {"iron_smelting"},
