@@ -1094,6 +1094,32 @@ local function update_summary_with_placement_stats(summary, placement_stats)
   summary.placeable_positions = summary.placeable_positions + (placement_stats.placeable_positions or 0)
 end
 
+local function collect_blocking_occupant_names(surface, position, ctx)
+  local occupant_names = {}
+  for _, occupant in ipairs(surface.find_entities_filtered{
+    area = {
+      {position.x - 0.51, position.y - 0.51},
+      {position.x + 0.51, position.y + 0.51}
+    }
+  }) do
+    if occupant and occupant.valid then
+      occupant_names[#occupant_names + 1] = occupant.name .. "@" .. ctx.format_position(occupant.position)
+    end
+  end
+
+  return occupant_names
+end
+
+local function record_failed_belt_path_detail(summary, detail)
+  if not (summary and detail) then
+    return
+  end
+
+  if not summary.failed_belt_path_detail then
+    summary.failed_belt_path_detail = detail
+  end
+end
+
 local function snap_position_to_tile_center(position)
   return {
     x = math.floor(position.x) + 0.5,
@@ -1234,6 +1260,11 @@ local function build_belt_path_placements(surface, force, first_position, termin
       local direction = direction_name and ctx.direction_by_name[direction_name] or ctx.direction_by_name.east
       local position_key = string.format("%.2f:%.2f", position.x, position.y)
       if seen_positions[position_key] then
+        record_failed_belt_path_detail(
+          summary,
+          "duplicate path position " .. ctx.format_position(position) ..
+            " for route " .. ctx.format_position(first_position) .. " -> " .. ctx.format_position(terminal_position)
+        )
         path_valid = false
         break
       end
@@ -1247,6 +1278,13 @@ local function build_belt_path_placements(surface, force, first_position, termin
         direction = direction,
         force = force
       } then
+        local occupant_names = collect_blocking_occupant_names(surface, position, ctx)
+        record_failed_belt_path_detail(
+          summary,
+          "blocked at " .. ctx.format_position(position) ..
+            " dir=" .. tostring(direction_name or "east") ..
+            (#occupant_names > 0 and (" by " .. table.concat(occupant_names, ",")) or "")
+        )
         path_valid = false
         break
       end
@@ -1255,6 +1293,11 @@ local function build_belt_path_placements(surface, force, first_position, termin
 
       if task.forbid_resource_overlap and candidate_entity_overlaps_resources(surface, force, task.belt_entity_name, position, direction) then
         summary.resource_overlap_rejections = (summary.resource_overlap_rejections or 0) + 1
+        record_failed_belt_path_detail(
+          summary,
+          "resource overlap at " .. ctx.format_position(position) ..
+            " dir=" .. tostring(direction_name or "east")
+        )
         path_valid = false
         break
       end
@@ -1634,6 +1677,104 @@ local function find_miner_placement(surface, force, task, resource_position, pat
   return nil, nil, nil, nil, nil, nil, nil, nil, stats
 end
 
+local function merge_resource_site_search_summary(summary, placement_stats)
+  summary.positions_checked = summary.positions_checked + (placement_stats.positions_checked or 0)
+  summary.placeable_positions = summary.placeable_positions + (placement_stats.placeable_positions or 0)
+  summary.test_miners_created = summary.test_miners_created + (placement_stats.test_miners_created or 0)
+  summary.mining_area_hits = summary.mining_area_hits + (placement_stats.mining_area_hits or 0)
+  summary.valid_candidates = summary.valid_candidates + (placement_stats.valid_candidates or 0)
+  if (placement_stats.best_resource_coverage or 0) > summary.best_resource_coverage then
+    summary.best_resource_coverage = placement_stats.best_resource_coverage
+  end
+  if (placement_stats.best_resource_amount or 0) > summary.best_resource_amount then
+    summary.best_resource_amount = placement_stats.best_resource_amount
+  end
+  summary.output_container_hits = summary.output_container_hits + (placement_stats.output_container_hits or 0)
+  summary.downstream_positions_checked = summary.downstream_positions_checked +
+    (placement_stats.downstream_positions_checked or 0)
+  summary.downstream_placeable_positions = summary.downstream_placeable_positions +
+    (placement_stats.downstream_placeable_positions or 0)
+  summary.test_downstream_created = summary.test_downstream_created + (placement_stats.test_downstream_created or 0)
+  summary.downstream_anchor_hits = summary.downstream_anchor_hits + (placement_stats.downstream_anchor_hits or 0)
+  summary.terminal_positions_found = summary.terminal_positions_found + (placement_stats.terminal_positions_found or 0)
+  summary.valid_belt_paths = summary.valid_belt_paths + (placement_stats.valid_belt_paths or 0)
+  summary.failed_belt_paths = summary.failed_belt_paths + (placement_stats.failed_belt_paths or 0)
+  summary.failed_inserter_geometry = summary.failed_inserter_geometry +
+    (placement_stats.failed_inserter_geometry or 0)
+  summary.resource_overlap_rejections = summary.resource_overlap_rejections +
+    (placement_stats.resource_overlap_rejections or 0)
+  summary.low_resource_amount_rejections = summary.low_resource_amount_rejections +
+    (placement_stats.low_resource_amount_rejections or 0)
+end
+
+local function build_resource_site_candidate(
+  resource,
+  build_position,
+  build_direction,
+  output_container_position,
+  downstream_machine_position,
+  belt_layout_placements,
+  belt_hub_position,
+  belt_hub_key,
+  belt_terminal_position,
+  placement_stats,
+  origin,
+  ctx
+)
+  if not build_position then
+    return nil
+  end
+
+  return {
+    resource = resource,
+    build_position = build_position,
+    build_direction = build_direction,
+    output_container_position = output_container_position,
+    downstream_machine_position = downstream_machine_position,
+    belt_layout_placements = belt_layout_placements,
+    belt_hub_position = belt_hub_position,
+    belt_hub_key = belt_hub_key,
+    belt_terminal_position = belt_terminal_position,
+    resource_coverage = placement_stats.selected_resource_coverage or placement_stats.best_resource_coverage,
+    resource_amount = placement_stats.selected_resource_amount or placement_stats.best_resource_amount,
+    patch_margin = placement_stats.selected_patch_margin or placement_stats.best_patch_margin or 0,
+    resource_distance = ctx.square_distance(origin, build_position)
+  }
+end
+
+local function select_preferred_resource_site_candidate(site_candidates, site_selection, origin, ctx)
+  return ctx.select_preferred_candidate(
+    site_candidates,
+    site_selection.random_candidate_pool or 1,
+    function(left, right)
+      if site_selection.prefer_patch_margin and left.patch_margin ~= right.patch_margin then
+        return left.patch_margin > right.patch_margin
+      end
+
+      if site_selection.prefer_middle ~= false and left.resource_coverage ~= right.resource_coverage then
+        return left.resource_coverage > right.resource_coverage
+      end
+
+      if left.resource_distance ~= right.resource_distance then
+        return left.resource_distance < right.resource_distance
+      end
+
+      return ctx.square_distance(origin, left.resource.position) < ctx.square_distance(origin, right.resource.position)
+    end,
+    function(candidate, best_candidate)
+      if site_selection.prefer_patch_margin and candidate.patch_margin ~= best_candidate.patch_margin then
+        return false
+      end
+
+      if site_selection.prefer_middle ~= false and candidate.resource_coverage ~= best_candidate.resource_coverage then
+        return false
+      end
+
+      return true
+    end
+  )
+end
+
 local function find_edge_resource_site(surface, force, origin, task, ctx)
   local seen_resources = {}
   local summary = {
@@ -1778,6 +1919,7 @@ function queries.find_resource_site(surface, force, origin, task, ctx)
   for _, radius in ipairs(task.search_radii) do
     summary.radii_checked = summary.radii_checked + 1
 
+    local site_selection = task.site_selection or {}
     local found_resources = surface.find_entities_filtered{
       position = origin,
       radius = radius,
@@ -1785,7 +1927,6 @@ function queries.find_resource_site(surface, force, origin, task, ctx)
       name = task.resource_name
     }
 
-    local site_selection = task.site_selection or {}
     local max_resource_scan_entities = task.max_resource_scan_entities_per_radius or
       math.max((task.max_resource_candidates_per_radius or 48) * 4, 64)
     local resources, resources_truncated = select_nearest_resources(
@@ -1798,9 +1939,9 @@ function queries.find_resource_site(surface, force, origin, task, ctx)
     summary.resource_entities_selected = summary.resource_entities_selected + #resources
     summary.resource_entities_truncated = summary.resource_entities_truncated or resources_truncated
 
-    if site_selection.prefer_middle ~= false and #resources > 0 then
-      local patches = build_resource_patches(resources, origin, ctx)
+    local patches = build_resource_patches(found_resources, origin, ctx)
 
+    if site_selection.prefer_middle ~= false and #resources > 0 then
       for _, patch in ipairs(patches) do
         summary.patch_centers_considered = summary.patch_centers_considered + 1
 
@@ -1815,29 +1956,7 @@ function queries.find_resource_site(surface, force, origin, task, ctx)
           placement_stats =
           find_miner_placement(surface, force, task, patch.anchor_position, patch, ctx)
 
-        summary.positions_checked = summary.positions_checked + placement_stats.positions_checked
-        summary.placeable_positions = summary.placeable_positions + placement_stats.placeable_positions
-        summary.test_miners_created = summary.test_miners_created + placement_stats.test_miners_created
-        summary.mining_area_hits = summary.mining_area_hits + placement_stats.mining_area_hits
-        summary.valid_candidates = summary.valid_candidates + placement_stats.valid_candidates
-        if placement_stats.best_resource_coverage > summary.best_resource_coverage then
-          summary.best_resource_coverage = placement_stats.best_resource_coverage
-        end
-        if placement_stats.best_resource_amount > summary.best_resource_amount then
-          summary.best_resource_amount = placement_stats.best_resource_amount
-        end
-        summary.output_container_hits = summary.output_container_hits + placement_stats.output_container_hits
-        summary.downstream_positions_checked = summary.downstream_positions_checked + placement_stats.downstream_positions_checked
-        summary.downstream_placeable_positions = summary.downstream_placeable_positions + placement_stats.downstream_placeable_positions
-        summary.test_downstream_created = summary.test_downstream_created + placement_stats.test_downstream_created
-        summary.downstream_anchor_hits = summary.downstream_anchor_hits + placement_stats.downstream_anchor_hits
-        summary.terminal_positions_found = summary.terminal_positions_found + (placement_stats.terminal_positions_found or 0)
-        summary.valid_belt_paths = summary.valid_belt_paths + (placement_stats.valid_belt_paths or 0)
-        summary.failed_belt_paths = summary.failed_belt_paths + (placement_stats.failed_belt_paths or 0)
-        summary.failed_inserter_geometry = summary.failed_inserter_geometry + (placement_stats.failed_inserter_geometry or 0)
-        summary.resource_overlap_rejections = summary.resource_overlap_rejections + (placement_stats.resource_overlap_rejections or 0)
-        summary.low_resource_amount_rejections = summary.low_resource_amount_rejections +
-          (placement_stats.low_resource_amount_rejections or 0)
+        merge_resource_site_search_summary(summary, placement_stats)
 
         if build_position then
           summary.selected_candidate_pool_size = placement_stats.selected_candidate_pool_size
@@ -1892,46 +2011,24 @@ function queries.find_resource_site(surface, force, origin, task, ctx)
             },
             ctx
           )
-        summary.positions_checked = summary.positions_checked + placement_stats.positions_checked
-        summary.placeable_positions = summary.placeable_positions + placement_stats.placeable_positions
-        summary.test_miners_created = summary.test_miners_created + placement_stats.test_miners_created
-        summary.mining_area_hits = summary.mining_area_hits + placement_stats.mining_area_hits
-        summary.valid_candidates = summary.valid_candidates + placement_stats.valid_candidates
-        if placement_stats.best_resource_coverage > summary.best_resource_coverage then
-          summary.best_resource_coverage = placement_stats.best_resource_coverage
-        end
-        if placement_stats.best_resource_amount > summary.best_resource_amount then
-          summary.best_resource_amount = placement_stats.best_resource_amount
-        end
-        summary.output_container_hits = summary.output_container_hits + placement_stats.output_container_hits
-        summary.downstream_positions_checked = summary.downstream_positions_checked + placement_stats.downstream_positions_checked
-        summary.downstream_placeable_positions = summary.downstream_placeable_positions + placement_stats.downstream_placeable_positions
-        summary.test_downstream_created = summary.test_downstream_created + placement_stats.test_downstream_created
-        summary.downstream_anchor_hits = summary.downstream_anchor_hits + placement_stats.downstream_anchor_hits
-        summary.terminal_positions_found = summary.terminal_positions_found + (placement_stats.terminal_positions_found or 0)
-        summary.valid_belt_paths = summary.valid_belt_paths + (placement_stats.valid_belt_paths or 0)
-        summary.failed_belt_paths = summary.failed_belt_paths + (placement_stats.failed_belt_paths or 0)
-        summary.failed_inserter_geometry = summary.failed_inserter_geometry + (placement_stats.failed_inserter_geometry or 0)
-        summary.resource_overlap_rejections = summary.resource_overlap_rejections + (placement_stats.resource_overlap_rejections or 0)
-        summary.low_resource_amount_rejections = summary.low_resource_amount_rejections +
-          (placement_stats.low_resource_amount_rejections or 0)
+        merge_resource_site_search_summary(summary, placement_stats)
 
-        if build_position then
-          site_candidates[#site_candidates + 1] = {
-            resource = resource,
-            build_position = build_position,
-            build_direction = build_direction,
-            output_container_position = output_container_position,
-            downstream_machine_position = downstream_machine_position,
-            belt_layout_placements = belt_layout_placements,
-            belt_hub_position = belt_hub_position,
-            belt_hub_key = belt_hub_key,
-            belt_terminal_position = belt_terminal_position,
-            resource_coverage = placement_stats.selected_resource_coverage or placement_stats.best_resource_coverage,
-            resource_amount = placement_stats.selected_resource_amount or placement_stats.best_resource_amount,
-            patch_margin = placement_stats.selected_patch_margin or placement_stats.best_patch_margin or 0,
-            resource_distance = ctx.square_distance(origin, build_position)
-          }
+        local site_candidate = build_resource_site_candidate(
+          resource,
+          build_position,
+          build_direction,
+          output_container_position,
+          downstream_machine_position,
+          belt_layout_placements,
+          belt_hub_position,
+          belt_hub_key,
+          belt_terminal_position,
+          placement_stats,
+          origin,
+          ctx
+        )
+        if site_candidate then
+          site_candidates[#site_candidates + 1] = site_candidate
         end
 
         if task.max_resource_candidates_per_radius and considered_this_radius >= task.max_resource_candidates_per_radius then
@@ -1940,41 +2037,103 @@ function queries.find_resource_site(surface, force, origin, task, ctx)
       end
     end
 
-    local selected_candidate, pool_size = ctx.select_preferred_candidate(
+    local selected_candidate, pool_size = select_preferred_resource_site_candidate(
       site_candidates,
-      site_selection.random_candidate_pool or 1,
-      function(left, right)
-        if site_selection.prefer_patch_margin and left.patch_margin ~= right.patch_margin then
-          return left.patch_margin > right.patch_margin
-        end
-
-        if site_selection.prefer_middle ~= false and left.resource_coverage ~= right.resource_coverage then
-          return left.resource_coverage > right.resource_coverage
-        end
-
-        if left.resource_distance ~= right.resource_distance then
-          return left.resource_distance < right.resource_distance
-        end
-
-        return ctx.square_distance(origin, left.resource.position) < ctx.square_distance(origin, right.resource.position)
-      end,
-      function(candidate, best_candidate)
-        if site_selection.prefer_patch_margin and candidate.patch_margin ~= best_candidate.patch_margin then
-        return false
-      end
-
-        if site_selection.prefer_middle ~= false and candidate.resource_coverage ~= best_candidate.resource_coverage then
-          return false
-        end
-
-        return true
-      end
+      site_selection,
+      origin,
+      ctx
     )
 
     if selected_candidate then
       summary.selected_candidate_pool_size = pool_size
       selected_candidate.summary = summary
       return selected_candidate
+    end
+
+    if task.downstream_machine and resources_truncated and #found_resources > #resources then
+      local edge_resource_candidates = {}
+
+      for _, patch in ipairs(patches) do
+        for _, resource in ipairs(collect_patch_edge_resources(patch, origin, surface, force, task, ctx)) do
+          local resource_key = get_resource_position_key(resource)
+          if not seen_resources[resource_key] then
+            edge_resource_candidates[#edge_resource_candidates + 1] = {
+              resource = resource,
+              patch = patch,
+              distance = ctx.square_distance(origin, resource.position)
+            }
+          end
+        end
+      end
+
+      table.sort(edge_resource_candidates, function(left, right)
+        if left.distance ~= right.distance then
+          return left.distance > right.distance
+        end
+
+        return (left.patch.size or 0) > (right.patch.size or 0)
+      end)
+
+      local fallback_site_candidates = {}
+      local fallback_considered = 0
+
+      for _, edge_candidate in ipairs(edge_resource_candidates) do
+        local resource = edge_candidate.resource
+        local resource_key = get_resource_position_key(resource)
+        if not seen_resources[resource_key] then
+          seen_resources[resource_key] = true
+          fallback_considered = fallback_considered + 1
+          summary.resources_considered = summary.resources_considered + 1
+
+          local build_position,
+            build_direction,
+            output_container_position,
+            downstream_machine_position,
+            belt_layout_placements,
+            belt_hub_position,
+            belt_hub_key,
+            belt_terminal_position,
+            placement_stats =
+            find_miner_placement(surface, force, task, resource.position, edge_candidate.patch, ctx)
+
+          merge_resource_site_search_summary(summary, placement_stats)
+
+          local site_candidate = build_resource_site_candidate(
+            resource,
+            build_position,
+            build_direction,
+            output_container_position,
+            downstream_machine_position,
+            belt_layout_placements,
+            belt_hub_position,
+            belt_hub_key,
+            belt_terminal_position,
+            placement_stats,
+            origin,
+            ctx
+          )
+          if site_candidate then
+            fallback_site_candidates[#fallback_site_candidates + 1] = site_candidate
+          end
+
+          if task.max_resource_candidates_per_radius and fallback_considered >= task.max_resource_candidates_per_radius then
+            break
+          end
+        end
+      end
+
+      selected_candidate, pool_size = select_preferred_resource_site_candidate(
+        fallback_site_candidates,
+        site_selection,
+        origin,
+        ctx
+      )
+
+      if selected_candidate then
+        summary.selected_candidate_pool_size = pool_size
+        selected_candidate.summary = summary
+        return selected_candidate
+      end
     end
   end
 

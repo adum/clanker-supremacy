@@ -219,6 +219,7 @@ run_case "solar_panel_factory_physical_feed" "setup_solar_panel_factory_test_cas
 run_case "scaling_collect_switches_site" "setup_scaling_collect_switches_site_test_case" "34205"
 run_case "assembler_output_collection_limits" "setup_assembler_output_collection_limits_test_case" "34209"
 run_case "wait_patrol_avoids_close_reposition" "setup_wait_patrol_avoids_close_reposition_test_case" "34210"
+run_case "copper_smelting_large_patch_open_half" "setup_copper_smelting_large_patch_open_half_test_case" "34211"
 run_case "scaling_early_expansion_over_coal_reserve" "setup_scaling_early_expansion_over_coal_reserve_test_case" "34207"
 run_case "scaling_builds_before_coal_reserve" "setup_scaling_builds_before_coal_reserve_test_case" "34208"
 run_case "steel_smelting_physical_feed_north" "setup_steel_smelting_test_case" "34201" "north"

@@ -364,7 +364,9 @@ local function start_place_output_belt_line_task(builder_state, task, tick, ctx)
       (summary.valid_belt_paths or 0) .. " valid belt paths, " ..
       (summary.failed_belt_paths or 0) .. " failed belt paths, " ..
       (summary.failed_inserter_geometry or 0) .. " inserter-geometry failures, " ..
-      (summary.resource_overlap_rejections or 0) .. " resource-overlap rejections; retry at tick " ..
+      (summary.resource_overlap_rejections or 0) .. " resource-overlap rejections" ..
+      (summary.failed_belt_path_detail and ("; first belt blocker: " .. summary.failed_belt_path_detail) or "") ..
+      "; retry at tick " ..
       builder_state.task_state.next_attempt_tick
     )
     return

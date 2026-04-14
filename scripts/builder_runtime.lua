@@ -3115,6 +3115,120 @@ local function setup_wait_patrol_avoids_close_reposition_test_case()
   }
 end
 
+local function setup_copper_smelting_large_patch_open_half_test_case()
+  local surface = game.surfaces["nauvis"] or game.surfaces[1]
+  if not surface then
+    error("enemy-builder test: nauvis surface is unavailable")
+  end
+
+  local builder_position = {x = 40, y = 0}
+  local patch_center = {x = 64, y = 0}
+  local area = make_test_area(patch_center, 28, 20)
+
+  surface.always_day = true
+  clear_test_area(surface, area)
+  create_test_resource_patch(surface, "copper-ore", patch_center, 12, 5000)
+
+  return setup_scaling_test{
+    case_name = "copper_smelting_large_patch_open_half",
+    builder_position = builder_position,
+    surface_name = surface.name,
+    suppress_player_autospawn = true,
+    disable_nearby_machine_output_collection = true,
+    mutate_builder_state = function(builder_state, test_surface)
+      local copper_task = builder_data.site_patterns and builder_data.site_patterns.copper_smelting and
+        builder_data.site_patterns.copper_smelting.build_task or nil
+      if not copper_task then
+        error("enemy-builder test: missing copper_smelting build task")
+      end
+
+      local force = builder_state.entity.force
+      for x = patch_center.x - 10, patch_center.x + 2, 2 do
+        for y = patch_center.y - 10, patch_center.y + 10, 2 do
+          local blocker = test_surface.create_entity{
+            name = "stone-furnace",
+            position = {x = x, y = y},
+            force = force,
+            create_build_effect_smoke = false
+          }
+
+          if not (blocker and blocker.valid) then
+            error(
+              "enemy-builder test: failed to create blocker furnace at " ..
+              format_position({x = x, y = y})
+            )
+          end
+        end
+      end
+
+      local site, summary = find_resource_site(test_surface, force, builder_position, copper_task)
+      if not site then
+        error(
+          "enemy-builder test: expected copper smelting site on open half; " ..
+          "checked " .. (summary and summary.resources_considered or 0) .. " resource anchors"
+        )
+      end
+
+      if site.build_position.x <= (patch_center.x + 2) then
+        error(
+          "enemy-builder test: expected open-half copper site beyond x=" .. (patch_center.x + 2) ..
+          ", got " .. format_position(site.build_position)
+        )
+      end
+
+      local miner = test_surface.create_entity{
+        name = copper_task.miner_name,
+        position = site.build_position,
+        direction = site.build_direction,
+        force = force,
+        create_build_effect_smoke = false
+      }
+      if not (miner and miner.valid) then
+        error("enemy-builder test: failed to create copper miner for open-half search case")
+      end
+
+      local furnace = test_surface.create_entity{
+        name = copper_task.downstream_machine.name,
+        position = site.downstream_machine_position,
+        force = force,
+        create_build_effect_smoke = false
+      }
+      if not (furnace and furnace.valid) then
+        miner.destroy()
+        error("enemy-builder test: failed to create copper furnace for open-half search case")
+      end
+
+      if not point_in_area(miner.drop_position, furnace.selection_box) then
+        miner.destroy()
+        furnace.destroy()
+        error(
+          "enemy-builder test: selected copper furnace does not cover miner drop position at " ..
+          format_position(miner.drop_position)
+        )
+      end
+
+      register_smelting_site(copper_task, miner, furnace, nil)
+      register_resource_site(copper_task, miner, furnace, nil)
+
+      builder_state.task_state = {
+        phase = "scaling-waiting",
+        wait_reason = "test-idle",
+        next_attempt_tick = game.tick + 3600
+      }
+    end,
+    assertion = {
+      case_name = "copper_smelting_large_patch_open_half",
+      surface_name = surface.name,
+      area = area,
+      deadline_offset_ticks = 1,
+      skip_output_assertion = true,
+      minimum_resource_site_counts = {
+        copper_smelting = 1
+      }
+    }
+  }
+end
+
 local function finish_manual_test()
   if storage.enemy_builder_test then
     storage.enemy_builder_test.finished = true
@@ -3844,6 +3958,7 @@ local test_remote_interface = {
   setup_scaling_builds_before_coal_reserve_test_case = setup_scaling_builds_before_coal_reserve_test_case,
   setup_assembler_output_collection_limits_test_case = setup_assembler_output_collection_limits_test_case,
   setup_wait_patrol_avoids_close_reposition_test_case = setup_wait_patrol_avoids_close_reposition_test_case,
+  setup_copper_smelting_large_patch_open_half_test_case = setup_copper_smelting_large_patch_open_half_test_case,
   setup_steel_smelting_test_case = setup_steel_smelting_test_case,
   setup_full_run_layout_snapshot_case = setup_full_run_layout_snapshot_case,
   get_entry_timing_settings = entry_timing.get_settings,
