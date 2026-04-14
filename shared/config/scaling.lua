@@ -62,17 +62,17 @@ return {
     },
     iron_plate_belt_export = {
       minimum_site_counts = {
-        iron_smelting = 5
+        iron_smelting = 10
       }
     },
     steel_plate_belt_export = {
       minimum_site_counts = {
-        steel_smelting = 3
+        steel_smelting = 6
       }
     },
     copper_plate_belt_export = {
       minimum_site_counts = {
-        copper_smelting = 5
+        copper_smelting = 10
       }
     },
     firearm_magazine_outpost = {

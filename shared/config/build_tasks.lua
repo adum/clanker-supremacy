@@ -15,6 +15,7 @@ local function make_fresh_output_belt_task(pattern_name, resource_name, output_i
     defer_downstream_planning = true,
     defer_output_belt_planning = true,
     abandon_partial_site_on_failure = true,
+    minimum_resource_amount = 200,
     search_radii = {64, 128, 256, 512},
     max_resource_candidates_per_radius = 4,
     search_retry_ticks = 5 * 60,

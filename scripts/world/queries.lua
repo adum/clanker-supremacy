@@ -867,6 +867,16 @@ local function get_mining_area_patch_margin(mining_area, patch)
   )
 end
 
+local function get_total_resource_amount(resources)
+  local total_amount = 0
+
+  for _, resource in ipairs(resources or {}) do
+    total_amount = total_amount + (resource.amount or 0)
+  end
+
+  return total_amount
+end
+
 local function find_first_miner_placement(surface, force, task, resource, patch, ctx)
   local stats = {
     positions_checked = 0,
@@ -875,6 +885,9 @@ local function find_first_miner_placement(surface, force, task, resource, patch,
     mining_area_hits = 0,
     valid_candidates = 0,
     best_resource_coverage = 0,
+    best_resource_amount = 0,
+    selected_resource_coverage = 0,
+    selected_resource_amount = 0,
     best_patch_margin = 0,
     selected_patch_margin = 0,
     selected_candidate_pool_size = 0,
@@ -887,8 +900,10 @@ local function find_first_miner_placement(surface, force, task, resource, patch,
     valid_belt_paths = 0,
     failed_belt_paths = 0,
     failed_inserter_geometry = 0,
-    resource_overlap_rejections = 0
+    resource_overlap_rejections = 0,
+    low_resource_amount_rejections = 0
   }
+  local minimum_resource_amount = task.minimum_resource_amount or 0
 
   for _, position in ipairs(ctx.build_search_positions(resource.position, task.placement_search_radius, task.placement_step)) do
     for _, direction_name in ipairs(task.placement_directions) do
@@ -922,24 +937,35 @@ local function find_first_miner_placement(surface, force, task, resource, patch,
               name = task.resource_name
             }
             local resource_coverage = #covered_resources
+            local resource_amount = get_total_resource_amount(covered_resources)
             local patch_margin = get_mining_area_patch_margin(test_miner.mining_area, patch)
 
             if resource_coverage > 0 then
               stats.mining_area_hits = stats.mining_area_hits + 1
-              stats.valid_candidates = 1
-              stats.best_resource_coverage = resource_coverage
-              stats.best_patch_margin = patch_margin
-              stats.selected_patch_margin = patch_margin
-              stats.selected_candidate_pool_size = 1
-              test_miner.destroy()
-              return {
-                build_position = {
-                  x = position.x,
-                  y = position.y
-                },
-                build_direction = direction,
-                resource_coverage = resource_coverage
-              }, stats
+              if resource_coverage > stats.best_resource_coverage then
+                stats.best_resource_coverage = resource_coverage
+              end
+              if resource_amount > stats.best_resource_amount then
+                stats.best_resource_amount = resource_amount
+              end
+              if resource_amount >= minimum_resource_amount then
+                stats.valid_candidates = 1
+                stats.best_patch_margin = patch_margin
+                stats.selected_patch_margin = patch_margin
+                stats.selected_candidate_pool_size = 1
+                test_miner.destroy()
+                return {
+                  build_position = {
+                    x = position.x,
+                    y = position.y
+                  },
+                  build_direction = direction,
+                  resource_coverage = resource_coverage,
+                  resource_amount = resource_amount
+                }, stats
+              end
+
+              stats.low_resource_amount_rejections = stats.low_resource_amount_rejections + 1
             end
           end
 
@@ -1399,6 +1425,9 @@ local function find_miner_placement(surface, force, task, resource_position, pat
     mining_area_hits = 0,
     valid_candidates = 0,
     best_resource_coverage = 0,
+    best_resource_amount = 0,
+    selected_resource_coverage = 0,
+    selected_resource_amount = 0,
     best_patch_margin = 0,
     selected_patch_margin = 0,
     selected_candidate_pool_size = 0,
@@ -1412,11 +1441,13 @@ local function find_miner_placement(surface, force, task, resource_position, pat
     failed_belt_paths = 0,
     failed_inserter_geometry = 0,
     resource_overlap_rejections = 0,
+    low_resource_amount_rejections = 0,
     valid_candidate_limit = valid_candidate_limit,
     valid_candidate_limit_reached = false
   }
   local valid_candidates = {}
   local stop_search = false
+  local minimum_resource_amount = task.minimum_resource_amount or 0
 
   for _, position in ipairs(ctx.build_search_positions(resource_position, task.placement_search_radius, task.placement_step)) do
     for _, direction_name in ipairs(task.placement_directions) do
@@ -1447,8 +1478,9 @@ local function find_miner_placement(surface, force, task, resource_position, pat
             name = task.resource_name
           }
           local resource_coverage = #covered_resources
+          local resource_amount = get_total_resource_amount(covered_resources)
           local patch_margin = get_mining_area_patch_margin(test_miner.mining_area, patch)
-          local mines_resource = resource_coverage > 0
+          local mines_resource = resource_coverage > 0 and resource_amount >= minimum_resource_amount
           local downstream_machine_position = nil
           local output_container_position = nil
           local has_output_container_spot = true
@@ -1458,15 +1490,24 @@ local function find_miner_placement(surface, force, task, resource_position, pat
           local belt_terminal_position = nil
           local has_output_belt_layout = true
 
-          if mines_resource then
+          if resource_coverage > 0 then
             stats.mining_area_hits = stats.mining_area_hits + 1
             if resource_coverage > stats.best_resource_coverage then
               stats.best_resource_coverage = resource_coverage
             end
+            if resource_amount > stats.best_resource_amount then
+              stats.best_resource_amount = resource_amount
+            end
             if patch_margin > stats.best_patch_margin then
               stats.best_patch_margin = patch_margin
             end
+          end
 
+          if resource_coverage > 0 and resource_amount < minimum_resource_amount then
+            stats.low_resource_amount_rejections = stats.low_resource_amount_rejections + 1
+          end
+
+          if mines_resource then
             if task.downstream_machine then
               local downstream_stats
               downstream_machine_position, output_container_position, downstream_stats =
@@ -1522,6 +1563,7 @@ local function find_miner_placement(surface, force, task, resource_position, pat
               belt_hub_key = belt_hub_key,
               belt_terminal_position = belt_terminal_position and ctx.clone_position(belt_terminal_position) or nil,
               resource_coverage = resource_coverage,
+              resource_amount = resource_amount,
               patch_margin = patch_margin,
               search_weight = position.weight,
               direction_name = direction_name
@@ -1575,6 +1617,8 @@ local function find_miner_placement(surface, force, task, resource_position, pat
 
   if selected_candidate then
     stats.selected_candidate_pool_size = pool_size
+    stats.selected_resource_coverage = selected_candidate.resource_coverage or 0
+    stats.selected_resource_amount = selected_candidate.resource_amount or 0
     stats.selected_patch_margin = selected_candidate.patch_margin
     return selected_candidate.build_position,
       selected_candidate.build_direction,
@@ -1602,6 +1646,7 @@ local function find_edge_resource_site(surface, force, origin, task, ctx)
     mining_area_hits = 0,
     valid_candidates = 0,
     best_resource_coverage = 0,
+    best_resource_amount = 0,
     selected_candidate_pool_size = 0,
     output_container_hits = 0,
     downstream_positions_checked = 0,
@@ -1613,6 +1658,7 @@ local function find_edge_resource_site(surface, force, origin, task, ctx)
     failed_belt_paths = 0,
     failed_inserter_geometry = 0,
     resource_overlap_rejections = 0,
+    low_resource_amount_rejections = 0,
     resource_entities_found = 0,
     resource_entities_selected = 0,
     resource_entities_truncated = false
@@ -1659,6 +1705,11 @@ local function find_edge_resource_site(surface, force, origin, task, ctx)
           if placement_stats.best_resource_coverage > summary.best_resource_coverage then
             summary.best_resource_coverage = placement_stats.best_resource_coverage
           end
+          if placement_stats.best_resource_amount > summary.best_resource_amount then
+            summary.best_resource_amount = placement_stats.best_resource_amount
+          end
+          summary.low_resource_amount_rejections = summary.low_resource_amount_rejections +
+            (placement_stats.low_resource_amount_rejections or 0)
           summary.selected_candidate_pool_size = placement_stats.selected_candidate_pool_size or
             summary.selected_candidate_pool_size
 
@@ -1669,6 +1720,7 @@ local function find_edge_resource_site(surface, force, origin, task, ctx)
               build_position = site.build_position,
               build_direction = site.build_direction,
               resource_coverage = site.resource_coverage,
+              resource_amount = site.resource_amount,
               selected_from_patch_center = false,
               summary = summary
             }, summary
@@ -1705,6 +1757,7 @@ function queries.find_resource_site(surface, force, origin, task, ctx)
     mining_area_hits = 0,
     valid_candidates = 0,
     best_resource_coverage = 0,
+    best_resource_amount = 0,
     selected_candidate_pool_size = 0,
     output_container_hits = 0,
     downstream_positions_checked = 0,
@@ -1716,6 +1769,7 @@ function queries.find_resource_site(surface, force, origin, task, ctx)
     failed_belt_paths = 0,
     failed_inserter_geometry = 0,
     resource_overlap_rejections = 0,
+    low_resource_amount_rejections = 0,
     resource_entities_found = 0,
     resource_entities_selected = 0,
     resource_entities_truncated = false
@@ -1769,6 +1823,9 @@ function queries.find_resource_site(surface, force, origin, task, ctx)
         if placement_stats.best_resource_coverage > summary.best_resource_coverage then
           summary.best_resource_coverage = placement_stats.best_resource_coverage
         end
+        if placement_stats.best_resource_amount > summary.best_resource_amount then
+          summary.best_resource_amount = placement_stats.best_resource_amount
+        end
         summary.output_container_hits = summary.output_container_hits + placement_stats.output_container_hits
         summary.downstream_positions_checked = summary.downstream_positions_checked + placement_stats.downstream_positions_checked
         summary.downstream_placeable_positions = summary.downstream_placeable_positions + placement_stats.downstream_placeable_positions
@@ -1779,6 +1836,8 @@ function queries.find_resource_site(surface, force, origin, task, ctx)
         summary.failed_belt_paths = summary.failed_belt_paths + (placement_stats.failed_belt_paths or 0)
         summary.failed_inserter_geometry = summary.failed_inserter_geometry + (placement_stats.failed_inserter_geometry or 0)
         summary.resource_overlap_rejections = summary.resource_overlap_rejections + (placement_stats.resource_overlap_rejections or 0)
+        summary.low_resource_amount_rejections = summary.low_resource_amount_rejections +
+          (placement_stats.low_resource_amount_rejections or 0)
 
         if build_position then
           summary.selected_candidate_pool_size = placement_stats.selected_candidate_pool_size
@@ -1793,7 +1852,8 @@ function queries.find_resource_site(surface, force, origin, task, ctx)
             belt_hub_position = belt_hub_position,
             belt_hub_key = belt_hub_key,
             belt_terminal_position = belt_terminal_position,
-            resource_coverage = placement_stats.best_resource_coverage,
+            resource_coverage = placement_stats.selected_resource_coverage or placement_stats.best_resource_coverage,
+            resource_amount = placement_stats.selected_resource_amount or placement_stats.best_resource_amount,
             selected_from_patch_center = true,
             summary = summary
           }
@@ -1840,6 +1900,9 @@ function queries.find_resource_site(surface, force, origin, task, ctx)
         if placement_stats.best_resource_coverage > summary.best_resource_coverage then
           summary.best_resource_coverage = placement_stats.best_resource_coverage
         end
+        if placement_stats.best_resource_amount > summary.best_resource_amount then
+          summary.best_resource_amount = placement_stats.best_resource_amount
+        end
         summary.output_container_hits = summary.output_container_hits + placement_stats.output_container_hits
         summary.downstream_positions_checked = summary.downstream_positions_checked + placement_stats.downstream_positions_checked
         summary.downstream_placeable_positions = summary.downstream_placeable_positions + placement_stats.downstream_placeable_positions
@@ -1850,6 +1913,8 @@ function queries.find_resource_site(surface, force, origin, task, ctx)
         summary.failed_belt_paths = summary.failed_belt_paths + (placement_stats.failed_belt_paths or 0)
         summary.failed_inserter_geometry = summary.failed_inserter_geometry + (placement_stats.failed_inserter_geometry or 0)
         summary.resource_overlap_rejections = summary.resource_overlap_rejections + (placement_stats.resource_overlap_rejections or 0)
+        summary.low_resource_amount_rejections = summary.low_resource_amount_rejections +
+          (placement_stats.low_resource_amount_rejections or 0)
 
         if build_position then
           site_candidates[#site_candidates + 1] = {
@@ -1862,7 +1927,8 @@ function queries.find_resource_site(surface, force, origin, task, ctx)
             belt_hub_position = belt_hub_position,
             belt_hub_key = belt_hub_key,
             belt_terminal_position = belt_terminal_position,
-            resource_coverage = placement_stats.best_resource_coverage,
+            resource_coverage = placement_stats.selected_resource_coverage or placement_stats.best_resource_coverage,
+            resource_amount = placement_stats.selected_resource_amount or placement_stats.best_resource_amount,
             patch_margin = placement_stats.selected_patch_margin or placement_stats.best_patch_margin or 0,
             resource_distance = ctx.square_distance(origin, build_position)
           }

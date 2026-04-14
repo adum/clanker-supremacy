@@ -49,7 +49,9 @@ local function start_place_miner_task(builder_state, task, tick, ctx)
       search_summary.placeable_positions .. " placeable spots, " ..
       search_summary.test_miners_created .. " probe drills, " ..
       search_summary.mining_area_hits .. " mining-area hits, " ..
-      search_summary.valid_candidates .. " valid sites, best coverage " .. search_summary.best_resource_coverage .. ", " ..
+      search_summary.valid_candidates .. " valid sites, best coverage " .. search_summary.best_resource_coverage ..
+      ", best amount " .. tostring(search_summary.best_resource_amount or 0) ..
+      ", " .. tostring(search_summary.low_resource_amount_rejections or 0) .. " low-amount rejections, " ..
       search_summary.downstream_anchor_hits .. " downstream-machine hits, " ..
       search_summary.output_container_hits .. " output-container hits, " ..
       (search_summary.terminal_positions_found or 0) .. " terminal positions, " ..
@@ -94,6 +96,7 @@ local function start_place_miner_task(builder_state, task, tick, ctx)
     " after checking " .. site.summary.resources_considered ..
     " resource tiles and " .. tostring(site.summary.patch_centers_considered or 0) .. " patch centers; chose coverage " ..
     tostring(site.resource_coverage or site.summary.best_resource_coverage or 0) ..
+    " / amount " .. tostring(site.resource_amount or site.summary.best_resource_amount or 0) ..
     " from " .. tostring(site.summary.selected_candidate_pool_size or 1) ..
     " preferred candidates; moving toward " .. ctx.format_position(build_position) ..
     (downstream_machine_position and " with " .. task.downstream_machine.name .. " at " .. ctx.format_position(downstream_machine_position) or "") ..
