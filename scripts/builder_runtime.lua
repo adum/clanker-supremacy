@@ -4890,7 +4890,7 @@ maintenance_pass_context = {
 
 maintenance_passes = default_maintenance_passes.build(maintenance_pass_context)
 
-local function advance_builder(builder_state, tick)
+function advance_builder(builder_state, tick)
   configure_builder_entity(builder_state.entity)
   process_production_sites(tick)
 
@@ -4910,7 +4910,7 @@ local function advance_builder(builder_state, tick)
   goal_engine.advance(builder_data, builder_state, tick, goal_engine_adapters)
 end
 
-local function on_init()
+function on_init()
   ensure_debug_settings()
   ensure_production_sites()
   ensure_resource_sites()
@@ -4936,7 +4936,7 @@ local function on_init()
   update_builder_map_markers(get_builder_state(), game.tick, true)
 end
 
-local function on_configuration_changed()
+function on_configuration_changed()
   ensure_debug_settings()
   ensure_production_sites()
   ensure_resource_sites()
@@ -4966,7 +4966,7 @@ local function on_configuration_changed()
   update_builder_map_markers(get_builder_state(), game.tick, true)
 end
 
-local function on_player_created(event)
+function on_player_created(event)
   local player = game.get_player(event.player_index)
   if player then
     debug_log("on_player_created: player " .. player.name)
@@ -4981,7 +4981,7 @@ local function on_player_created(event)
   end
 end
 
-local function on_tick(event)
+function on_tick(event)
   local builder_state = get_builder_state()
   if not builder_state and not autospawn_suppressed_for_test() then
     local player = get_first_valid_player()
