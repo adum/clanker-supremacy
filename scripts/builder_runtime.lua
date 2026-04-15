@@ -2329,7 +2329,8 @@ local function setup_manual_test(spec)
     case_name = spec.case_name or "manual-test",
     suppress_player_autospawn = spec.suppress_player_autospawn ~= false,
     forbid_direct_turret_ammo_transfer = spec.forbid_direct_turret_ammo_transfer == true,
-    disable_nearby_machine_output_collection = spec.disable_nearby_machine_output_collection == true
+    disable_nearby_machine_output_collection = spec.disable_nearby_machine_output_collection == true,
+    disable_nearby_machine_input_supply = spec.disable_nearby_machine_input_supply == true
   }
 
   if spec.assertion then
@@ -2437,7 +2438,8 @@ local function setup_scaling_test(spec)
     case_name = spec.case_name or "scaling-test",
     suppress_player_autospawn = spec.suppress_player_autospawn ~= false,
     forbid_direct_turret_ammo_transfer = spec.forbid_direct_turret_ammo_transfer == true,
-    disable_nearby_machine_output_collection = spec.disable_nearby_machine_output_collection == true
+    disable_nearby_machine_output_collection = spec.disable_nearby_machine_output_collection == true,
+    disable_nearby_machine_input_supply = spec.disable_nearby_machine_input_supply == true
   }
 
   if spec.assertion then
@@ -3141,6 +3143,7 @@ local function setup_solar_panel_factory_missing_sources_reports_blocker_test_ca
     surface_name = surface.name,
     suppress_player_autospawn = true,
     disable_nearby_machine_output_collection = true,
+    disable_nearby_machine_input_supply = true,
     inventory = {
       {name = "assembling-machine-1", count = 3},
       {name = "burner-inserter", count = 10},

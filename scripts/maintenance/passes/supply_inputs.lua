@@ -15,6 +15,11 @@ local function is_belt_fed_assembly_block_assembler(entity)
 end
 
 function pass.run(builder_state, tick, ctx)
+  local test_state = storage.enemy_builder_test
+  if test_state and test_state.disable_nearby_machine_input_supply == true then
+    return {}
+  end
+
   local supply_settings = ctx.builder_data.logistics and ctx.builder_data.logistics.nearby_machine_input_supply
   if not supply_settings then
     return {}
