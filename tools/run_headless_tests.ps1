@@ -433,6 +433,8 @@ $allCases = @(
   [pscustomobject]@{ Name = "firearm_outpost_anchor_clearance"; RemoteSetupName = "setup_firearm_outpost_anchored_test_case"; ServerPort = 34198; RemoteSetupArg = $null },
   [pscustomobject]@{ Name = "tree_blocked_machine_placement"; RemoteSetupName = "setup_tree_blocked_assembler_test_case"; ServerPort = 34199; RemoteSetupArg = $null },
   [pscustomobject]@{ Name = "iron_plate_belt_export_physical_feed"; RemoteSetupName = "setup_iron_plate_belt_export_test_case"; ServerPort = 34200; RemoteSetupArg = $null },
+  [pscustomobject]@{ Name = "iron_plate_belt_export_ignores_ground_items"; RemoteSetupName = "setup_iron_plate_belt_export_ground_items_test_case"; ServerPort = 34217; RemoteSetupArg = $null },
+  [pscustomobject]@{ Name = "copper_plate_belt_export_ignores_ground_items"; RemoteSetupName = "setup_copper_plate_belt_export_ground_items_test_case"; ServerPort = 34218; RemoteSetupArg = $null },
   [pscustomobject]@{ Name = "solar_panel_factory_physical_feed"; RemoteSetupName = "setup_solar_panel_factory_test_case"; ServerPort = 34206; RemoteSetupArg = $null; TimeoutSecs = 600 },
   [pscustomobject]@{ Name = "solar_panel_factory_missing_sources_reports_blocker"; RemoteSetupName = "setup_solar_panel_factory_missing_sources_reports_blocker_test_case"; ServerPort = 34215; RemoteSetupArg = $null },
   [pscustomobject]@{ Name = "scaling_collect_switches_site"; RemoteSetupName = "setup_scaling_collect_switches_site_test_case"; ServerPort = 34205; RemoteSetupArg = $null },

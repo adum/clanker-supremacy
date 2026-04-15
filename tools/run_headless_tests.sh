@@ -279,6 +279,8 @@ run_case "pause_mode_manual_goal" "setup_pause_mode_manual_goal_test_case" "3421
 run_case "firearm_outpost_anchor_clearance" "setup_firearm_outpost_anchored_test_case" "34198"
 run_case "tree_blocked_machine_placement" "setup_tree_blocked_assembler_test_case" "34199"
 run_case "iron_plate_belt_export_physical_feed" "setup_iron_plate_belt_export_test_case" "34200"
+run_case "iron_plate_belt_export_ignores_ground_items" "setup_iron_plate_belt_export_ground_items_test_case" "34217"
+run_case "copper_plate_belt_export_ignores_ground_items" "setup_copper_plate_belt_export_ground_items_test_case" "34218"
 run_case "output_belts_can_overlap_resources" "setup_output_belts_can_overlap_resources_test_case" "34216"
 run_case "solar_panel_factory_physical_feed" "setup_solar_panel_factory_test_case" "34206" "" "600"
 run_case "solar_panel_factory_missing_sources_reports_blocker" "setup_solar_panel_factory_missing_sources_reports_blocker_test_case" "34215"

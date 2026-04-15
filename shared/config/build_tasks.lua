@@ -70,7 +70,8 @@ local function make_fresh_output_belt_task(pattern_name, resource_name, output_i
     },
     belt_terminal_search_radius = 3,
     belt_terminal_search_step = 1,
-    forbid_resource_overlap = true
+    forbid_resource_overlap = true,
+    clear_ground_item_blockers = true
   }
 end
 
@@ -402,7 +403,8 @@ local function make_retrofit_output_belt_task(pattern_name, anchor_pattern_names
     },
     belt_terminal_search_radius = 3,
     belt_terminal_search_step = 1,
-    forbid_resource_overlap = true
+    forbid_resource_overlap = true,
+    clear_ground_item_blockers = true
   }
 end
 

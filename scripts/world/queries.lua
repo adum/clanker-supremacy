@@ -48,6 +48,93 @@ local function find_nearby_output_container_position(surface, anchor_entity, con
   return nil
 end
 
+local function build_entity_placement_area(entity_name, position)
+  local prototype = prototypes and prototypes.entity and entity_name and prototypes.entity[entity_name] or nil
+  local collision_box = prototype and (prototype.collision_box or prototype.selection_box) or nil
+
+  if not collision_box then
+    return {
+      left_top = {x = position.x - 0.5, y = position.y - 0.5},
+      right_bottom = {x = position.x + 0.5, y = position.y + 0.5}
+    }
+  end
+
+  return {
+    left_top = {
+      x = position.x + collision_box.left_top.x,
+      y = position.y + collision_box.left_top.y
+    },
+    right_bottom = {
+      x = position.x + collision_box.right_bottom.x,
+      y = position.y + collision_box.right_bottom.y
+    }
+  }
+end
+
+local function expand_bounding_box(area, padding)
+  return {
+    left_top = {
+      x = area.left_top.x - padding,
+      y = area.left_top.y - padding
+    },
+    right_bottom = {
+      x = area.right_bottom.x + padding,
+      y = area.right_bottom.y + padding
+    }
+  }
+end
+
+local function clear_ground_item_blockers(surface, entity_name, position, task, summary)
+  if not (surface and entity_name and position and task and task.clear_ground_item_blockers) then
+    return false
+  end
+
+  local search_area = expand_bounding_box(build_entity_placement_area(entity_name, position), 0.05)
+  local blockers = surface.find_entities_filtered{
+    area = {
+      {search_area.left_top.x, search_area.left_top.y},
+      {search_area.right_bottom.x, search_area.right_bottom.y}
+    },
+    type = "item-entity"
+  }
+  local cleared_count = 0
+
+  for _, blocker in ipairs(blockers) do
+    if blocker and blocker.valid then
+      blocker.destroy()
+      cleared_count = cleared_count + 1
+    end
+  end
+
+  if cleared_count > 0 and summary then
+    summary.ground_item_blockers_cleared = (summary.ground_item_blockers_cleared or 0) + cleared_count
+  end
+
+  return cleared_count > 0
+end
+
+local function can_place_entity_with_ground_item_clearance(surface, force, entity_name, position, direction, task, summary)
+  local placement = {
+    name = entity_name,
+    position = position,
+    force = force
+  }
+
+  if direction ~= nil then
+    placement.direction = direction
+  end
+
+  if surface.can_place_entity(placement) then
+    return true
+  end
+
+  if clear_ground_item_blockers(surface, entity_name, position, task, summary) then
+    return surface.can_place_entity(placement)
+  end
+
+  return false
+end
+
 local function find_downstream_machine_placement(surface, force, task, drop_position, ctx)
   local downstream_machine = task.downstream_machine
   local stats = {
@@ -65,11 +152,7 @@ local function find_downstream_machine_placement(surface, force, task, drop_posi
   )) do
     stats.positions_checked = stats.positions_checked + 1
 
-    if surface.can_place_entity{
-      name = downstream_machine.name,
-      position = position,
-      force = force
-    } then
+    if can_place_entity_with_ground_item_clearance(surface, force, downstream_machine.name, position, nil, task, stats) then
       stats.placeable_positions = stats.placeable_positions + 1
       local test_machine = surface.create_entity{
         name = downstream_machine.name,
@@ -265,7 +348,7 @@ local function should_retry_cleared_anchor_blocks(builder_state, task, summary, 
   return true
 end
 
-local function find_entity_placement_near_anchor(surface, force, entity_name, anchor_position, search_radius, step, directions, placement_validator, ctx)
+local function find_entity_placement_near_anchor(surface, force, entity_name, anchor_position, search_radius, step, directions, placement_validator, ctx, placement_task)
   local stats = {
     positions_checked = 0,
     placeable_positions = 0
@@ -276,12 +359,7 @@ local function find_entity_placement_near_anchor(surface, force, entity_name, an
       for _, direction in ipairs(directions) do
         stats.positions_checked = stats.positions_checked + 1
 
-        if surface.can_place_entity{
-          name = entity_name,
-          position = position,
-          direction = direction,
-          force = force
-        } then
+        if can_place_entity_with_ground_item_clearance(surface, force, entity_name, position, direction, placement_task, stats) then
           stats.placeable_positions = stats.placeable_positions + 1
           if not placement_validator or placement_validator(position, direction) then
             return ctx.clone_position(position), direction, stats
@@ -290,11 +368,7 @@ local function find_entity_placement_near_anchor(surface, force, entity_name, an
       end
     else
       stats.positions_checked = stats.positions_checked + 1
-      if surface.can_place_entity{
-        name = entity_name,
-        position = position,
-        force = force
-      } then
+      if can_place_entity_with_ground_item_clearance(surface, force, entity_name, position, nil, placement_task, stats) then
         stats.placeable_positions = stats.placeable_positions + 1
         if not placement_validator or placement_validator(position, nil) then
           return ctx.clone_position(position), nil, stats
@@ -953,7 +1027,8 @@ local function find_first_miner_placement(surface, force, task, resource, patch,
     failed_belt_paths = 0,
     failed_inserter_geometry = 0,
     resource_overlap_rejections = 0,
-    low_resource_amount_rejections = 0
+    low_resource_amount_rejections = 0,
+    ground_item_blockers_cleared = 0
   }
   local minimum_resource_amount = task.minimum_resource_amount or 0
 
@@ -962,12 +1037,7 @@ local function find_first_miner_placement(surface, force, task, resource, patch,
       local direction = ctx.direction_by_name[direction_name]
       stats.positions_checked = stats.positions_checked + 1
 
-      if surface.can_place_entity{
-        name = task.miner_name,
-        position = position,
-        direction = direction,
-        force = force
-      } then
+      if can_place_entity_with_ground_item_clearance(surface, force, task.miner_name, position, direction, task, stats) then
         stats.placeable_positions = stats.placeable_positions + 1
         local test_miner = surface.create_entity{
           name = task.miner_name,
@@ -1224,7 +1294,8 @@ find_or_create_belt_hub_position = function(surface, force, patch, task, summary
 
         return true
       end,
-      ctx
+      ctx,
+      task
     )
     update_summary_with_placement_stats(summary, placement_stats)
 
@@ -1324,12 +1395,7 @@ local function build_belt_path_placements(surface, force, first_position, termin
 
       summary.positions_checked = summary.positions_checked + 1
 
-      if not surface.can_place_entity{
-        name = task.belt_entity_name,
-        position = position,
-        direction = direction,
-        force = force
-      } then
+      if not can_place_entity_with_ground_item_clearance(surface, force, task.belt_entity_name, position, direction, task, summary) then
         local occupant_names = collect_blocking_occupant_names(surface, position, ctx)
         record_failed_belt_path_detail(
           summary,
@@ -1375,14 +1441,20 @@ local function build_belt_path_placements(surface, force, first_position, termin
 end
 
 local function validate_output_inserter_geometry(surface, force, output_machine, inserter_position, inserter_direction, first_belt_placement, task, ctx)
-  if not surface.can_place_entity{
-    name = task.output_inserter.entity_name,
-    position = inserter_position,
-    direction = inserter_direction,
-    force = force
-  } then
+  if not can_place_entity_with_ground_item_clearance(
+      surface,
+      force,
+      task.output_inserter.entity_name,
+      inserter_position,
+      inserter_direction,
+      task
+    )
+  then
     return false
   end
+
+  clear_ground_item_blockers(surface, first_belt_placement.entity_name, first_belt_placement.build_position, task)
+  clear_ground_item_blockers(surface, task.output_inserter.entity_name, inserter_position, task)
 
   local probe_belt = surface.create_entity{
     name = first_belt_placement.entity_name,
@@ -1451,7 +1523,8 @@ build_output_belt_layout_for_anchor = function(surface, force, output_machine, h
 
           return true
         end,
-        ctx
+        ctx,
+        task
       )
       update_summary_with_placement_stats(summary, placement_stats)
 
@@ -1537,6 +1610,7 @@ local function find_miner_placement(surface, force, task, resource_position, pat
     failed_inserter_geometry = 0,
     resource_overlap_rejections = 0,
     low_resource_amount_rejections = 0,
+    ground_item_blockers_cleared = 0,
     valid_candidate_limit = valid_candidate_limit,
     valid_candidate_limit_reached = false
   }
@@ -1549,12 +1623,7 @@ local function find_miner_placement(surface, force, task, resource_position, pat
       local direction = ctx.direction_by_name[direction_name]
       stats.positions_checked = stats.positions_checked + 1
 
-      if surface.can_place_entity{
-        name = task.miner_name,
-        position = position,
-        direction = direction,
-        force = force
-      } then
+      if can_place_entity_with_ground_item_clearance(surface, force, task.miner_name, position, direction, task, stats) then
         stats.placeable_positions = stats.placeable_positions + 1
         local test_miner = surface.create_entity{
           name = task.miner_name,
@@ -1615,11 +1684,15 @@ local function find_miner_placement(surface, force, task, resource_position, pat
               has_output_container_spot = downstream_machine_position ~= nil and (not task.output_container or output_container_position ~= nil)
             elseif task.output_container then
               output_container_position = ctx.clone_position(test_miner.drop_position)
-              has_output_container_spot = surface.can_place_entity{
-                name = task.output_container.name,
-                position = output_container_position,
-                force = force
-              }
+              has_output_container_spot = can_place_entity_with_ground_item_clearance(
+                surface,
+                force,
+                task.output_container.name,
+                output_container_position,
+                nil,
+                task,
+                stats
+              )
 
               if has_output_container_spot then
                 stats.output_container_hits = stats.output_container_hits + 1
@@ -1757,6 +1830,8 @@ local function merge_resource_site_search_summary(summary, placement_stats)
     (placement_stats.resource_overlap_rejections or 0)
   summary.low_resource_amount_rejections = summary.low_resource_amount_rejections +
     (placement_stats.low_resource_amount_rejections or 0)
+  summary.ground_item_blockers_cleared = (summary.ground_item_blockers_cleared or 0) +
+    (placement_stats.ground_item_blockers_cleared or 0)
 end
 
 local function build_resource_site_candidate(
@@ -1852,6 +1927,7 @@ local function find_edge_resource_site(surface, force, origin, task, ctx)
     failed_inserter_geometry = 0,
     resource_overlap_rejections = 0,
     low_resource_amount_rejections = 0,
+    ground_item_blockers_cleared = 0,
     resource_entities_found = 0,
     resource_entities_selected = 0,
     resource_entities_truncated = false
@@ -2637,6 +2713,7 @@ function queries.find_output_belt_line_site(builder_state, task, ctx)
     positions_checked = 0,
     placeable_positions = 0,
     resource_overlap_rejections = 0,
+    ground_item_blockers_cleared = 0,
     failed_anchor_entity = nil
   }
 

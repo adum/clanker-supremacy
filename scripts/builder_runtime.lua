@@ -2140,6 +2140,95 @@ local function place_test_runtime_iron_smelting_site(surface, origin_position)
   }
 end
 
+function place_test_runtime_steel_smelting_site(surface, builder_state, layout_orientation, anchor_position)
+  local anchor_site = place_test_iron_smelting_anchor(surface, layout_orientation, anchor_position)
+  local steel_task = builder_data.site_patterns and builder_data.site_patterns.steel_smelting and
+    builder_data.site_patterns.steel_smelting.build_task or nil
+  if not steel_task then
+    error("enemy-builder test: missing steel_smelting build task")
+  end
+
+  local search_task = deep_copy(steel_task)
+  search_task.layout_orientations = {layout_orientation}
+  search_task.manual_anchor_position = clone_position(anchor_position)
+  search_task.manual_anchor_search_radius = 3
+
+  local steel_layout_site = find_layout_site_near_machine(builder_state, search_task)
+  if not steel_layout_site then
+    error("enemy-builder test: failed to find runtime steel smelting site near " .. format_position(anchor_position))
+  end
+
+  local feed_inserter = nil
+  local steel_furnace = nil
+  for _, placement in ipairs(steel_layout_site.placements or {}) do
+    local placed_entity = surface.create_entity{
+      name = placement.entity_name,
+      position = placement.build_position,
+      direction = placement.build_direction,
+      force = builder_state.entity.force,
+      create_build_effect_smoke = false
+    }
+    if not (placed_entity and placed_entity.valid) then
+      error("enemy-builder test: failed to create runtime steel layout entity " .. tostring(placement.entity_name))
+    end
+
+    if placement.fuel then
+      insert_entity_fuel(placed_entity, placement.fuel)
+    end
+
+    if placement.site_role == "steel-feed-inserter" then
+      feed_inserter = placed_entity
+    elseif placement.site_role == "steel-furnace" then
+      steel_furnace = placed_entity
+    end
+  end
+
+  if not (steel_layout_site.site and steel_layout_site.site.miner and steel_layout_site.site.miner.valid) then
+    error("enemy-builder test: missing runtime steel anchor miner")
+  end
+
+  if not (feed_inserter and feed_inserter.valid and steel_furnace and steel_furnace.valid) then
+    error("enemy-builder test: runtime steel smelting site missing inserter or furnace")
+  end
+
+  if not point_in_area(feed_inserter.pickup_position, steel_layout_site.anchor_entity.selection_box) then
+    error("enemy-builder test: runtime steel inserter pickup misses anchor furnace")
+  end
+
+  if not point_in_area(feed_inserter.drop_position, steel_furnace.selection_box) then
+    error("enemy-builder test: runtime steel inserter drop misses steel furnace")
+  end
+
+  register_steel_smelting_site(
+    steel_task,
+    steel_layout_site.anchor_entity,
+    feed_inserter,
+    steel_furnace,
+    steel_layout_site.site.miner
+  )
+  register_resource_site(
+    steel_task,
+    steel_layout_site.site.miner,
+    steel_furnace,
+    nil,
+    {
+      identity_entity = steel_furnace,
+      anchor_machine = steel_layout_site.anchor_entity,
+      feed_inserter = feed_inserter,
+      parent_pattern_name = steel_layout_site.site.pattern_name
+    }
+  )
+
+  return {
+    anchor_site = anchor_site,
+    layout_site = steel_layout_site,
+    anchor_furnace = steel_layout_site.anchor_entity,
+    feed_inserter = feed_inserter,
+    steel_furnace = steel_furnace,
+    miner = steel_layout_site.site.miner
+  }
+end
+
 local function place_test_runtime_coal_outpost_site(surface, origin_position)
   local force = ensure_builder_force()
   local coal_task = builder_data.site_patterns and builder_data.site_patterns.coal_outpost and
@@ -2817,27 +2906,105 @@ local function setup_steel_smelting_test_case(layout_orientation)
   }
 end
 
-local function setup_iron_plate_belt_export_test_case()
+local function setup_plate_belt_export_test_case(spec)
   local surface = game.surfaces["nauvis"] or game.surfaces[1]
   if not surface then
     error("enemy-builder test: nauvis surface is unavailable")
   end
 
+  spec = spec or {}
   local patch_center = {x = 32, y = 0}
   local builder_position = {x = 0, y = 0}
   local area = make_test_area(patch_center, 96, 64)
 
+  local function format_site_summary(summary)
+    return string.format(
+      "positions=%d placeable=%d belts=%d belt-failures=%d inserter-failures=%d ground-clears=%d",
+      summary and summary.positions_checked or 0,
+      summary and summary.placeable_positions or 0,
+      summary and summary.valid_belt_paths or 0,
+      summary and summary.failed_belt_paths or 0,
+      summary and summary.failed_inserter_geometry or 0,
+      summary and summary.ground_item_blockers_cleared or 0
+    )
+  end
+
+  local function spill_ground_items_on_site(site, force)
+    local seen_positions = {}
+
+    local function spill_at(position)
+      if not position then
+        return
+      end
+
+      local key = string.format("%.2f:%.2f", position.x, position.y)
+      if seen_positions[key] then
+        return
+      end
+      seen_positions[key] = true
+
+      surface.spill_item_stack{
+        position = clone_position(position),
+        stack = {name = spec.resource_name, count = 1},
+        enable_looted = false,
+        force = force,
+        allow_belts = false,
+        max_radius = 0,
+        use_start_position_on_failure = true,
+        drop_full_stack = true
+      }
+    end
+
+    spill_at(site.build_position)
+    spill_at(site.downstream_machine_position)
+
+    for _, placement in ipairs(site.belt_layout_placements or {}) do
+      spill_at(placement.build_position)
+    end
+  end
+
   surface.always_day = true
   clear_test_area(surface, area)
-  create_test_resource_patch(surface, "iron-ore", patch_center, 3, 5000)
+  create_test_resource_patch(surface, spec.resource_name, patch_center, 3, 5000)
 
-  return setup_manual_test{
-    case_name = "iron_plate_belt_export_physical_feed",
-    component_name = "iron_plate_belt_export",
+  local assertion = {
+    case_name = spec.case_name,
+    surface_name = surface.name,
+    area = area,
+    deadline_offset_ticks = spec.require_belt_output and 7200 or 2400,
+    resource_name = spec.resource_name,
+    minimum_resource_site_counts = {
+      [spec.component_name] = 1
+    },
+    expected_counts = {
+      ["burner-inserter"] = 1,
+      ["transport-belt"] = 1,
+      ["burner-mining-drill"] = 1,
+      ["stone-furnace"] = 1
+    }
+  }
+
+  if spec.require_belt_output then
+    assertion.minimum_miner_patch_margin = 0.5
+    assertion.belt_item_name = spec.output_item_name
+    assertion.minimum_belt_item_count = 1
+  else
+    assertion.skip_output_assertion = true
+  end
+
+  local result = setup_manual_test{
+    case_name = spec.case_name,
+    component_name = spec.component_name,
     builder_position = builder_position,
     surface_name = surface.name,
     suppress_player_autospawn = true,
-    disable_nearby_machine_output_collection = true,
+    mutate_request = function(request)
+      local export_task = request.tasks and request.tasks[1] or nil
+      if export_task then
+        export_task.site_selection = export_task.site_selection or {}
+        export_task.site_selection.random_candidate_pool = 1
+      end
+    end,
     inventory = {
       {name = "burner-mining-drill", count = 1},
       {name = "stone-furnace", count = 1},
@@ -2845,22 +3012,62 @@ local function setup_iron_plate_belt_export_test_case()
       {name = "transport-belt", count = 48},
       {name = "coal", count = 60}
     },
-    assertion = {
-      case_name = "iron_plate_belt_export_physical_feed",
-      surface_name = surface.name,
-      area = area,
-      deadline_offset_ticks = 7200,
-      resource_name = "iron-ore",
-      minimum_miner_patch_margin = 0.5,
-      expected_counts = {
-        ["burner-inserter"] = 1,
-        ["transport-belt"] = 1,
-        ["burner-mining-drill"] = 1,
-        ["stone-furnace"] = 1
-      },
-      belt_item_name = "iron-plate",
-      minimum_belt_item_count = 1
-    }
+    assertion = assertion
+  }
+
+  if spec.spill_ground_items then
+    local builder_state = get_builder_state()
+    if not (builder_state and builder_state.entity and builder_state.entity.valid) then
+      error("enemy-builder test: failed to get builder state for " .. spec.case_name)
+    end
+
+    local export_task = builder_state.manual_goal_request and builder_state.manual_goal_request.tasks and
+      builder_state.manual_goal_request.tasks[1] or nil
+    if not export_task then
+      error("enemy-builder test: missing export task for " .. spec.case_name)
+    end
+
+    local site, summary = find_resource_site(surface, builder_state.entity.force, builder_state.entity.position, export_task)
+    if not site then
+      error(
+        "enemy-builder test: failed to pre-plan belt export site for " ..
+        spec.case_name .. " (" .. format_site_summary(summary) .. ")"
+      )
+    end
+
+    spill_ground_items_on_site(site, builder_state.entity.force)
+  end
+
+  return result
+end
+
+local function setup_iron_plate_belt_export_test_case()
+  return setup_plate_belt_export_test_case{
+    case_name = "iron_plate_belt_export_physical_feed",
+    component_name = "iron_plate_belt_export",
+    resource_name = "iron-ore",
+    output_item_name = "iron-plate",
+    require_belt_output = true
+  }
+end
+
+local function setup_iron_plate_belt_export_ground_items_test_case()
+  return setup_plate_belt_export_test_case{
+    case_name = "iron_plate_belt_export_ignores_ground_items",
+    component_name = "iron_plate_belt_export",
+    resource_name = "iron-ore",
+    output_item_name = "iron-plate",
+    spill_ground_items = true
+  }
+end
+
+local function setup_copper_plate_belt_export_ground_items_test_case()
+  return setup_plate_belt_export_test_case{
+    case_name = "copper_plate_belt_export_ignores_ground_items",
+    component_name = "copper_plate_belt_export",
+    resource_name = "copper-ore",
+    output_item_name = "copper-plate",
+    spill_ground_items = true
   }
 end
 
@@ -3563,83 +3770,7 @@ function setup_steel_output_retries_blocked_anchors_test_case()
     suppress_player_autospawn = true,
     disable_nearby_machine_output_collection = true,
     mutate_builder_state = function(builder_state, test_surface)
-      place_test_iron_smelting_anchor(test_surface, "north", anchor_position)
-      local steel_task = builder_data.site_patterns and builder_data.site_patterns.steel_smelting and
-        builder_data.site_patterns.steel_smelting.build_task or nil
-      if not steel_task then
-        error("enemy-builder test: missing steel_smelting build task")
-      end
-
-      local search_task = deep_copy(steel_task)
-      search_task.layout_orientations = {"north"}
-      search_task.manual_anchor_position = clone_position(anchor_position)
-      search_task.manual_anchor_search_radius = 3
-
-      local steel_layout_site = find_layout_site_near_machine(builder_state, search_task)
-      if not steel_layout_site then
-        error("enemy-builder test: failed to find runtime steel smelting site near " .. format_position(anchor_position))
-      end
-
-      local feed_inserter = nil
-      local steel_furnace = nil
-      for _, placement in ipairs(steel_layout_site.placements or {}) do
-        local placed_entity = test_surface.create_entity{
-          name = placement.entity_name,
-          position = placement.build_position,
-          direction = placement.build_direction,
-          force = builder_state.entity.force,
-          create_build_effect_smoke = false
-        }
-        if not (placed_entity and placed_entity.valid) then
-          error("enemy-builder test: failed to create runtime steel layout entity " .. tostring(placement.entity_name))
-        end
-
-        if placement.fuel then
-          insert_entity_fuel(placed_entity, placement.fuel)
-        end
-
-        if placement.site_role == "steel-feed-inserter" then
-          feed_inserter = placed_entity
-        elseif placement.site_role == "steel-furnace" then
-          steel_furnace = placed_entity
-        end
-      end
-
-      if not (steel_layout_site.site and steel_layout_site.site.miner and steel_layout_site.site.miner.valid) then
-        error("enemy-builder test: missing runtime steel anchor miner")
-      end
-
-      if not (feed_inserter and feed_inserter.valid and steel_furnace and steel_furnace.valid) then
-        error("enemy-builder test: runtime steel smelting site missing inserter or furnace")
-      end
-
-      if not point_in_area(feed_inserter.pickup_position, steel_layout_site.anchor_entity.selection_box) then
-        error("enemy-builder test: runtime steel inserter pickup misses anchor furnace")
-      end
-
-      if not point_in_area(feed_inserter.drop_position, steel_furnace.selection_box) then
-        error("enemy-builder test: runtime steel inserter drop misses steel furnace")
-      end
-
-      register_steel_smelting_site(
-        steel_task,
-        steel_layout_site.anchor_entity,
-        feed_inserter,
-        steel_furnace,
-        steel_layout_site.site.miner
-      )
-      register_resource_site(
-        steel_task,
-        steel_layout_site.site.miner,
-        steel_furnace,
-        nil,
-        {
-          identity_entity = steel_furnace,
-          anchor_machine = steel_layout_site.anchor_entity,
-          feed_inserter = feed_inserter,
-          parent_pattern_name = steel_layout_site.site.pattern_name
-        }
-      )
+      local steel_site = place_test_runtime_steel_smelting_site(test_surface, builder_state, "north", anchor_position)
 
       local steel_export_task = builder_data.site_patterns and builder_data.site_patterns.steel_plate_belt_export and
         builder_data.site_patterns.steel_plate_belt_export.build_task or nil
@@ -3649,7 +3780,7 @@ function setup_steel_output_retries_blocked_anchors_test_case()
 
       builder_state.blocked_layout_anchors = builder_state.blocked_layout_anchors or {}
       builder_state.blocked_layout_anchors["smelting-output-belt"] = {
-        [tostring(steel_furnace.unit_number)] = true
+        [tostring(steel_site.steel_furnace.unit_number)] = true
       }
 
       local site, summary = find_output_belt_line_site(builder_state, steel_export_task)
@@ -3661,7 +3792,7 @@ function setup_steel_output_retries_blocked_anchors_test_case()
         )
       end
 
-      if not (site.anchor_entity and site.anchor_entity.valid and site.anchor_entity == steel_furnace) then
+      if not (site.anchor_entity and site.anchor_entity.valid and site.anchor_entity == steel_site.steel_furnace) then
         error("enemy-builder test: steel output search selected the wrong anchor after blocked-anchor retry")
       end
 
@@ -4621,6 +4752,8 @@ local test_remote_interface = {
   setup_firearm_outpost_anchored_test_case = setup_firearm_outpost_anchored_test_case,
   setup_tree_blocked_assembler_test_case = setup_tree_blocked_assembler_test_case,
   setup_iron_plate_belt_export_test_case = setup_iron_plate_belt_export_test_case,
+  setup_iron_plate_belt_export_ground_items_test_case = setup_iron_plate_belt_export_ground_items_test_case,
+  setup_copper_plate_belt_export_ground_items_test_case = setup_copper_plate_belt_export_ground_items_test_case,
   setup_output_belts_can_overlap_resources_test_case = setup_output_belts_can_overlap_resources_test_case,
   setup_solar_panel_factory_test_case = setup_solar_panel_factory_test_case,
   setup_solar_panel_factory_missing_sources_reports_blocker_test_case = setup_solar_panel_factory_missing_sources_reports_blocker_test_case,

@@ -160,6 +160,83 @@ local function should_preserve_partial_layout_on_abort(task)
   return task.type == "place-assembly-input-route"
 end
 
+local function build_entity_placement_area(entity_name, position)
+  local prototype = prototypes and prototypes.entity and entity_name and prototypes.entity[entity_name] or nil
+  local collision_box = prototype and (prototype.collision_box or prototype.selection_box) or nil
+
+  if not collision_box then
+    return {
+      left_top = {x = position.x - 0.5, y = position.y - 0.5},
+      right_bottom = {x = position.x + 0.5, y = position.y + 0.5}
+    }
+  end
+
+  return {
+    left_top = {
+      x = position.x + collision_box.left_top.x,
+      y = position.y + collision_box.left_top.y
+    },
+    right_bottom = {
+      x = position.x + collision_box.right_bottom.x,
+      y = position.y + collision_box.right_bottom.y
+    }
+  }
+end
+
+local function clear_ground_item_blockers(surface, entity_name, position, task, ctx)
+  if not (surface and entity_name and position and task and task.clear_ground_item_blockers) then
+    return false
+  end
+
+  local area = build_entity_placement_area(entity_name, position)
+  local blockers = surface.find_entities_filtered{
+    area = {
+      {area.left_top.x - 0.05, area.left_top.y - 0.05},
+      {area.right_bottom.x + 0.05, area.right_bottom.y + 0.05}
+    },
+    type = "item-entity"
+  }
+  local cleared_count = 0
+
+  for _, blocker in ipairs(blockers) do
+    if blocker and blocker.valid then
+      blocker.destroy()
+      cleared_count = cleared_count + 1
+    end
+  end
+
+  if cleared_count > 0 then
+    ctx.debug_log(
+      "task " .. task.id .. ": cleared " .. tostring(cleared_count) ..
+      " ground-item blocker(s) for " .. entity_name .. " at " .. ctx.format_position(position)
+    )
+  end
+
+  return cleared_count > 0
+end
+
+local function can_place_entity_with_ground_item_clearance(surface, force, entity_name, position, direction, task, ctx)
+  local placement = {
+    name = entity_name,
+    position = position,
+    force = force
+  }
+
+  if direction ~= nil then
+    placement.direction = direction
+  end
+
+  if surface.can_place_entity(placement) then
+    return true
+  end
+
+  if clear_ground_item_blockers(surface, entity_name, position, task, ctx) then
+    return surface.can_place_entity(placement)
+  end
+
+  return false
+end
+
 local function seed_entity_from_builder_inventory(builder, target_entity, seed_items, reason, ctx)
   local inserted_items = {}
 
@@ -681,12 +758,16 @@ function action_build.place_miner(builder_state, task, tick, ctx, refresh_task)
   local build_phase = get_next_build_phase(task_state, task)
 
   if build_phase == "place-miner" then
-    if not surface.can_place_entity{
-      name = task.miner_name,
-      position = task_state.build_position,
-      direction = task_state.build_direction,
-      force = entity.force
-    } then
+    if not can_place_entity_with_ground_item_clearance(
+        surface,
+        entity.force,
+        task.miner_name,
+        task_state.build_position,
+        task_state.build_direction,
+        task,
+        ctx
+      )
+    then
       if try_clear_blocking_obstacle(builder_state, task, tick, task.miner_name, task_state.build_position, ctx) then
         return
       end
@@ -780,11 +861,16 @@ function action_build.place_miner(builder_state, task, tick, ctx, refresh_task)
       end
     end
 
-    if not surface.can_place_entity{
-      name = task.downstream_machine.name,
-      position = task_state.downstream_machine_position,
-      force = entity.force
-    } then
+    if not can_place_entity_with_ground_item_clearance(
+        surface,
+        entity.force,
+        task.downstream_machine.name,
+        task_state.downstream_machine_position,
+        nil,
+        task,
+        ctx
+      )
+    then
       if try_clear_blocking_obstacle(
         builder_state,
         task,
@@ -842,11 +928,16 @@ function action_build.place_miner(builder_state, task, tick, ctx, refresh_task)
       return
     end
 
-    if not surface.can_place_entity{
-      name = task.output_container.name,
-      position = task_state.output_container_position,
-      force = entity.force
-    } then
+    if not can_place_entity_with_ground_item_clearance(
+        surface,
+        entity.force,
+        task.output_container.name,
+        task_state.output_container_position,
+        nil,
+        task,
+        ctx
+      )
+    then
       if try_clear_blocking_obstacle(
         builder_state,
         task,
@@ -942,12 +1033,16 @@ function action_build.place_miner(builder_state, task, tick, ctx, refresh_task)
       return
     end
 
-    if not surface.can_place_entity{
-      name = placement.entity_name,
-      position = placement.build_position,
-      direction = placement.build_direction,
-      force = entity.force
-    } then
+    if not can_place_entity_with_ground_item_clearance(
+        surface,
+        entity.force,
+        placement.entity_name,
+        placement.build_position,
+        placement.build_direction,
+        task,
+        ctx
+      )
+    then
       if try_clear_blocking_obstacle(builder_state, task, tick, placement.entity_name, placement.build_position, ctx) then
         return
       end
@@ -1391,12 +1486,16 @@ function action_build.place_layout_near_machine(builder_state, task, tick, ctx, 
     return
   end
 
-  if not surface.can_place_entity{
-    name = placement.entity_name,
-    position = placement.build_position,
-    direction = placement.build_direction,
-    force = entity.force
-  } then
+  if not can_place_entity_with_ground_item_clearance(
+      surface,
+      entity.force,
+      placement.entity_name,
+      placement.build_position,
+      placement.build_direction,
+      task,
+      ctx
+    )
+  then
     if try_clear_blocking_obstacle(builder_state, task, tick, placement.entity_name, placement.build_position, ctx) then
       return
     end
