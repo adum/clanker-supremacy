@@ -2862,6 +2862,209 @@ local function setup_iron_plate_belt_export_test_case()
   }
 end
 
+function setup_output_belts_can_overlap_resources_test_case()
+  local surface = game.surfaces["nauvis"] or game.surfaces[1]
+  if not surface then
+    error("enemy-builder test: nauvis surface is unavailable")
+  end
+
+  local patch_center = {x = 32, y = 0}
+  local builder_position = {x = 0, y = 0}
+  local area = make_test_area(patch_center, 112, 80)
+
+  surface.always_day = true
+  clear_test_area(surface, area)
+  create_test_resource_patch(surface, "iron-ore", patch_center, 5, 5000)
+
+  return setup_scaling_test{
+    case_name = "output_belts_can_overlap_resources",
+    builder_position = builder_position,
+    surface_name = surface.name,
+    suppress_player_autospawn = true,
+    disable_nearby_machine_output_collection = true,
+    mutate_builder_state = function(builder_state, test_surface)
+      builder_state.task_state = {
+        phase = "scaling-waiting",
+        wait_reason = "test-idle",
+        next_attempt_tick = game.tick + 3600
+      }
+
+      local function format_layout_summary(summary)
+        return string.format(
+          "positions=%d placeable=%d terminals=%d valid-paths=%d failed-paths=%d inserter-failures=%d resource-overlap=%d",
+          summary and summary.positions_checked or 0,
+          summary and summary.placeable_positions or 0,
+          summary and summary.terminal_positions_found or 0,
+          summary and summary.valid_belt_paths or 0,
+          summary and summary.failed_belt_paths or 0,
+          summary and summary.failed_inserter_geometry or 0,
+          summary and summary.resource_overlap_rejections or 0
+        )
+      end
+
+      local function count_belt_placements_over_resources(placements, belt_entity_name)
+        local overlap_count = 0
+
+        for _, placement in ipairs(placements or {}) do
+          if placement.entity_name == belt_entity_name and placement.build_position then
+            local overlapping_resources = test_surface.find_entities_filtered{
+              area = {
+                {placement.build_position.x - 0.49, placement.build_position.y - 0.49},
+                {placement.build_position.x + 0.49, placement.build_position.y + 0.49}
+              },
+              type = "resource"
+            }
+            if #overlapping_resources > 0 then
+              overlap_count = overlap_count + 1
+            end
+          end
+        end
+
+        return overlap_count
+      end
+
+      local force = builder_state.entity.force
+      local request, request_error = goal_tree.instantiate_manual_request(
+        builder_data,
+        "iron_plate_belt_export",
+        clone_position(patch_center)
+      )
+      if request_error then
+        error("enemy-builder test: failed to create iron plate belt export request: " .. request_error)
+      end
+
+      local base_task = request.tasks and request.tasks[1] or nil
+      if not base_task then
+        error("enemy-builder test: iron plate belt export request did not contain a task")
+      end
+
+      local search_origins = {
+        {x = patch_center.x - 16, y = patch_center.y},
+        {x = patch_center.x - 16, y = patch_center.y - 8},
+        {x = patch_center.x - 16, y = patch_center.y + 8}
+      }
+      local selected_layout = nil
+      local selected_miner = nil
+      local selected_output_machine = nil
+      local selected_overlap_count = 0
+      local last_failure = "no candidate origins tried"
+
+      for _, search_origin in ipairs(search_origins) do
+        local search_task = deep_copy(base_task)
+        search_task.output_inserter = nil
+        search_task.search_radii = {64}
+        search_task.max_resource_candidates_per_radius = 1
+        search_task.max_resource_scan_entities_per_radius = 512
+        search_task.site_selection = {
+          prefer_middle = false,
+          prefer_patch_margin = false,
+          random_candidate_pool = 1
+        }
+
+        local site, site_summary = find_resource_site(test_surface, force, search_origin, search_task)
+        if site and site.build_position and site.build_direction and site.downstream_machine_position then
+          local miner = test_surface.create_entity{
+            name = base_task.miner_name,
+            position = site.build_position,
+            direction = site.build_direction,
+            force = force,
+            create_build_effect_smoke = false
+          }
+          local output_machine = miner and miner.valid and test_surface.create_entity{
+            name = base_task.downstream_machine.name,
+            position = site.downstream_machine_position,
+            force = force,
+            create_build_effect_smoke = false
+          } or nil
+
+          if miner and miner.valid and output_machine and output_machine.valid then
+            local layout_task = deep_copy(base_task)
+            layout_task.belt_hub_search = {
+              heading_count = 1,
+              heading_attempts = 1,
+              ray_step = 1,
+              max_distance = 48,
+              extra_distance_min = 8,
+              extra_distance_max = 8,
+              local_search_radius = 3,
+              local_search_step = 1
+            }
+
+            local layout_site, layout_summary =
+              find_output_belt_layout_for_miner_site(test_surface, force, layout_task, miner, output_machine)
+            local overlap_count = layout_site and
+              count_belt_placements_over_resources(layout_site.placements, layout_task.belt_entity_name) or 0
+
+            if layout_site and overlap_count > 0 then
+              selected_layout = layout_site
+              selected_miner = miner
+              selected_output_machine = output_machine
+              selected_overlap_count = overlap_count
+              break
+            end
+
+            last_failure =
+              "layout search from " .. format_position(search_origin) ..
+              " produced overlap_count=" .. overlap_count ..
+              " (" .. format_layout_summary(layout_summary) .. ")"
+          else
+            last_failure = "failed to create probe miner/furnace for search origin " .. format_position(search_origin)
+          end
+
+          if output_machine and output_machine.valid then
+            output_machine.destroy()
+          end
+          if miner and miner.valid then
+            miner.destroy()
+          end
+        else
+          last_failure =
+            "site search failed from " .. format_position(search_origin) ..
+            " (" .. format_layout_summary(site_summary) .. ")"
+        end
+      end
+
+      if not (selected_layout and selected_miner and selected_output_machine) then
+        error("enemy-builder test: failed to plan output belt layout over resources: " .. last_failure)
+      end
+
+      for _, placement in ipairs(selected_layout.placements or {}) do
+        local placed_entity = test_surface.create_entity{
+          name = placement.entity_name,
+          position = placement.build_position,
+          direction = placement.build_direction,
+          force = force,
+          create_build_effect_smoke = false
+        }
+        if not (placed_entity and placed_entity.valid) then
+          error(
+            "enemy-builder test: failed to place " .. placement.entity_name ..
+            " at " .. format_position(placement.build_position)
+          )
+        end
+      end
+
+      if storage.enemy_builder_test and storage.enemy_builder_test.assertion then
+        storage.enemy_builder_test.assertion.observed_belts_over_resource_count = selected_overlap_count
+      end
+    end,
+    assertion = {
+      case_name = "output_belts_can_overlap_resources",
+      surface_name = surface.name,
+      area = area,
+      deadline_offset_ticks = 1,
+      skip_output_assertion = true,
+      minimum_belts_over_resource_count = 1,
+      expected_counts = {
+        ["burner-inserter"] = 1,
+        ["transport-belt"] = 1,
+        ["burner-mining-drill"] = 1,
+        ["stone-furnace"] = 1
+      }
+    }
+  }
+end
+
 local function setup_solar_panel_factory_test_case()
   local surface = game.surfaces["nauvis"] or game.surfaces[1]
   if not surface then
@@ -4061,6 +4264,34 @@ local function format_test_failure_summary(surface, force, assertion)
     )
   end
 
+  if assertion.minimum_belts_over_resource_count then
+    local overlapping_belt_count = 0
+    for _, belt in ipairs(surface.find_entities_filtered{
+      area = area,
+      force = force,
+      name = "transport-belt"
+    }) do
+      local overlapping_resources = surface.find_entities_filtered{
+        area = {
+          {belt.position.x - 0.49, belt.position.y - 0.49},
+          {belt.position.x + 0.49, belt.position.y + 0.49}
+        },
+        type = "resource"
+      }
+      if #overlapping_resources > 0 then
+        overlapping_belt_count = overlapping_belt_count + 1
+      end
+    end
+
+    parts[#parts + 1] = string.format(
+      "belts-over-resource=%d/%d",
+      overlapping_belt_count,
+      assertion.minimum_belts_over_resource_count
+    )
+    parts[#parts + 1] =
+      "belts-over-resource-observed=" .. tostring(assertion.observed_belts_over_resource_count or 0)
+  end
+
   if assertion.require_valid_steel_chain_geometry then
     parts[#parts + 1] = "steel-chain-geometry=" .. tostring(steel_chain_geometry_passed(assertion))
   end
@@ -4135,6 +4366,30 @@ local function test_assertion_passed(surface, force, assertion)
       assertion.resource_name or "iron-ore"
     )
     if not actual_margin or actual_margin < assertion.minimum_miner_patch_margin then
+      return false
+    end
+  end
+
+  if assertion.minimum_belts_over_resource_count then
+    local overlapping_belt_count = 0
+    for _, belt in ipairs(surface.find_entities_filtered{
+      area = area,
+      force = force,
+      name = "transport-belt"
+    }) do
+      local overlapping_resources = surface.find_entities_filtered{
+        area = {
+          {belt.position.x - 0.49, belt.position.y - 0.49},
+          {belt.position.x + 0.49, belt.position.y + 0.49}
+        },
+        type = "resource"
+      }
+      if #overlapping_resources > 0 then
+        overlapping_belt_count = overlapping_belt_count + 1
+      end
+    end
+
+    if overlapping_belt_count < assertion.minimum_belts_over_resource_count then
       return false
     end
   end
@@ -4363,6 +4618,7 @@ local test_remote_interface = {
   setup_firearm_outpost_anchored_test_case = setup_firearm_outpost_anchored_test_case,
   setup_tree_blocked_assembler_test_case = setup_tree_blocked_assembler_test_case,
   setup_iron_plate_belt_export_test_case = setup_iron_plate_belt_export_test_case,
+  setup_output_belts_can_overlap_resources_test_case = setup_output_belts_can_overlap_resources_test_case,
   setup_solar_panel_factory_test_case = setup_solar_panel_factory_test_case,
   setup_solar_panel_factory_missing_sources_reports_blocker_test_case = setup_solar_panel_factory_missing_sources_reports_blocker_test_case,
   setup_scaling_collect_switches_site_test_case = setup_scaling_collect_switches_site_test_case,
