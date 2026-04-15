@@ -119,6 +119,47 @@ local function describe_output_belt_layout_failure(summary)
   return nil
 end
 
+local function summarize_layout_entities(placements)
+  local counts_by_name = {}
+  local summarized = {}
+
+  for _, placement in ipairs(placements or {}) do
+    local placed_entity = placement.entity
+    local entity_name = nil
+
+    if placed_entity and placed_entity.valid then
+      entity_name = placed_entity.name
+    else
+      entity_name = placement.entity_name
+    end
+
+    if entity_name then
+      counts_by_name[entity_name] = (counts_by_name[entity_name] or 0) + 1
+    end
+  end
+
+  for entity_name, count in pairs(counts_by_name) do
+    summarized[#summarized + 1] = {
+      name = entity_name,
+      count = count
+    }
+  end
+
+  table.sort(summarized, function(left, right)
+    return left.name < right.name
+  end)
+
+  return summarized
+end
+
+local function should_preserve_partial_layout_on_abort(task)
+  if not task then
+    return false
+  end
+
+  return task.type == "place-assembly-input-route"
+end
+
 local function seed_entity_from_builder_inventory(builder, target_entity, seed_items, reason, ctx)
   local inserted_items = {}
 
@@ -1007,6 +1048,14 @@ function action_build.place_machine_near_site(builder_state, task, tick, ctx, re
   end
 
   local function abort_build(reason)
+    local removed_layout_entities = summarize_layout_entities(task_state.placed_layout_entities)
+    if #removed_layout_entities > 0 then
+      ctx.debug_log(
+        "task " .. task.id .. ": removing partial reserved layout " ..
+        ctx.format_products(removed_layout_entities) ..
+        " because " .. reason
+      )
+    end
     refund_consumed_layout_items("refunded after aborted reserved layout for " .. task.id)
     refund_consumed_build_item("refunded after aborted build for " .. task.id)
     destroy_placed_layout_entities()
@@ -1307,6 +1356,29 @@ function action_build.place_layout_near_machine(builder_state, task, tick, ctx, 
   end
 
   local function abort_build(reason)
+    local preserved_layout_entities = summarize_layout_entities(task_state.placed_layout_entities)
+    if should_preserve_partial_layout_on_abort(task) then
+      if #preserved_layout_entities > 0 then
+        ctx.debug_log(
+          "task " .. task.id .. ": preserving partial layout " ..
+          ctx.format_products(preserved_layout_entities) ..
+          " despite " .. reason
+        )
+      end
+      task_state.consumed_build_items = nil
+      task_state.placed_layout_entities = {}
+      refresh_task(builder_state, task, tick, ctx)
+      ctx.debug_log("task " .. task.id .. ": " .. reason)
+      return
+    end
+
+    if #preserved_layout_entities > 0 then
+      ctx.debug_log(
+        "task " .. task.id .. ": removing partial layout " ..
+        ctx.format_products(preserved_layout_entities) ..
+        " because " .. reason
+      )
+    end
     refund_consumed_build_items("refunded after aborted build for " .. task.id)
     destroy_placed_layout_entities()
     refresh_task(builder_state, task, tick, ctx)
