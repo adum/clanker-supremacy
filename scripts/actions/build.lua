@@ -81,6 +81,44 @@ local function get_next_build_phase(task_state, task)
   return "build-complete"
 end
 
+local function describe_output_belt_layout_failure(summary)
+  summary = summary or {}
+
+  local positions_checked = summary.positions_checked or 0
+  local placeable_positions = summary.placeable_positions or 0
+  local terminal_positions_found = summary.terminal_positions_found or 0
+  local valid_belt_paths = summary.valid_belt_paths or 0
+  local failed_belt_paths = summary.failed_belt_paths or 0
+  local failed_inserter_geometry = summary.failed_inserter_geometry or 0
+  local resource_overlap_rejections = summary.resource_overlap_rejections or 0
+
+  if summary.failed_belt_path_detail then
+    return "belt routing failed (" .. summary.failed_belt_path_detail .. ")"
+  end
+
+  if failed_inserter_geometry > 0 then
+    return "output inserter geometry did not line up (" .. tostring(failed_inserter_geometry) .. " attempts)"
+  end
+
+  if terminal_positions_found > 0 and failed_belt_paths > 0 and valid_belt_paths == 0 then
+    return "belt routing failed for all " .. tostring(terminal_positions_found) .. " terminal positions"
+  end
+
+  if placeable_positions > 0 and terminal_positions_found == 0 then
+    return "no terminal belt position fit near the hub"
+  end
+
+  if positions_checked > 0 then
+    local message = "no belt hub location fit near the patch"
+    if resource_overlap_rejections > 0 then
+      message = message .. " (" .. tostring(resource_overlap_rejections) .. " resource-overlap rejections)"
+    end
+    return message
+  end
+
+  return nil
+end
+
 local function seed_entity_from_builder_inventory(builder, target_entity, seed_items, reason, ctx)
   local inserted_items = {}
 
@@ -816,10 +854,20 @@ function action_build.place_miner(builder_state, task, tick, ctx, refresh_task)
     if not task_state.layout_placements and task.defer_output_belt_planning and ctx.find_output_belt_layout_for_miner_site then
       local miner = task_state.placed_miner
       local downstream_machine = task_state.placed_downstream_machine
-      local layout_site = miner and downstream_machine and miner.valid and downstream_machine.valid and
-        ctx.find_output_belt_layout_for_miner_site(surface, entity.force, task, miner, downstream_machine) or nil
+      local layout_site = nil
+      local layout_summary = nil
+      if miner and downstream_machine and miner.valid and downstream_machine.valid then
+        layout_site, layout_summary = ctx.find_output_belt_layout_for_miner_site(
+          surface,
+          entity.force,
+          task,
+          miner,
+          downstream_machine
+        )
+      end
 
       if not layout_site then
+        local failure_detail = describe_output_belt_layout_failure(layout_summary)
         if task.abandon_partial_site_on_failure then
           abandon_partial_build(
             "abandoned partial site after failing output belt layout near " ..
@@ -827,10 +875,11 @@ function action_build.place_miner(builder_state, task, tick, ctx, refresh_task)
                 (downstream_machine and downstream_machine.valid and downstream_machine.position) or
                   (miner and miner.valid and miner.position) or
                   task_state.build_position
-              )
+              ) ..
+              (failure_detail and ("; " .. failure_detail) or "")
           )
         else
-          abort_build("missing output belt layout")
+          abort_build("missing output belt layout" .. (failure_detail and ("; " .. failure_detail) or ""))
         end
         return
       end
