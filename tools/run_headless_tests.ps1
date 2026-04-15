@@ -3,6 +3,9 @@ param(
   [string]$ModDir = $env:FACTORIO_MOD_DIR,
   [int]$TimeoutSecs = $(if ($env:FACTORIO_TEST_TIMEOUT_SECS) { [int]$env:FACTORIO_TEST_TIMEOUT_SECS } else { 120 }),
   [string[]]$CaseName = @(),
+  [string]$SavePassingCase = $env:FACTORIO_TEST_SAVE_CASE,
+  [string]$SaveOutputDir = $env:FACTORIO_TEST_SAVE_OUTPUT_DIR,
+  [int]$SaveTimeoutSecs = $(if ($env:FACTORIO_TEST_SAVE_TIMEOUT_SECS) { [int]$env:FACTORIO_TEST_SAVE_TIMEOUT_SECS } else { 30 }),
   [switch]$ListCases,
   [switch]$KeepTemp
 )
@@ -123,6 +126,14 @@ function New-RemoteSetupCommand {
   }
 
   return "/silent-command remote.call(""enemy-builder-test"", ""$setupName"")"
+}
+
+function New-ServerSaveCommand {
+  param(
+    [string]$SaveName
+  )
+
+  return "/server-save $SaveName"
 }
 
 function New-ServerLauncherFile {
@@ -321,7 +332,8 @@ function Invoke-RconCommand {
   param(
     [int]$Port,
     [string]$Password,
-    [string]$Command
+    [string]$Command,
+    [switch]$IgnoreResponseEof
   )
 
   $client = New-Object System.Net.Sockets.TcpClient
@@ -354,7 +366,13 @@ function Invoke-RconCommand {
 
     $commandRequestId = 2
     Write-RconPacket -Stream $stream -RequestId $commandRequestId -Type 2 -Body $Command
-    $null = Read-RconPacket -Stream $stream
+    try {
+      $null = Read-RconPacket -Stream $stream
+    } catch {
+      if (-not $IgnoreResponseEof -or -not $_.Exception.Message.Contains("Unexpected EOF while reading RCON response.")) {
+        throw
+      }
+    }
   } finally {
     $client.Close()
     $client.Dispose()
@@ -382,6 +400,23 @@ function Wait-ForLogPattern {
   return $false
 }
 
+function Wait-ForPath {
+  param(
+    [string]$Path,
+    [int]$TimeoutSeconds
+  )
+
+  for ($elapsed = 0; $elapsed -lt $TimeoutSeconds; $elapsed++) {
+    if (Test-Path -LiteralPath $Path) {
+      return $true
+    }
+
+    Start-Sleep -Seconds 1
+  }
+
+  return $false
+}
+
 function Show-FileIfPresent {
   param(
     [string]$Path
@@ -398,7 +433,7 @@ $allCases = @(
   [pscustomobject]@{ Name = "firearm_outpost_anchor_clearance"; RemoteSetupName = "setup_firearm_outpost_anchored_test_case"; ServerPort = 34198; RemoteSetupArg = $null },
   [pscustomobject]@{ Name = "tree_blocked_machine_placement"; RemoteSetupName = "setup_tree_blocked_assembler_test_case"; ServerPort = 34199; RemoteSetupArg = $null },
   [pscustomobject]@{ Name = "iron_plate_belt_export_physical_feed"; RemoteSetupName = "setup_iron_plate_belt_export_test_case"; ServerPort = 34200; RemoteSetupArg = $null },
-  [pscustomobject]@{ Name = "solar_panel_factory_physical_feed"; RemoteSetupName = "setup_solar_panel_factory_test_case"; ServerPort = 34206; RemoteSetupArg = $null },
+  [pscustomobject]@{ Name = "solar_panel_factory_physical_feed"; RemoteSetupName = "setup_solar_panel_factory_test_case"; ServerPort = 34206; RemoteSetupArg = $null; TimeoutSecs = 600 },
   [pscustomobject]@{ Name = "solar_panel_factory_missing_sources_reports_blocker"; RemoteSetupName = "setup_solar_panel_factory_missing_sources_reports_blocker_test_case"; ServerPort = 34215; RemoteSetupArg = $null },
   [pscustomobject]@{ Name = "scaling_collect_switches_site"; RemoteSetupName = "setup_scaling_collect_switches_site_test_case"; ServerPort = 34205; RemoteSetupArg = $null },
   [pscustomobject]@{ Name = "assembler_output_collection_limits"; RemoteSetupName = "setup_assembler_output_collection_limits_test_case"; ServerPort = 34209; RemoteSetupArg = $null },
@@ -444,11 +479,31 @@ if ($CaseName.Count -gt 0) {
   $selectedCases = $allCases
 }
 
+$saveCaseName = $null
+if ($SavePassingCase) {
+  $saveCase = $allCases | Where-Object { $_.Name -ieq $SavePassingCase } | Select-Object -First 1
+  if (-not $saveCase) {
+    $availableNames = $allCases | ForEach-Object { $_.Name }
+    throw "Unknown save case '$SavePassingCase'. Available cases: $($availableNames -join ', ')"
+  }
+
+  if (-not $SaveOutputDir) {
+    throw "SaveOutputDir is required when SavePassingCase is set."
+  }
+
+  $saveCaseName = $saveCase.Name
+}
+
 $script:FactorioBin = Resolve-FactorioBinary -ConfiguredPath $FactorioBin
 $script:ModDir = if ($ModDir) { (Resolve-Path -LiteralPath $ModDir).Path } else { $modDirDefault }
 
 if (-not (Test-Path -LiteralPath $script:ModDir -PathType Container)) {
   throw "Mod directory not found: $script:ModDir"
+}
+
+$resolvedSaveOutputDir = $null
+if ($SaveOutputDir) {
+  $resolvedSaveOutputDir = [System.IO.Path]::GetFullPath($SaveOutputDir)
 }
 
 $tempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("enemy-builder-tests." + [Guid]::NewGuid().ToString("N"))
@@ -471,12 +526,18 @@ try {
   if ($CaseName.Count -gt 0) {
     Write-Host "selected_cases: $($selectedCases.Name -join ', ')"
   }
+  if ($saveCaseName) {
+    New-Item -ItemType Directory -Force -Path $resolvedSaveOutputDir | Out-Null
+    Write-Host "save_passing_case: $saveCaseName"
+    Write-Host "save_output_dir: $resolvedSaveOutputDir"
+  }
   Write-Host
 
   Write-Host "-- create fresh save"
   Invoke-Factorio -Arguments @("--create", $freshSavePath)
 
   foreach ($case in $selectedCases) {
+    $caseTimeoutSecs = if ($case.PSObject.Properties.Name -contains "TimeoutSecs" -and $case.TimeoutSecs) { [int]$case.TimeoutSecs } else { $TimeoutSecs }
     $caseWriteDataDir = Join-Path $tempRoot ("write-data-" + $case.Name)
     $caseConfigPath = Join-Path $tempRoot ("config-" + $case.Name + ".ini")
     $statusFilePath = Join-Path $caseWriteDataDir ("script-output\enemy-builder-tests\" + $case.Name + ".status")
@@ -514,7 +575,7 @@ try {
       Invoke-RconCommand -Port $rconPort -Password $rconPassword -Command $remoteCommand
 
       $statusFound = $false
-      for ($elapsed = 0; $elapsed -lt $TimeoutSecs; $elapsed++) {
+      for ($elapsed = 0; $elapsed -lt $caseTimeoutSecs; $elapsed++) {
         if (Test-Path -LiteralPath $statusFilePath) {
           $statusFound = $true
           break
@@ -526,6 +587,30 @@ try {
         }
 
         Start-Sleep -Seconds 1
+      }
+
+      $statusPassed = $false
+      if ($statusFound -and (Select-String -LiteralPath $statusFilePath -Pattern ("PASS " + $case.Name) -SimpleMatch -Quiet)) {
+        $statusPassed = $true
+      }
+
+      if ($statusPassed -and $saveCaseName -and $case.Name -ieq $saveCaseName) {
+        $serverSaveName = "headless-test-$($case.Name).zip"
+        $serverSaveDir = Join-Path $caseWriteDataDir "saves"
+        $serverSavePath = Join-Path $serverSaveDir $serverSaveName
+        $destinationPath = Join-Path $resolvedSaveOutputDir $serverSaveName
+
+        New-Item -ItemType Directory -Force -Path $serverSaveDir | Out-Null
+        Write-Host "-- save $($case.Name) result"
+        Invoke-RconCommand -Port $rconPort -Password $rconPassword -Command (New-ServerSaveCommand -SaveName $serverSaveName) -IgnoreResponseEof
+
+        if (-not (Wait-ForPath -Path $serverSavePath -TimeoutSeconds $SaveTimeoutSecs)) {
+          Show-FileIfPresent -Path $outputPath
+          throw "Timed out waiting for saved game '$serverSaveName' for $($case.Name)."
+        }
+
+        Copy-Item -LiteralPath $serverSavePath -Destination $destinationPath -Force
+        Write-Host "-- copied save to $destinationPath"
       }
     } finally {
       Stop-FactorioServer -Server $server

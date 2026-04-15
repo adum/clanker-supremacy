@@ -7,6 +7,9 @@ mod_dir_default="$(cd "$repo_root/.." && pwd)"
 factorio_bin="${FACTORIO_BIN:-/Users/adammiller/Library/Application Support/Steam/steamapps/common/Factorio/factorio.app/Contents/MacOS/factorio}"
 mod_dir="${FACTORIO_MOD_DIR:-$mod_dir_default}"
 timeout_secs="${FACTORIO_TEST_TIMEOUT_SECS:-120}"
+save_passing_case="${FACTORIO_TEST_SAVE_CASE:-}"
+save_output_dir="${FACTORIO_TEST_SAVE_OUTPUT_DIR:-}"
+save_timeout_secs="${FACTORIO_TEST_SAVE_TIMEOUT_SECS:-30}"
 
 temp_root="$(mktemp -d /tmp/enemy-builder-tests.XXXXXX)"
 write_data_dir="$temp_root/write-data"
@@ -14,6 +17,7 @@ config_path="$temp_root/config.ini"
 server_settings_path="$temp_root/server-settings.json"
 fresh_save_path="$temp_root/enemy-builder-test.zip"
 server_input_pipe="$temp_root/server-input.pipe"
+save_case_matched=false
 
 cleanup() {
   if [[ -n "${factorio_pid:-}" ]] && kill -0 "$factorio_pid" 2>/dev/null; then
@@ -80,9 +84,19 @@ if [[ ! -d "$mod_dir" ]]; then
   exit 1
 fi
 
+if [[ -n "$save_passing_case" && -z "$save_output_dir" ]]; then
+  echo "FACTORIO_TEST_SAVE_OUTPUT_DIR is required when FACTORIO_TEST_SAVE_CASE is set." >&2
+  exit 1
+fi
+
 echo "== Enemy Builder headless tests =="
 echo "timeout_secs: $timeout_secs"
 echo "write_data_dir: $write_data_dir"
+if [[ -n "$save_passing_case" ]]; then
+  mkdir -p "$save_output_dir"
+  echo "save_passing_case: $save_passing_case"
+  echo "save_output_dir: $save_output_dir"
+fi
 echo
 
 echo "-- create fresh save"
@@ -93,6 +107,7 @@ run_case() {
   local remote_setup_name="$2"
   local server_port="$3"
   local remote_setup_arg="${4:-}"
+  local case_timeout_secs="${5:-$timeout_secs}"
   local case_write_data_dir="$temp_root/write-data-${case_name}"
   local case_config_path="$temp_root/config-${case_name}.ini"
   local status_file_path="$case_write_data_dir/script-output/enemy-builder-tests/${case_name}.status"
@@ -159,7 +174,7 @@ EOF
   printf '%s' "$remote_command" >&3
 
   local status_found=false
-  for ((elapsed = 0; elapsed < timeout_secs; elapsed++)); do
+  for ((elapsed = 0; elapsed < case_timeout_secs; elapsed++)); do
     if [[ -f "$status_file_path" ]]; then
       status_found=true
       break
@@ -178,6 +193,54 @@ EOF
 
     sleep 1
   done
+
+  local status_passed=false
+  if [[ "$status_found" == true ]] && grep -Fq "PASS ${case_name}" "$status_file_path"; then
+    status_passed=true
+  fi
+
+  if [[ -n "$save_passing_case" && "$case_name" == "$save_passing_case" && "$status_passed" == true ]]; then
+    save_case_matched=true
+    local server_save_name="headless-test-${case_name}.zip"
+    local server_save_dir="$case_write_data_dir/saves"
+    local server_save_path="$server_save_dir/${server_save_name}"
+    local destination_path="$save_output_dir/${server_save_name}"
+
+    mkdir -p "$server_save_dir"
+    echo "-- save ${case_name} result"
+    printf '/server-save %s\n' "$server_save_name" >&3
+
+    local save_found=false
+    for ((elapsed = 0; elapsed < save_timeout_secs; elapsed++)); do
+      if [[ -f "$server_save_path" ]]; then
+        save_found=true
+        break
+      fi
+
+      if ! kill -0 "$factorio_pid" 2>/dev/null; then
+        set +e
+        wait "$factorio_pid"
+        local status=$?
+        set -e
+        cat "$output_path"
+        echo
+        echo "Dedicated server exited before producing the saved game for ${case_name}." >&2
+        exit $status
+      fi
+
+      sleep 1
+    done
+
+    if [[ "$save_found" != true ]]; then
+      cat "$output_path"
+      echo
+      echo "Timed out waiting for saved game ${server_save_name} for ${case_name}." >&2
+      exit 1
+    fi
+
+    cp "$server_save_path" "$destination_path"
+    echo "-- copied save to ${destination_path}"
+  fi
 
   if [[ -n "${factorio_pid:-}" ]] && kill -0 "$factorio_pid" 2>/dev/null; then
     kill "$factorio_pid" 2>/dev/null || true
@@ -217,7 +280,7 @@ run_case "firearm_outpost_anchor_clearance" "setup_firearm_outpost_anchored_test
 run_case "tree_blocked_machine_placement" "setup_tree_blocked_assembler_test_case" "34199"
 run_case "iron_plate_belt_export_physical_feed" "setup_iron_plate_belt_export_test_case" "34200"
 run_case "output_belts_can_overlap_resources" "setup_output_belts_can_overlap_resources_test_case" "34216"
-run_case "solar_panel_factory_physical_feed" "setup_solar_panel_factory_test_case" "34206"
+run_case "solar_panel_factory_physical_feed" "setup_solar_panel_factory_test_case" "34206" "" "600"
 run_case "solar_panel_factory_missing_sources_reports_blocker" "setup_solar_panel_factory_missing_sources_reports_blocker_test_case" "34215"
 run_case "scaling_collect_switches_site" "setup_scaling_collect_switches_site_test_case" "34205"
 run_case "assembler_output_collection_limits" "setup_assembler_output_collection_limits_test_case" "34209"
@@ -231,6 +294,11 @@ run_case "steel_smelting_physical_feed_north" "setup_steel_smelting_test_case" "
 run_case "steel_smelting_physical_feed_east" "setup_steel_smelting_test_case" "34202" "east"
 run_case "steel_smelting_physical_feed_south" "setup_steel_smelting_test_case" "34203" "south"
 run_case "steel_smelting_physical_feed_west" "setup_steel_smelting_test_case" "34204" "west"
+
+if [[ -n "$save_passing_case" && "$save_case_matched" != true ]]; then
+  echo "Requested save case was not run: ${save_passing_case}" >&2
+  exit 1
+fi
 
 echo
 echo "All requested headless tests passed."

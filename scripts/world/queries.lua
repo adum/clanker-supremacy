@@ -337,7 +337,7 @@ local function build_randomized_heading_angles(search_config, ctx)
 end
 
 local function candidate_entity_overlaps_resources(surface, force, entity_name, position, direction)
-  local prototype = game and game.entity_prototypes and entity_name and game.entity_prototypes[entity_name] or nil
+  local prototype = prototypes and prototypes.entity and entity_name and prototypes.entity[entity_name] or nil
   local entity_type = prototype and prototype.type or nil
   if entity_type == "transport-belt" or entity_type == "underground-belt" or entity_type == "splitter" then
     return false
