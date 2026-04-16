@@ -190,6 +190,50 @@ local function find_downstream_machine_placement(surface, force, task, drop_posi
   return nil, nil, stats
 end
 
+local function build_output_belt_layout_site_for_machine(surface, force, task, patch, output_machine, summary, ctx)
+  if not (
+      surface and
+      force and
+      task and
+      task.output_inserter and
+      task.belt_entity_name and
+      output_machine and
+      output_machine.valid
+    )
+  then
+    return nil
+  end
+
+  local effective_patch = patch or {
+    anchor_position = ctx.clone_position(output_machine.position),
+    resource_name = task.resource_name
+  }
+  local hub_position, patch_key = find_or_create_belt_hub_position(surface, force, effective_patch, task, summary, ctx)
+  if not hub_position then
+    return nil
+  end
+
+  local placements, terminal_position = build_output_belt_layout_for_anchor(
+    surface,
+    force,
+    output_machine,
+    hub_position,
+    task,
+    summary,
+    ctx
+  )
+  if not (placements and #placements > 0) then
+    return nil
+  end
+
+  return {
+    placements = placements,
+    hub_position = hub_position,
+    hub_key = patch_key,
+    belt_terminal_position = terminal_position
+  }
+end
+
 local function find_output_belt_layout_for_machine_position(surface, force, task, patch, output_machine_position, stats, ctx)
   if not (task.output_inserter and task.belt_entity_name and task.downstream_machine and output_machine_position) then
     return nil, nil, nil, nil
@@ -207,28 +251,26 @@ local function find_output_belt_layout_for_machine_position(surface, force, task
     return nil, nil, nil, nil
   end
 
-  local effective_patch = patch or {
-    anchor_position = ctx.clone_position(output_machine_position),
-    resource_name = task.resource_name
-  }
-  local hub_position, patch_key = find_or_create_belt_hub_position(surface, force, effective_patch, task, stats, ctx)
-  local placements = nil
-  local terminal_position = nil
-
-  if hub_position then
-    placements, terminal_position = build_output_belt_layout_for_anchor(
-      surface,
-      force,
-      probe_machine,
-      hub_position,
-      task,
-      stats,
-      ctx
-    )
-  end
+  local layout_site = build_output_belt_layout_site_for_machine(
+    surface,
+    force,
+    task,
+    patch,
+    probe_machine,
+    stats,
+    ctx
+  )
 
   probe_machine.destroy()
-  return placements, hub_position, patch_key, terminal_position
+
+  if not layout_site then
+    return nil, nil, nil, nil
+  end
+
+  return layout_site.placements,
+    layout_site.hub_position,
+    layout_site.hub_key,
+    layout_site.belt_terminal_position
 end
 
 local function count_registered_sites_near_position(requirement, position, ctx)
@@ -1618,21 +1660,20 @@ build_output_belt_layout_for_anchor = function(surface, force, output_machine, h
             task,
             ctx
           ) then
-          local placements = {
-            {
-              id = "output-inserter",
-              site_role = "output-inserter",
-              entity_name = task.output_inserter.entity_name,
-              item_name = task.output_inserter.item_name or task.output_inserter.entity_name,
-              build_position = ctx.clone_position(edge_candidate.inserter_position),
-              build_direction = inserter_direction,
-              fuel = task.output_inserter.fuel
-            }
-          }
-
+          local placements = {}
           for _, placement in ipairs(belt_placements) do
             placements[#placements + 1] = placement
           end
+
+          placements[#placements + 1] = {
+            id = "output-inserter",
+            site_role = "output-inserter",
+            entity_name = task.output_inserter.entity_name,
+            item_name = task.output_inserter.item_name or task.output_inserter.entity_name,
+            build_position = ctx.clone_position(edge_candidate.inserter_position),
+            build_direction = inserter_direction,
+            fuel = task.output_inserter.fuel
+          }
 
           return placements, ctx.clone_position(terminal_position)
         elseif belt_placements and #belt_placements > 0 then
@@ -2391,32 +2432,21 @@ function queries.find_output_belt_layout_for_miner_site(surface, force, task, mi
     anchor_position = ctx.clone_position(miner.position),
     resource_name = task.resource_name
   }
-  local hub_position, patch_key = find_or_create_belt_hub_position(surface, force, patch, task, summary, ctx)
-
-  if not hub_position then
-    return nil, summary
-  end
-
-  local placements, terminal_position = build_output_belt_layout_for_anchor(
+  local layout_site = build_output_belt_layout_site_for_machine(
     surface,
     force,
-    output_machine,
-    hub_position,
     task,
+    patch,
+    output_machine,
     summary,
     ctx
   )
 
-  if not (placements and #placements > 0) then
+  if not layout_site then
     return nil, summary
   end
 
-  return {
-    placements = placements,
-    hub_position = hub_position,
-    hub_key = patch_key,
-    belt_terminal_position = terminal_position
-  }, summary
+  return layout_site, summary
 end
 
 function queries.find_output_belt_path_between_positions(surface, force, first_position, terminal_position, task, ctx)
@@ -2839,39 +2869,28 @@ function queries.find_output_belt_line_site(builder_state, task, ctx)
 
           local patch = get_patch_for_site(anchor_candidate.site, task, ctx)
           if patch then
-            local hub_position, patch_key = find_or_create_belt_hub_position(
+            local layout_site = build_output_belt_layout_site_for_machine(
               builder.surface,
               builder.force,
-              patch,
               task,
+              patch,
+              anchor_entity,
               summary,
               ctx
             )
 
-            if hub_position then
-              local placements, terminal_position = build_output_belt_layout_for_anchor(
-                builder.surface,
-                builder.force,
-                anchor_entity,
-                hub_position,
-                task,
-                summary,
-                ctx
-              )
-
-              if placements and #placements > 0 then
-                return {
-                  site = anchor_candidate.site,
-                  anchor_entity = anchor_entity,
-                  anchor_position = ctx.clone_position(anchor_entity.position),
-                  build_position = ctx.clone_position(anchor_entity.position),
-                  hub_position = hub_position,
-                  hub_key = patch_key,
-                  belt_terminal_position = terminal_position,
-                  placements = placements,
-                  summary = summary
-                }, summary
-              end
+            if layout_site then
+              return {
+                site = anchor_candidate.site,
+                anchor_entity = anchor_entity,
+                anchor_position = ctx.clone_position(anchor_entity.position),
+                build_position = ctx.clone_position(anchor_entity.position),
+                hub_position = layout_site.hub_position,
+                hub_key = layout_site.hub_key,
+                belt_terminal_position = layout_site.belt_terminal_position,
+                placements = layout_site.placements,
+                summary = summary
+              }, summary
             end
           end
         end

@@ -119,6 +119,53 @@ local function describe_output_belt_layout_failure(summary)
   return nil
 end
 
+local function collect_output_belt_layout_entities(placed_layout_entities)
+  local output_inserter = nil
+  local belt_entities = {}
+
+  for _, placement in ipairs(placed_layout_entities or {}) do
+    if placement.entity and placement.entity.valid then
+      if placement.site_role == "output-inserter" then
+        output_inserter = placement.entity
+      elseif placement.site_role == "output-belt" then
+        belt_entities[#belt_entities + 1] = placement.entity
+      end
+    end
+  end
+
+  return output_inserter, belt_entities
+end
+
+local function finalize_output_belt_site(builder_state, task, tick, ctx, refresh_task, task_state, output_machine, completion_prefix)
+  local output_inserter, belt_entities = collect_output_belt_layout_entities(task_state.placed_layout_entities)
+  if not (output_machine and output_machine.valid and output_inserter and output_inserter.valid and #belt_entities > 0) then
+    ctx.debug_log("task " .. task.id .. ": output belt layout completed without valid machine/inserter/belts; refreshing task")
+    refresh_task(builder_state, task, tick, ctx)
+    return false
+  end
+
+  local hub_position = task_state.belt_hub_position or task_state.belt_terminal_position or belt_entities[#belt_entities].position
+
+  ctx.register_output_belt_site(
+    task,
+    output_machine,
+    output_inserter,
+    belt_entities,
+    hub_position
+  )
+
+  ctx.complete_current_task(
+    builder_state,
+    task,
+    completion_prefix ..
+      " with burner-inserter at " .. ctx.format_position(output_inserter.position) ..
+      " and " .. tostring(#belt_entities) .. " belts toward " ..
+      ctx.format_position(hub_position)
+  )
+
+  return true
+end
+
 local function summarize_layout_entities(placements)
   local counts_by_name = {}
   local summarized = {}
@@ -152,12 +199,11 @@ local function summarize_layout_entities(placements)
   return summarized
 end
 
-local function should_preserve_partial_layout_on_abort(task)
-  if not task then
-    return false
-  end
-
-  return task.type == "place-assembly-input-route"
+local function cleanup_placed_layout_entities(builder_entity, task_state, refund_reason, ctx)
+  local preserved_layout_entities = summarize_layout_entities(task_state.placed_layout_entities)
+  task_state.consumed_build_items = nil
+  task_state.placed_layout_entities = {}
+  return {}, preserved_layout_entities
 end
 
 local function build_entity_placement_area(entity_name, position)
@@ -356,25 +402,7 @@ function action_build.finish_place_miner_task(builder_state, task, tick, ctx, re
     return
   end
 
-  local output_inserter = nil
-  local belt_entities = {}
-  if task.output_inserter and task.belt_entity_name then
-    for _, placement in ipairs(task_state.placed_layout_entities or {}) do
-      if placement.entity and placement.entity.valid then
-        if placement.site_role == "output-inserter" then
-          output_inserter = placement.entity
-        elseif placement.site_role == "output-belt" then
-          belt_entities[#belt_entities + 1] = placement.entity
-        end
-      end
-    end
-
-    if not (output_inserter and output_inserter.valid and #belt_entities > 0) then
-      ctx.debug_log("task " .. task.id .. ": build finished without a valid output belt layout; refreshing task")
-      refresh_task(builder_state, task, tick, ctx)
-      return
-    end
-  end
+  local has_output_belt_layout = task.output_inserter and task.belt_entity_name
 
   if downstream_machine then
     ctx.register_smelting_site(task, miner, downstream_machine, container)
@@ -382,14 +410,23 @@ function action_build.finish_place_miner_task(builder_state, task, tick, ctx, re
 
   ctx.register_resource_site(task, miner, downstream_machine, container)
 
-  if output_inserter then
-    ctx.register_output_belt_site(
-      task,
-      downstream_machine,
-      output_inserter,
-      belt_entities,
-      task_state.belt_hub_position or task_state.belt_terminal_position or belt_entities[#belt_entities].position
-    )
+  if has_output_belt_layout then
+    if not finalize_output_belt_site(
+        builder_state,
+        task,
+        tick,
+        ctx,
+        refresh_task,
+        task_state,
+        downstream_machine,
+        "placed " .. task.miner_name .. " at " .. ctx.format_position(miner.position) ..
+          " with " .. downstream_machine.name .. " at " .. ctx.format_position(downstream_machine.position)
+      )
+    then
+      return
+    end
+
+    return
   end
 
   ctx.complete_current_task(
@@ -397,9 +434,7 @@ function action_build.finish_place_miner_task(builder_state, task, tick, ctx, re
     task,
     "placed " .. task.miner_name .. " at " .. ctx.format_position(miner.position) ..
     (downstream_machine and " with " .. downstream_machine.name .. " at " .. ctx.format_position(downstream_machine.position) or "") ..
-    (container and " and " .. container.name .. " at " .. ctx.format_position(container.position) or "") ..
-    (output_inserter and " with output belt toward " ..
-      ctx.format_position(task_state.belt_hub_position or task_state.belt_terminal_position or belt_entities[#belt_entities].position) or "")
+    (container and " and " .. container.name .. " at " .. ctx.format_position(container.position) or "")
   )
 end
 
@@ -452,9 +487,6 @@ function action_build.finish_place_layout_near_machine_task(builder_state, task,
     end
 
     if not entity_contains_point(anchor_entity, feed_inserter.pickup_position, ctx) then
-      for _, placement in ipairs(valid_entities) do
-        ctx.destroy_entity_if_valid(placement.entity)
-      end
       ctx.debug_log(
         "task " .. task.id .. ": steel feed inserter pickup " ..
         ctx.format_position(feed_inserter.pickup_position) ..
@@ -466,9 +498,6 @@ function action_build.finish_place_layout_near_machine_task(builder_state, task,
     end
 
     if not entity_contains_point(steel_furnace, feed_inserter.drop_position, ctx) then
-      for _, placement in ipairs(valid_entities) do
-        ctx.destroy_entity_if_valid(placement.entity)
-      end
       ctx.debug_log(
         "task " .. task.id .. ": steel feed inserter drop " ..
         ctx.format_position(feed_inserter.drop_position) ..
@@ -506,39 +535,16 @@ function action_build.finish_place_layout_near_machine_task(builder_state, task,
 
   if task.type == "place-output-belt-line" then
     local output_machine = task_state.anchor_entity
-    local output_inserter = nil
-    local belt_entities = {}
-
-    for _, placement in ipairs(valid_entities) do
-      if placement.site_role == "output-inserter" then
-        output_inserter = placement.entity
-      elseif placement.site_role == "output-belt" then
-        belt_entities[#belt_entities + 1] = placement.entity
-      end
-    end
-
-    if not (output_machine and output_machine.valid and output_inserter and output_inserter.valid and #belt_entities > 0) then
-      ctx.debug_log("task " .. task.id .. ": output belt layout completed without valid machine/inserter/belts; refreshing task")
-      refresh_task(builder_state, task, tick, ctx)
-      return
-    end
-
-    ctx.register_output_belt_site(
-      task,
-      output_machine,
-      output_inserter,
-      belt_entities,
-      task_state.belt_hub_position
-    )
-
-    ctx.complete_current_task(
+    finalize_output_belt_site(
       builder_state,
       task,
+      tick,
+      ctx,
+      refresh_task,
+      task_state,
+      output_machine,
       "extended " .. (task_state.anchor_site and task_state.anchor_site.pattern_name or "smelting line") ..
-      " at " .. ctx.format_position(output_machine.position) ..
-      " with burner-inserter at " .. ctx.format_position(output_inserter.position) ..
-      " and " .. tostring(#belt_entities) .. " belts toward " ..
-      ctx.format_position(task_state.belt_hub_position or belt_entities[#belt_entities].position)
+        " at " .. ctx.format_position(output_machine and output_machine.position or task_state.anchor_position)
     )
     return
   end
@@ -710,18 +716,6 @@ function action_build.place_miner(builder_state, task, tick, ctx, refresh_task)
     task_state.consumed_build_items[item_name] = (task_state.consumed_build_items[item_name] or 0) + (count or 1)
   end
 
-  local function refund_consumed_build_items(reason)
-    if not task_state.consumed_build_items then
-      return
-    end
-
-    for item_name, count in pairs(task_state.consumed_build_items) do
-      ctx.insert_item(entity, item_name, count, reason)
-    end
-
-    task_state.consumed_build_items = nil
-  end
-
   local function consume_build_item(item_name, placed_entity)
     if not task.consume_items_on_place then
       return true
@@ -739,14 +733,19 @@ function action_build.place_miner(builder_state, task, tick, ctx, refresh_task)
   end
 
   local function abort_build(reason)
-    refund_consumed_build_items("refunded after aborted build for " .. task.id)
-    for _, placement in ipairs(task_state.placed_layout_entities or {}) do
-      ctx.destroy_entity_if_valid(placement.entity)
+    local _, preserved_layout_entities = cleanup_placed_layout_entities(
+      entity,
+      task_state,
+      "refunded after aborted build for " .. task.id,
+      ctx
+    )
+    if #preserved_layout_entities > 0 then
+      ctx.debug_log(
+        "task " .. task.id .. ": preserving placed layout " ..
+        ctx.format_products(preserved_layout_entities) ..
+        " despite " .. reason
+      )
     end
-    task_state.placed_layout_entities = {}
-    ctx.destroy_entity_if_valid(task_state.placed_output_container)
-    ctx.destroy_entity_if_valid(task_state.placed_downstream_machine)
-    ctx.destroy_entity_if_valid(task_state.placed_miner)
     refresh_task(builder_state, task, tick, ctx)
     ctx.debug_log("task " .. task.id .. ": " .. reason)
   end
@@ -799,7 +798,6 @@ function action_build.place_miner(builder_state, task, tick, ctx, refresh_task)
 
       if #covered_resources == 0 then
         local mining_target_name = miner.mining_target and miner.mining_target.valid and miner.mining_target.name or "nil"
-        miner.destroy()
         ctx.debug_log("task " .. task.id .. ": miner at " .. ctx.format_position(task_state.build_position) .. " covered no " .. task.resource_name .. " in mining_area; immediate mining_target=" .. mining_target_name)
         refresh_task(builder_state, task, tick, ctx)
         return
@@ -808,7 +806,6 @@ function action_build.place_miner(builder_state, task, tick, ctx, refresh_task)
 
     task_state.placed_miner = miner
     if not consume_build_item(task.miner_name, miner) then
-      miner.destroy()
       refresh_task(builder_state, task, tick, ctx)
       return
     end
@@ -898,14 +895,12 @@ function action_build.place_miner(builder_state, task, tick, ctx, refresh_task)
     end
 
     if task.downstream_machine.cover_drop_position and not ctx.point_in_area(miner.drop_position, downstream_machine.selection_box) then
-      downstream_machine.destroy()
       abort_build(task.downstream_machine.name .. " no longer covers miner drop position at " .. ctx.format_position(miner.drop_position))
       return
     end
 
     task_state.placed_downstream_machine = downstream_machine
     if not consume_build_item(task.downstream_machine.name, downstream_machine) then
-      downstream_machine.destroy()
       abort_build("missing " .. task.downstream_machine.name .. " in builder inventory")
       return
     end
@@ -966,7 +961,6 @@ function action_build.place_miner(builder_state, task, tick, ctx, refresh_task)
 
     task_state.placed_output_container = container
     if not consume_build_item(task.output_container.name, container) then
-      container.destroy()
       abort_build("missing " .. task.output_container.name .. " in builder inventory")
       return
     end
@@ -1064,7 +1058,6 @@ function action_build.place_miner(builder_state, task, tick, ctx, refresh_task)
     end
 
     if not consume_build_item(placement.item_name, placed_entity) then
-      placed_entity.destroy()
       abort_build("missing " .. placement.item_name .. " in builder inventory")
       return
     end
@@ -1115,46 +1108,20 @@ function action_build.place_machine_near_site(builder_state, task, tick, ctx, re
     task_state.consumed_build_items[item_name] = (task_state.consumed_build_items[item_name] or 0) + (count or 1)
   end
 
-  local function refund_consumed_build_item(reason)
-    if task_state.consumed_machine_item then
-      ctx.insert_item(entity, consumed_item_name, task_state.consumed_machine_item, reason)
-      task_state.consumed_machine_item = nil
-    end
-  end
-
-  local function refund_consumed_layout_items(reason)
-    if not task_state.consumed_build_items then
-      return
-    end
-
-    for item_name, count in pairs(task_state.consumed_build_items) do
-      ctx.insert_item(entity, item_name, count, reason)
-    end
-
-    task_state.consumed_build_items = nil
-  end
-
-  local function destroy_placed_layout_entities()
-    for _, placement in ipairs(task_state.placed_layout_entities or {}) do
-      ctx.destroy_entity_if_valid(placement.entity)
-    end
-
-    task_state.placed_layout_entities = {}
-  end
-
   local function abort_build(reason)
-    local removed_layout_entities = summarize_layout_entities(task_state.placed_layout_entities)
-    if #removed_layout_entities > 0 then
+    local _, preserved_layout_entities = cleanup_placed_layout_entities(
+      entity,
+      task_state,
+      "refunded after aborted reserved layout for " .. task.id,
+      ctx
+    )
+    if #preserved_layout_entities > 0 then
       ctx.debug_log(
-        "task " .. task.id .. ": removing partial reserved layout " ..
-        ctx.format_products(removed_layout_entities) ..
-        " because " .. reason
+        "task " .. task.id .. ": preserving placed reserved layout " ..
+        ctx.format_products(preserved_layout_entities) ..
+        " despite " .. reason
       )
     end
-    refund_consumed_layout_items("refunded after aborted reserved layout for " .. task.id)
-    refund_consumed_build_item("refunded after aborted build for " .. task.id)
-    destroy_placed_layout_entities()
-    ctx.destroy_entity_if_valid(task_state.placed_entity)
     refresh_task(builder_state, task, tick, ctx)
     ctx.debug_log("task " .. task.id .. ": " .. reason)
   end
@@ -1167,10 +1134,19 @@ function action_build.place_machine_near_site(builder_state, task, tick, ctx, re
   end
 
   local function schedule_retry(wait_reason, reason)
-    refund_consumed_layout_items("refunded after delayed retry for " .. task.id)
-    refund_consumed_build_item("refunded after delayed retry for " .. task.id)
-    destroy_placed_layout_entities()
-    ctx.destroy_entity_if_valid(task_state.placed_entity)
+    local _, preserved_layout_entities = cleanup_placed_layout_entities(
+      entity,
+      task_state,
+      "refunded after delayed retry for " .. task.id,
+      ctx
+    )
+    if #preserved_layout_entities > 0 then
+      ctx.debug_log(
+        "task " .. task.id .. ": preserving placed reserved layout " ..
+        ctx.format_products(preserved_layout_entities) ..
+        " before retry despite " .. reason
+      )
+    end
     builder_state.task_state = {
       phase = "waiting-for-resource",
       wait_reason = wait_reason,
@@ -1242,8 +1218,6 @@ function action_build.place_machine_near_site(builder_state, task, tick, ctx, re
       local reason = "placed " .. consumed_item_name .. " at " .. ctx.format_position(placed_entity.position)
       local removed_count = ctx.remove_item(entity, consumed_item_name, 1, reason)
       if removed_count < 1 then
-        placed_entity.destroy()
-        task_state.placed_entity = nil
         ctx.debug_log("task " .. task.id .. ": missing " .. consumed_item_name .. " in builder inventory for placement")
         refresh_task(builder_state, task, tick, ctx)
         return
@@ -1350,7 +1324,6 @@ function action_build.place_machine_near_site(builder_state, task, tick, ctx, re
       if placement.recipe_name then
         local recipe_set, recipe_error = try_set_entity_recipe(placed_support_entity, placement.recipe_name)
         if not recipe_set then
-          placed_support_entity.destroy()
           if task.abandon_partial_site_on_failure then
             complete_partial_site(
               "failed to set recipe " .. placement.recipe_name ..
@@ -1372,7 +1345,6 @@ function action_build.place_machine_near_site(builder_state, task, tick, ctx, re
           "placed " .. placement.item_name .. " at " .. ctx.format_position(placed_support_entity.position)
         )
         if removed_count < 1 then
-          placed_support_entity.destroy()
           if task.abandon_partial_site_on_failure then
             complete_partial_site("missing " .. placement.item_name .. " in builder inventory")
             return
@@ -1430,52 +1402,20 @@ function action_build.place_layout_near_machine(builder_state, task, tick, ctx, 
     task_state.consumed_build_items[item_name] = (task_state.consumed_build_items[item_name] or 0) + (count or 1)
   end
 
-  local function refund_consumed_build_items(reason)
-    if not task_state.consumed_build_items then
-      return
-    end
-
-    for item_name, count in pairs(task_state.consumed_build_items) do
-      ctx.insert_item(entity, item_name, count, reason)
-    end
-
-    task_state.consumed_build_items = nil
-  end
-
-  local function destroy_placed_layout_entities()
-    for _, placement in ipairs(task_state.placed_layout_entities or {}) do
-      ctx.destroy_entity_if_valid(placement.entity)
-    end
-
-    task_state.placed_layout_entities = {}
-  end
-
   local function abort_build(reason)
-    local preserved_layout_entities = summarize_layout_entities(task_state.placed_layout_entities)
-    if should_preserve_partial_layout_on_abort(task) then
-      if #preserved_layout_entities > 0 then
-        ctx.debug_log(
-          "task " .. task.id .. ": preserving partial layout " ..
-          ctx.format_products(preserved_layout_entities) ..
-          " despite " .. reason
-        )
-      end
-      task_state.consumed_build_items = nil
-      task_state.placed_layout_entities = {}
-      refresh_task(builder_state, task, tick, ctx)
-      ctx.debug_log("task " .. task.id .. ": " .. reason)
-      return
-    end
-
+    local _, preserved_layout_entities = cleanup_placed_layout_entities(
+      entity,
+      task_state,
+      "refunded after aborted build for " .. task.id,
+      ctx
+    )
     if #preserved_layout_entities > 0 then
       ctx.debug_log(
-        "task " .. task.id .. ": removing partial layout " ..
+        "task " .. task.id .. ": preserving placed layout " ..
         ctx.format_products(preserved_layout_entities) ..
-        " because " .. reason
+        " despite " .. reason
       )
     end
-    refund_consumed_build_items("refunded after aborted build for " .. task.id)
-    destroy_placed_layout_entities()
     refresh_task(builder_state, task, tick, ctx)
     ctx.debug_log("task " .. task.id .. ": " .. reason)
   end
@@ -1519,7 +1459,6 @@ function action_build.place_layout_near_machine(builder_state, task, tick, ctx, 
   if placement.recipe_name then
     local recipe_set, recipe_error = try_set_entity_recipe(placed_entity, placement.recipe_name)
     if not recipe_set then
-      placed_entity.destroy()
       abort_build("failed to set recipe " .. placement.recipe_name .. " on " .. placement.entity_name .. ": " .. tostring(recipe_error))
       return
     end
@@ -1533,7 +1472,6 @@ function action_build.place_layout_near_machine(builder_state, task, tick, ctx, 
       "placed " .. placement.item_name .. " at " .. ctx.format_position(placed_entity.position)
     )
     if removed_count < 1 then
-      placed_entity.destroy()
       abort_build("missing " .. placement.item_name .. " in builder inventory")
       return
     end

@@ -3113,6 +3113,7 @@ local function setup_plate_belt_export_test_case(spec)
       if export_task then
         export_task.site_selection = export_task.site_selection or {}
         export_task.site_selection.random_candidate_pool = 1
+        export_task.consume_items_on_place = true
       end
     end,
     inventory = {
@@ -3479,6 +3480,310 @@ function setup_output_belt_turn_avoids_resource_patch_test_case()
     end,
     assertion = {
       case_name = "output_belt_turn_avoids_resource_patch",
+      surface_name = surface.name,
+      area = area,
+      deadline_offset_ticks = 1,
+      skip_output_assertion = true
+    }
+  }
+end
+
+function setup_output_belt_layout_places_belts_before_inserter_test_case()
+  local surface = game.surfaces["nauvis"] or game.surfaces[1]
+  if not surface then
+    error("enemy-builder test: nauvis surface is unavailable")
+  end
+
+  local builder_position = {x = 0, y = 0}
+  local iron_patch_position = {x = 24, y = 0}
+  local area = make_test_area({x = 12, y = 0}, 32, 20)
+
+  surface.always_day = true
+  clear_test_area(surface, area)
+  create_test_resource_patch(surface, "iron-ore", iron_patch_position, 3, 5000)
+
+  return setup_scaling_test{
+    case_name = "output_belt_layout_places_belts_before_inserter",
+    builder_position = builder_position,
+    surface_name = surface.name,
+    suppress_player_autospawn = true,
+    disable_nearby_machine_output_collection = true,
+    mutate_builder_state = function(builder_state, test_surface)
+      builder_state.task_state = {
+        phase = "scaling-waiting",
+        wait_reason = "test-idle",
+        next_attempt_tick = game.tick + 3600
+      }
+
+      local iron_site = place_test_runtime_iron_smelting_site(test_surface, iron_patch_position)
+      local task = deep_copy(builder_data.site_patterns.iron_plate_belt_export.build_task)
+      local layout_site, summary = world_model.find_output_belt_layout_for_miner_site(
+        test_surface,
+        builder_state.entity.force,
+        task,
+        iron_site.miner,
+        iron_site.anchor_furnace,
+        world_model_context
+      )
+
+      if not (layout_site and layout_site.placements and #layout_site.placements > 1) then
+        error(
+          "enemy-builder test: expected output belt layout placements; " ..
+          "valid=" .. tostring(summary and summary.valid_belt_paths or 0) ..
+          " failed=" .. tostring(summary and summary.failed_belt_paths or 0)
+        )
+      end
+
+      local first_placement = layout_site.placements[1]
+      local last_placement = layout_site.placements[#layout_site.placements]
+      if not (first_placement and first_placement.site_role == "output-belt") then
+        error(
+          "enemy-builder test: expected output belt layout to place belt first; " ..
+          "first-role=" .. tostring(first_placement and first_placement.site_role or "nil")
+        )
+      end
+
+      if not (last_placement and last_placement.site_role == "output-inserter") then
+        error(
+          "enemy-builder test: expected output belt layout to place inserter last; " ..
+          "last-role=" .. tostring(last_placement and last_placement.site_role or "nil")
+        )
+      end
+    end,
+    assertion = {
+      case_name = "output_belt_layout_places_belts_before_inserter",
+      surface_name = surface.name,
+      area = area,
+      deadline_offset_ticks = 1,
+      skip_output_assertion = true
+    }
+  }
+end
+
+function setup_steel_output_belt_layout_places_belts_before_inserter_test_case()
+  local surface = game.surfaces["nauvis"] or game.surfaces[1]
+  if not surface then
+    error("enemy-builder test: nauvis surface is unavailable")
+  end
+
+  local builder_position = {x = 0, y = 0}
+  local anchor_position = {x = 32, y = 0}
+  local area = make_test_area(anchor_position, 48, 32)
+
+  surface.always_day = true
+  clear_test_area(surface, area)
+
+  return setup_scaling_test{
+    case_name = "steel_output_belt_layout_places_belts_before_inserter",
+    builder_position = builder_position,
+    surface_name = surface.name,
+    suppress_player_autospawn = true,
+    disable_nearby_machine_output_collection = true,
+    mutate_builder_state = function(builder_state, test_surface)
+      builder_state.task_state = {
+        phase = "scaling-waiting",
+        wait_reason = "test-idle",
+        next_attempt_tick = game.tick + 3600
+      }
+
+      place_test_runtime_steel_smelting_site(test_surface, builder_state, "north", anchor_position)
+
+      local task = deep_copy(builder_data.site_patterns.steel_plate_belt_export.build_task)
+      local layout_site, summary = find_output_belt_line_site(builder_state, task)
+
+      if not (layout_site and layout_site.placements and #layout_site.placements > 1) then
+        error(
+          "enemy-builder test: expected steel output belt layout placements; " ..
+          "checked=" .. tostring(summary and summary.anchor_entities_considered or 0) ..
+          " valid=" .. tostring(summary and summary.valid_belt_paths or 0) ..
+          " failed=" .. tostring(summary and summary.failed_belt_paths or 0)
+        )
+      end
+
+      local first_placement = layout_site.placements[1]
+      local last_placement = layout_site.placements[#layout_site.placements]
+      if not (first_placement and first_placement.site_role == "output-belt") then
+        error(
+          "enemy-builder test: expected steel output belt layout to place belt first; " ..
+          "first-role=" .. tostring(first_placement and first_placement.site_role or "nil")
+        )
+      end
+
+      if not (last_placement and last_placement.site_role == "output-inserter") then
+        error(
+          "enemy-builder test: expected steel output belt layout to place inserter last; " ..
+          "last-role=" .. tostring(last_placement and last_placement.site_role or "nil")
+        )
+      end
+    end,
+    assertion = {
+      case_name = "steel_output_belt_layout_places_belts_before_inserter",
+      surface_name = surface.name,
+      area = area,
+      deadline_offset_ticks = 1,
+      skip_output_assertion = true,
+      minimum_resource_site_counts = {
+        steel_smelting = 1
+      }
+    }
+  }
+end
+
+function setup_output_belt_abort_preserves_transport_belts_test_case()
+  local surface = game.surfaces["nauvis"] or game.surfaces[1]
+  if not surface then
+    error("enemy-builder test: nauvis surface is unavailable")
+  end
+
+  local patch_center = {x = 32, y = 0}
+  local builder_position = {x = 0, y = 0}
+  local area = make_test_area(patch_center, 96, 64)
+
+  surface.always_day = true
+  clear_test_area(surface, area)
+  create_test_resource_patch(surface, "iron-ore", patch_center, 3, 5000)
+
+  return setup_scaling_test{
+    case_name = "output_belt_abort_preserves_transport_belts",
+    builder_position = builder_position,
+    surface_name = surface.name,
+    suppress_player_autospawn = true,
+    disable_nearby_machine_output_collection = true,
+    mutate_builder_state = function(builder_state, test_surface)
+      local task = deep_copy(builder_data.site_patterns.iron_plate_belt_export.build_task)
+      task.id = "test-output-belt-abort-preserves-transport-belt"
+      task.consume_items_on_place = true
+      task.site_selection = task.site_selection or {}
+      task.site_selection.random_candidate_pool = 1
+
+      local site, summary = find_resource_site(test_surface, builder_state.entity.force, builder_state.entity.position, task)
+      if not (site and site.belt_layout_placements and #site.belt_layout_placements >= 2) then
+        error(
+          "enemy-builder test: failed to find output belt layout site for preserve test; " ..
+          "valid=" .. tostring(summary and summary.valid_belt_paths or 0) ..
+          " failed=" .. tostring(summary and summary.failed_belt_paths or 0)
+        )
+      end
+
+      local miner = test_surface.create_entity{
+        name = task.miner_name,
+        position = site.build_position,
+        direction = site.build_direction,
+        force = builder_state.entity.force,
+        create_build_effect_smoke = false
+      }
+      if not (miner and miner.valid) then
+        error("enemy-builder test: failed to create miner for preserve test")
+      end
+
+      local downstream_machine = test_surface.create_entity{
+        name = task.downstream_machine.name,
+        position = site.downstream_machine_position,
+        force = builder_state.entity.force,
+        create_build_effect_smoke = false
+      }
+      if not (downstream_machine and downstream_machine.valid) then
+        miner.destroy()
+        error("enemy-builder test: failed to create downstream machine for preserve test")
+      end
+
+      local first_placement = site.belt_layout_placements[1]
+      local second_placement = site.belt_layout_placements[2]
+      local first_belt = test_surface.create_entity{
+        name = first_placement.entity_name,
+        position = first_placement.build_position,
+        direction = first_placement.build_direction,
+        force = builder_state.entity.force,
+        create_build_effect_smoke = false
+      }
+      if not (first_belt and first_belt.valid) then
+        downstream_machine.destroy()
+        miner.destroy()
+        error("enemy-builder test: failed to create first belt for preserve test")
+      end
+
+      local blocker = test_surface.create_entity{
+        name = "wooden-chest",
+        position = second_placement.build_position,
+        force = builder_state.entity.force,
+        create_build_effect_smoke = false
+      }
+      if not (blocker and blocker.valid) then
+        first_belt.destroy()
+        downstream_machine.destroy()
+        miner.destroy()
+        error("enemy-builder test: failed to create blocker for preserve test")
+      end
+
+      builder_state.task_state = {
+        phase = "building",
+        build_position = clone_position(site.build_position),
+        build_direction = site.build_direction,
+        downstream_machine_position = clone_position(site.downstream_machine_position),
+        placed_miner = miner,
+        placed_downstream_machine = downstream_machine,
+        layout_placements = deep_copy(site.belt_layout_placements),
+        layout_index = 2,
+        placed_layout_entities = {
+          {
+            id = first_placement.id,
+            site_role = first_placement.site_role,
+            entity_name = first_placement.entity_name,
+            entity = first_belt
+          }
+        },
+        belt_hub_position = clone_position(site.belt_hub_position),
+        belt_terminal_position = clone_position(site.belt_terminal_position),
+        consumed_build_items = {
+          ["transport-belt"] = 1
+        }
+      }
+
+      task_executor.advance_task_phase(builder_state, task, game.tick, task_executor_context)
+
+      if not (miner and miner.valid) then
+        error("enemy-builder test: expected placed miner to survive abort")
+      end
+
+      if not (downstream_machine and downstream_machine.valid) then
+        error("enemy-builder test: expected placed downstream machine to survive abort")
+      end
+
+      if not (first_belt and first_belt.valid) then
+        error("enemy-builder test: expected placed transport belt to survive abort")
+      end
+
+      local preserved_belts = test_surface.find_entities_filtered{
+        area = {
+          {area.left_top.x, area.left_top.y},
+          {area.right_bottom.x, area.right_bottom.y}
+        },
+        force = builder_state.entity.force,
+        name = "transport-belt"
+      }
+      if #preserved_belts ~= 1 then
+        error(
+          "enemy-builder test: expected exactly one preserved transport belt after abort; count=" ..
+          tostring(#preserved_belts)
+        )
+      end
+
+      if get_item_count(builder_state.entity, "transport-belt") ~= 0 then
+        error(
+          "enemy-builder test: expected placed transport belt to stay consumed after abort; inventory=" ..
+          tostring(get_item_count(builder_state.entity, "transport-belt"))
+        )
+      end
+
+      builder_state.task_state = {
+        phase = "scaling-waiting",
+        wait_reason = "test-idle",
+        next_attempt_tick = game.tick + 3600
+      }
+      builder_state.scaling_active_task = nil
+    end,
+    assertion = {
+      case_name = "output_belt_abort_preserves_transport_belts",
       surface_name = surface.name,
       area = area,
       deadline_offset_ticks = 1,
@@ -5402,6 +5707,12 @@ local test_remote_interface = {
   setup_copper_plate_belt_export_ground_items_test_case = setup_copper_plate_belt_export_ground_items_test_case,
   setup_output_belts_can_overlap_resources_test_case = setup_output_belts_can_overlap_resources_test_case,
   setup_output_belt_turn_avoids_resource_patch_test_case = setup_output_belt_turn_avoids_resource_patch_test_case,
+  setup_output_belt_layout_places_belts_before_inserter_test_case =
+    setup_output_belt_layout_places_belts_before_inserter_test_case,
+  setup_steel_output_belt_layout_places_belts_before_inserter_test_case =
+    setup_steel_output_belt_layout_places_belts_before_inserter_test_case,
+  setup_output_belt_abort_preserves_transport_belts_test_case =
+    setup_output_belt_abort_preserves_transport_belts_test_case,
   setup_solar_panel_factory_test_case = setup_solar_panel_factory_test_case,
   setup_solar_panel_factory_missing_sources_reports_blocker_test_case = setup_solar_panel_factory_missing_sources_reports_blocker_test_case,
   setup_scaling_collect_switches_site_test_case = setup_scaling_collect_switches_site_test_case,
