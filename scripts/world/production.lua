@@ -134,6 +134,7 @@ function production.register_assembler_defense_site(task, assembler, placed_layo
   for _, site in ipairs(production_sites) do
     if site.site_type == "assembler-defense" and site.assembler == assembler then
       site.task_id = task.id or task.completed_scaling_milestone_name or "assembler-defense"
+      site.pattern_name = task.pattern_name
       site.turrets = turrets
       site.inserters = inserters
       site.power_poles = poles
@@ -145,6 +146,7 @@ function production.register_assembler_defense_site(task, assembler, placed_layo
   production_sites[#production_sites + 1] = {
     task_id = task.id or task.completed_scaling_milestone_name or "assembler-defense",
     site_type = "assembler-defense",
+    pattern_name = task.pattern_name,
     assembler = assembler,
     turrets = turrets,
     inserters = inserters,
@@ -159,6 +161,23 @@ function production.register_assembler_defense_site(task, assembler, placed_layo
   )
 
   return production_sites[#production_sites]
+end
+
+function production.get_pattern_site_counts()
+  local counts = {}
+
+  for _, site in ipairs(storage_helpers.ensure_production_sites()) do
+    if site.site_type == "assembler-defense" and site.pattern_name and site.assembler and site.assembler.valid then
+      for _, turret in ipairs(site.turrets or {}) do
+        if turret and turret.valid then
+          counts[site.pattern_name] = (counts[site.pattern_name] or 0) + 1
+          break
+        end
+      end
+    end
+  end
+
+  return counts
 end
 
 function production.register_output_belt_site(task, output_machine, output_inserter, belt_entities, hub_position, ctx)

@@ -228,6 +228,47 @@ local function get_scaling_collection_goal_count(item_name, adapters)
   return limits and limits[item_name] or nil
 end
 
+local function get_active_scaling_collection_goal_count(task_state, adapters)
+  if not task_state then
+    return nil
+  end
+
+  if task_state.collection_goal_count then
+    return task_state.collection_goal_count
+  end
+
+  return get_scaling_collection_goal_count(task_state.target_item_name, adapters)
+end
+
+local function finish_scaling_collection_if_goal_reached(builder_state, task_state, adapters)
+  if not (builder_state and task_state and task_state.target_item_name) then
+    return false
+  end
+
+  local goal_count = get_active_scaling_collection_goal_count(task_state, adapters)
+  if not goal_count then
+    return false
+  end
+
+  if adapters.get_item_count(builder_state.entity, task_state.target_item_name) < goal_count then
+    return false
+  end
+
+  adapters.set_idle(builder_state.entity)
+  adapters.debug_log(
+    "scaling: reached " .. task_state.target_item_name ..
+    " target " .. tostring(goal_count) ..
+    (task_state.collection_mode == "wait-patrol" and " while patrolling; ending collection" or "; ending collection")
+  )
+
+  if builder_state.scaling_fuel_recovery and builder_state.scaling_fuel_recovery.item_name == task_state.target_item_name then
+    reset_scaling_fuel_recovery_observation(builder_state)
+  end
+
+  builder_state.task_state = nil
+  return true
+end
+
 local function find_random_collection_crawl_site(builder_state, item_name, origin_position, visited_site_keys, adapters)
   adapters.discover_resource_sites(builder_state)
 
@@ -588,7 +629,16 @@ start_scaling_collection = function(builder_state, site, item_name, tick, allow_
   end
 end
 
-local function start_scaling_wait_patrol(builder_data, builder_state, item_name, tick, display_task, adapters, exclude_site)
+local function start_scaling_wait_patrol(
+  builder_data,
+  builder_state,
+  item_name,
+  tick,
+  display_task,
+  adapters,
+  exclude_site,
+  collection_goal_count
+)
   local site = find_wait_patrol_site(builder_data, builder_state, item_name, adapters, exclude_site)
   if not site then
     return nil
@@ -602,7 +652,10 @@ local function start_scaling_wait_patrol(builder_data, builder_state, item_name,
     false,
     display_task,
     adapters,
-    {collection_mode = "wait-patrol"}
+    {
+      collection_mode = "wait-patrol",
+      collection_goal_count = collection_goal_count
+    }
   )
   return "wait-patrol"
 end
@@ -691,6 +744,7 @@ local function handle_empty_scaling_collection_site(builder_data, builder_state,
 
   local item_name = task_state and task_state.target_item_name or nil
   local current_site = task_state and task_state.scaling_site or nil
+  local collection_goal_count = task_state and task_state.collection_goal_count or nil
   local fuel_recovery_result =
     try_start_scaling_fuel_recovery(builder_data, builder_state, item_name, current_site, tick, display_task, adapters)
   if fuel_recovery_result then
@@ -704,12 +758,30 @@ local function handle_empty_scaling_collection_site(builder_data, builder_state,
       "scaling: " .. ((current_site and current_site.pattern_name) or "site") ..
       " yielded no collectable items on arrival; switching to " .. (alternate_site.pattern_name or "site")
     )
-    start_scaling_collection(builder_state, alternate_site, item_name, tick, false, display_task, adapters)
+    start_scaling_collection(
+      builder_state,
+      alternate_site,
+      item_name,
+      tick,
+      false,
+      display_task,
+      adapters,
+      {collection_goal_count = collection_goal_count}
+    )
     return true
   end
 
   local wait_patrol_result =
-    start_scaling_wait_patrol(builder_data, builder_state, item_name, tick, display_task, adapters, current_site)
+    start_scaling_wait_patrol(
+      builder_data,
+      builder_state,
+      item_name,
+      tick,
+      display_task,
+      adapters,
+      current_site,
+      collection_goal_count
+    )
   if wait_patrol_result then
     if wait_patrol_result == "wait-patrol" then
       adapters.debug_log(
@@ -821,14 +893,15 @@ local function plan_scaling_required_items(builder_data, builder_state, required
   end
 
   if action.kind == "collect-ingredient" then
+    local collection_goal_count = adapters.get_item_count(builder_state.entity, action.item_name) + action.count
     local site = find_collectable_site(builder_state, action.item_name, false, adapters)
     if site then
-      local collection_options = nil
+      local collection_options = {
+        collection_goal_count = collection_goal_count
+      }
       if should_use_scaling_site_crawl(action.item_name) then
-        collection_options = {
-          collection_mode = "site-crawl",
-          collection_goal_count = get_scaling_collection_goal_count(action.item_name, adapters)
-        }
+        collection_options.collection_mode = "site-crawl"
+        collection_options.collection_goal_count = get_scaling_collection_goal_count(action.item_name, adapters)
       end
       start_scaling_collection(builder_state, site, action.item_name, tick, false, display_task, adapters, collection_options)
       return true
@@ -881,7 +954,16 @@ local function plan_scaling_required_items(builder_data, builder_state, required
       return true
     end
 
-    if start_scaling_wait_patrol(builder_data, builder_state, action.item_name, tick, display_task, adapters) then
+    if start_scaling_wait_patrol(
+      builder_data,
+      builder_state,
+      action.item_name,
+      tick,
+      display_task,
+      adapters,
+      nil,
+      collection_goal_count
+    ) then
       return true
     end
 
@@ -911,8 +993,26 @@ local function plan_scaling_reserves(builder_data, builder_state, tick, adapters
         }
         local site = find_collectable_site(builder_state, reserve_item.name, false, adapters)
         if site then
-          start_scaling_collection(builder_state, site, reserve_item.name, tick, false, reserve_task, adapters)
-        elseif start_scaling_wait_patrol(builder_data, builder_state, reserve_item.name, tick, reserve_task, adapters) then
+          start_scaling_collection(
+            builder_state,
+            site,
+            reserve_item.name,
+            tick,
+            false,
+            reserve_task,
+            adapters,
+            {collection_goal_count = reserve_item.count}
+          )
+        elseif start_scaling_wait_patrol(
+          builder_data,
+          builder_state,
+          reserve_item.name,
+          tick,
+          reserve_task,
+          adapters,
+          nil,
+          reserve_item.count
+        ) then
         else
           start_scaling_wait(
             builder_data,
@@ -1062,6 +1162,9 @@ local function advance_scaling(builder_data, builder_state, tick, adapters)
     local entity = builder_state.entity
     local task_state = builder_state.task_state
     normalize_scaling_collection_task_state(task_state, adapters)
+    if finish_scaling_collection_if_goal_reached(builder_state, task_state, adapters) then
+      return
+    end
     local destination_position = task_state.target_position
     local movement_position = task_state.approach_position or destination_position
     local arrival_distance = task_state.arrival_distance or 1.1
@@ -1108,6 +1211,9 @@ local function advance_scaling(builder_data, builder_state, tick, adapters)
   if phase == "scaling-collecting-site" then
     local task_state = builder_state.task_state
     normalize_scaling_collection_task_state(task_state, adapters)
+    if finish_scaling_collection_if_goal_reached(builder_state, task_state, adapters) then
+      return
+    end
     local site = task_state.scaling_site
     local inventory = site and adapters.get_site_collect_inventory(site) or nil
 
@@ -1196,6 +1302,9 @@ local function advance_scaling(builder_data, builder_state, tick, adapters)
 
   if phase == "scaling-waiting-at-site" then
     normalize_scaling_collection_task_state(builder_state.task_state, adapters)
+    if finish_scaling_collection_if_goal_reached(builder_state, builder_state.task_state, adapters) then
+      return
+    end
     if tick >= (builder_state.task_state.next_attempt_tick or 0) then
       builder_state.task_state.phase = "scaling-collecting-site"
     end

@@ -109,6 +109,10 @@ function world_model.find_output_belt_layout_for_miner_site(surface, force, task
   return queries.find_output_belt_layout_for_miner_site(surface, force, task, miner, output_machine, ctx)
 end
 
+function world_model.find_output_belt_path_between_positions(surface, force, first_position, terminal_position, task, ctx)
+  return queries.find_output_belt_path_between_positions(surface, force, first_position, terminal_position, task, ctx)
+end
+
 function world_model.find_reserved_layout_placements(surface, force, task, anchor_entity, ctx)
   return queries.find_reserved_layout_placements(surface, force, task, anchor_entity, ctx)
 end

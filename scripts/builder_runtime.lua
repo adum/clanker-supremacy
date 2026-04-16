@@ -518,6 +518,10 @@ local function ensure_builder_state_fields(builder_state)
     builder_state.scaling_pattern_index = 1
   end
 
+  if builder_state.scaling_pattern_repeat_count == nil then
+    builder_state.scaling_pattern_repeat_count = 0
+  end
+
   if builder_state.completed_scaling_milestones == nil then
     builder_state.completed_scaling_milestones = {}
   end
@@ -1798,6 +1802,7 @@ local function initialize_builder_state(entity)
     task_index = 1,
     task_state = nil,
     scaling_pattern_index = 1,
+    scaling_pattern_repeat_count = 0,
     scaling_active_task = nil,
     completed_scaling_milestones = {}
   }
@@ -2668,6 +2673,61 @@ local function setup_full_run_layout_snapshot_case(duration_ticks, snapshot_tick
   })
 end
 
+function place_test_registered_firearm_magazine_outpost_site(surface, origin_position)
+  local force = ensure_builder_force()
+  local firearm_task = builder_data.site_patterns and builder_data.site_patterns.firearm_magazine_outpost and
+    builder_data.site_patterns.firearm_magazine_outpost.build_task or nil
+  if not firearm_task then
+    error("enemy-builder test: missing firearm_magazine_outpost build task")
+  end
+
+  local assembler = surface.create_entity{
+    name = firearm_task.entity_name,
+    position = origin_position,
+    force = force,
+    create_build_effect_smoke = false
+  }
+  if not (assembler and assembler.valid) then
+    error("enemy-builder test: failed to create firearm outpost assembler")
+  end
+
+  local left_turret = surface.create_entity{
+    name = "gun-turret",
+    position = {x = origin_position.x - 3, y = origin_position.y},
+    force = force,
+    create_build_effect_smoke = false
+  }
+  local right_turret = surface.create_entity{
+    name = "gun-turret",
+    position = {x = origin_position.x + 3, y = origin_position.y},
+    force = force,
+    create_build_effect_smoke = false
+  }
+
+  if not (left_turret and left_turret.valid and right_turret and right_turret.valid) then
+    if assembler and assembler.valid then
+      assembler.destroy()
+    end
+    if left_turret and left_turret.valid then
+      left_turret.destroy()
+    end
+    if right_turret and right_turret.valid then
+      right_turret.destroy()
+    end
+    error("enemy-builder test: failed to create firearm outpost turrets")
+  end
+
+  register_assembler_defense_site(firearm_task, assembler, {
+    {entity = left_turret, site_role = "turret"},
+    {entity = right_turret, site_role = "turret"}
+  })
+
+  return {
+    assembler = assembler,
+    turrets = {left_turret, right_turret}
+  }
+end
+
 local function setup_firearm_outpost_test_case()
   local surface = game.surfaces["nauvis"] or game.surfaces[1]
   if not surface then
@@ -3324,6 +3384,109 @@ function setup_output_belts_can_overlap_resources_test_case()
   }
 end
 
+function setup_output_belt_turn_avoids_resource_patch_test_case()
+  local surface = game.surfaces["nauvis"] or game.surfaces[1]
+  if not surface then
+    error("enemy-builder test: nauvis surface is unavailable")
+  end
+
+  local builder_position = {x = 0, y = 0}
+  local area = make_test_area({x = 4, y = -2}, 16, 16)
+
+  surface.always_day = true
+  clear_test_area(surface, area)
+
+  for x = 5, 7 do
+    for y = -3, 0 do
+      local resource = surface.create_entity{
+        name = "iron-ore",
+        position = {x = x + 0.5, y = y + 0.5},
+        amount = 5000
+      }
+      if not (resource and resource.valid) then
+        error(
+          "enemy-builder test: failed to create resource strip tile at " ..
+          format_position({x = x + 0.5, y = y + 0.5})
+        )
+      end
+    end
+  end
+
+  return setup_scaling_test{
+    case_name = "output_belt_turn_avoids_resource_patch",
+    builder_position = builder_position,
+    surface_name = surface.name,
+    suppress_player_autospawn = true,
+    disable_nearby_machine_output_collection = true,
+    mutate_builder_state = function(builder_state, test_surface)
+      builder_state.task_state = {
+        phase = "scaling-waiting",
+        wait_reason = "test-idle",
+        next_attempt_tick = game.tick + 3600
+      }
+
+      local task = deep_copy(builder_data.site_patterns.iron_plate_belt_export.build_task)
+      local first_position = {x = 0.5, y = 0.5}
+      local terminal_position = {x = 6.5, y = -4.5}
+      local placements, summary = world_model.find_output_belt_path_between_positions(
+        test_surface,
+        builder_state.entity.force,
+        first_position,
+        terminal_position,
+        task,
+        world_model_context
+      )
+
+      if not (placements and #placements > 0) then
+        error(
+          "enemy-builder test: expected output belt path through heuristic case; " ..
+          "valid=" .. tostring(summary and summary.valid_belt_paths or 0) ..
+          " failed=" .. tostring(summary and summary.failed_belt_paths or 0) ..
+          " detail=" .. tostring(summary and summary.failed_belt_path_detail or "nil")
+        )
+      end
+
+      local overlapping_belt_count = 0
+      for _, placement in ipairs(placements) do
+        if placement.entity_name == task.belt_entity_name and placement.build_position then
+          local overlapping_resources = test_surface.find_entities_filtered{
+            area = {
+              {placement.build_position.x - 0.49, placement.build_position.y - 0.49},
+              {placement.build_position.x + 0.49, placement.build_position.y + 0.49}
+            },
+            type = "resource"
+          }
+          if #overlapping_resources > 0 then
+            overlapping_belt_count = overlapping_belt_count + 1
+          end
+        end
+      end
+
+      if overlapping_belt_count ~= 0 then
+        error(
+          "enemy-builder test: expected heuristic to avoid turning into resource strip; " ..
+          "overlapping-belts=" .. tostring(overlapping_belt_count)
+        )
+      end
+
+      local first_placement = placements[1]
+      if not (first_placement and first_placement.build_direction == direction_by_name.north) then
+        error(
+          "enemy-builder test: expected output belt heuristic to choose north-first path; " ..
+          "direction=" .. tostring(first_placement and first_placement.build_direction or "nil")
+        )
+      end
+    end,
+    assertion = {
+      case_name = "output_belt_turn_avoids_resource_patch",
+      surface_name = surface.name,
+      area = area,
+      deadline_offset_ticks = 1,
+      skip_output_assertion = true
+    }
+  }
+end
+
 local function setup_solar_panel_factory_test_case()
   local surface = game.surfaces["nauvis"] or game.surfaces[1]
   if not surface then
@@ -3580,6 +3743,161 @@ local function setup_scaling_builds_before_coal_reserve_test_case()
   }
 end
 
+function setup_scaling_repeats_material_patterns_test_case()
+  local surface = game.surfaces["nauvis"] or game.surfaces[1]
+  if not surface then
+    error("enemy-builder test: nauvis surface is unavailable")
+  end
+
+  local builder_position = {x = 0, y = 0}
+  local iron_patch_a = {x = 48, y = -12}
+  local iron_patch_b = {x = 48, y = 12}
+  local area = make_test_area({x = 48, y = 0}, 112, 64)
+
+  surface.always_day = true
+  clear_test_area(surface, area)
+
+  create_test_resource_patch(surface, "iron-ore", iron_patch_a, 3, 5000)
+  create_test_resource_patch(surface, "iron-ore", iron_patch_b, 3, 5000)
+
+  return setup_scaling_test{
+    case_name = "scaling_repeats_material_patterns",
+    builder_position = builder_position,
+    surface_name = surface.name,
+    suppress_player_autospawn = true,
+    disable_nearby_machine_output_collection = true,
+    inventory = {
+      {name = "burner-mining-drill", count = 2},
+      {name = "stone-furnace", count = 2},
+      {name = "coal", count = 40}
+    },
+    mutate_builder_state = function(builder_state)
+      builder_state.scaling_pattern_index = 2
+      builder_state.scaling_pattern_repeat_count = 0
+      builder_state.next_machine_refuel_tick = game.tick + 3600
+    end,
+    assertion = {
+      case_name = "scaling_repeats_material_patterns",
+      surface_name = surface.name,
+      area = area,
+      deadline_offset_ticks = 3600,
+      skip_output_assertion = true,
+      minimum_resource_site_counts = {
+        iron_smelting = 2
+      }
+    }
+  }
+end
+
+function setup_scaling_firearm_outpost_respects_cap_test_case()
+  local surface = game.surfaces["nauvis"] or game.surfaces[1]
+  if not surface then
+    error("enemy-builder test: nauvis surface is unavailable")
+  end
+
+  local builder_position = {x = 0, y = 0}
+  local coal_patch_positions = {
+    {x = 24, y = -24},
+    {x = 24, y = 0},
+    {x = 24, y = 24}
+  }
+  local extra_coal_patch = {x = 24, y = 48}
+  local copper_patch_positions = {
+    {x = 56, y = -24},
+    {x = 56, y = 0},
+    {x = 56, y = 24}
+  }
+  local iron_patch_positions = {
+    {x = 88, y = -36},
+    {x = 88, y = -24},
+    {x = 88, y = -12},
+    {x = 88, y = 0},
+    {x = 88, y = 12},
+    {x = 88, y = 24},
+    {x = 88, y = 36},
+    {x = 120, y = 0}
+  }
+  local firearm_outpost_positions = {
+    {x = 144, y = -48},
+    {x = 144, y = -24},
+    {x = 144, y = 0},
+    {x = 144, y = 24},
+    {x = 144, y = 48}
+  }
+  local area = make_test_area({x = 84, y = 12}, 260, 156)
+
+  surface.always_day = true
+  clear_test_area(surface, area)
+
+  return setup_scaling_test{
+    case_name = "scaling_firearm_outpost_respects_cap",
+    builder_position = builder_position,
+    surface_name = surface.name,
+    suppress_player_autospawn = true,
+    disable_nearby_machine_output_collection = true,
+    inventory = {
+      {name = "assembling-machine-1", count = 1},
+      {name = "burner-inserter", count = 2},
+      {name = "gun-turret", count = 2},
+      {name = "small-electric-pole", count = 4},
+      {name = "solar-panel", count = 4},
+      {name = "burner-mining-drill", count = 1},
+      {name = "wooden-chest", count = 1},
+      {name = "coal", count = 40}
+    },
+    completed_scaling_milestones = {
+      ["firearm-magazine-assembler"] = true
+    },
+    mutate_builder_state = function(builder_state, test_surface)
+      for _, patch_position in ipairs(coal_patch_positions) do
+        create_test_resource_patch(test_surface, "coal", patch_position, 3, 5000)
+        place_test_runtime_coal_outpost_site(test_surface, patch_position)
+      end
+      create_test_resource_patch(test_surface, "coal", extra_coal_patch, 3, 5000)
+
+      for _, patch_position in ipairs(copper_patch_positions) do
+        create_test_resource_patch(test_surface, "copper-ore", patch_position, 3, 5000)
+        place_test_runtime_copper_smelting_site(test_surface, patch_position)
+      end
+
+      for _, patch_position in ipairs(iron_patch_positions) do
+        create_test_resource_patch(test_surface, "iron-ore", patch_position, 3, 5000)
+        place_test_runtime_iron_smelting_site(test_surface, patch_position)
+      end
+
+      for _, outpost_position in ipairs(firearm_outpost_positions) do
+        place_test_registered_firearm_magazine_outpost_site(test_surface, outpost_position)
+      end
+
+      local firearm_pattern_index = 1
+      for index, pattern_name in ipairs((builder_data.scaling and builder_data.scaling.cycle_pattern_names) or {}) do
+        if pattern_name == "firearm_magazine_outpost" then
+          firearm_pattern_index = index
+          break
+        end
+      end
+
+      builder_state.scaling_pattern_index = firearm_pattern_index
+      builder_state.scaling_pattern_repeat_count = 0
+      builder_state.next_machine_refuel_tick = game.tick + 3600
+    end,
+    assertion = {
+      case_name = "scaling_firearm_outpost_respects_cap",
+      surface_name = surface.name,
+      area = area,
+      deadline_offset_ticks = 3600,
+      skip_output_assertion = true,
+      minimum_resource_site_counts = {
+        coal_outpost = 4,
+        firearm_magazine_outpost = 5
+      },
+      maximum_counts = {
+        [builder_data.prototypes.firearm_magazine_assembler_name] = 5
+      }
+    }
+  }
+end
+
 function setup_scaling_material_expansion_before_firearm_outpost_test_case()
   local surface = game.surfaces["nauvis"] or game.surfaces[1]
   if not surface then
@@ -3761,24 +4079,28 @@ local function setup_wait_patrol_avoids_close_reposition_test_case()
   surface.always_day = true
   clear_test_area(surface, area)
 
-  local site = place_test_iron_smelting_anchor(surface, "north", anchor_position)
-  local output_inventory = site.anchor_furnace.get_output_inventory and site.anchor_furnace.get_output_inventory() or nil
-  if not output_inventory then
-    error("enemy-builder test: failed to get furnace output inventory for wait patrol close reposition case")
-  end
-
-  output_inventory.insert{name = "iron-plate", count = 5}
-
   return setup_scaling_test{
     case_name = "wait_patrol_avoids_close_reposition",
     builder_position = builder_position,
     surface_name = surface.name,
     suppress_player_autospawn = true,
     disable_nearby_machine_output_collection = true,
-    mutate_builder_state = function(builder_state)
+    mutate_builder_state = function(builder_state, test_surface)
+      local anchor_site = place_test_iron_smelting_anchor(test_surface, "north", anchor_position)
+      local output_inventory =
+        anchor_site.anchor_furnace.get_output_inventory and anchor_site.anchor_furnace.get_output_inventory() or nil
+      if not output_inventory then
+        error("enemy-builder test: failed to get furnace output inventory for wait patrol close reposition case")
+      end
+
+      output_inventory.insert{name = "iron-plate", count = 5}
+
       local scaling_site = nil
       for _, resource_site in ipairs(storage.resource_sites or {}) do
-        if resource_site.pattern_name == "iron_smelting" and resource_site.downstream_machine == site.anchor_furnace then
+        if
+          resource_site.pattern_name == "iron_smelting" and
+          resource_site.downstream_machine == anchor_site.anchor_furnace
+        then
           scaling_site = resource_site
           break
         end
@@ -3788,7 +4110,7 @@ local function setup_wait_patrol_avoids_close_reposition_test_case()
         error("enemy-builder test: failed to find registered iron smelting site for wait patrol close reposition case")
       end
 
-      local target_position = clone_position(site.anchor_furnace.position)
+      local target_position = clone_position(anchor_site.anchor_furnace.position)
       builder_state.task_state = {
         phase = "scaling-moving-to-site",
         scaling_site = scaling_site,
@@ -3812,6 +4134,78 @@ local function setup_wait_patrol_avoids_close_reposition_test_case()
       minimum_builder_inventory_items = {
         {name = "iron-plate", count = 5}
       },
+      maximum_builder_distance_from_position = {
+        position = clone_position(builder_position),
+        distance = 0.3
+      }
+    }
+  }
+end
+
+local function setup_wait_patrol_stops_when_inventory_cap_reached_test_case()
+  local surface = game.surfaces["nauvis"] or game.surfaces[1]
+  if not surface then
+    error("enemy-builder test: nauvis surface is unavailable")
+  end
+
+  local patrol_arrival_distance = (((builder_data.scaling or {}).wait_patrol or {}).arrival_distance) or 1.1
+  local builder_position = {x = 0, y = 0}
+  local coal_patch_position = {x = 24, y = 0}
+  local area = make_test_area({x = 12, y = 0}, 20, 16)
+
+  surface.always_day = true
+  clear_test_area(surface, area)
+  create_test_resource_patch(surface, "coal", coal_patch_position, 3, 5000)
+
+  return setup_scaling_test{
+    case_name = "wait_patrol_stops_when_inventory_cap_reached",
+    builder_position = builder_position,
+    surface_name = surface.name,
+    suppress_player_autospawn = true,
+    disable_nearby_machine_output_collection = true,
+    inventory = {
+      {name = "coal", count = 500}
+    },
+    mutate_builder_state = function(builder_state, test_surface)
+      local coal_site_runtime = place_test_runtime_coal_outpost_site(test_surface, coal_patch_position)
+      local scaling_site = nil
+      for _, resource_site in ipairs(storage.resource_sites or {}) do
+        if resource_site.pattern_name == "coal_outpost" and resource_site.miner == coal_site_runtime.miner then
+          scaling_site = resource_site
+          break
+        end
+      end
+
+      if not scaling_site then
+        error("enemy-builder test: failed to find registered coal outpost site for wait patrol cap case")
+      end
+
+      local target_position = clone_position(coal_site_runtime.output_container.position)
+      builder_state.task_state = {
+        phase = "scaling-moving-to-site",
+        scaling_site = scaling_site,
+        target_item_name = "coal",
+        allowed_item_names = {coal = true},
+        allow_wait_for_items = false,
+        collection_mode = "wait-patrol",
+        collection_goal_count = 500,
+        arrival_distance = patrol_arrival_distance,
+        target_position = target_position,
+        approach_position = clone_position(target_position),
+        last_position = clone_position(builder_state.entity.position),
+        last_progress_tick = game.tick
+      }
+    end,
+    assertion = {
+      case_name = "wait_patrol_stops_when_inventory_cap_reached",
+      surface_name = surface.name,
+      area = area,
+      deadline_offset_ticks = 1,
+      skip_output_assertion = true,
+      minimum_builder_inventory_items = {
+        {name = "coal", count = 500}
+      },
+      require_no_task_state = true,
       maximum_builder_distance_from_position = {
         position = clone_position(builder_position),
         distance = 0.3
@@ -4604,6 +4998,10 @@ local function format_test_failure_summary(surface, force, assertion)
     parts[#parts + 1] = "manual-goal-active=" .. tostring(builder_state and builder_state.manual_goal_request ~= nil)
   end
 
+  if assertion.require_no_task_state then
+    parts[#parts + 1] = "task-active=" .. tostring(builder_state and builder_state.task_state ~= nil)
+  end
+
   if builder_state and builder_state.task_state and builder_state.task_state.wait_reason then
     parts[#parts + 1] = "wait=" .. builder_state.task_state.wait_reason
   end
@@ -4813,6 +5211,10 @@ local function test_assertion_passed(surface, force, assertion)
     return false
   end
 
+  if assertion.require_no_task_state and builder_state and builder_state.task_state then
+    return false
+  end
+
   if assertion.maximum_builder_distance_from_position then
     local builder_position = get_test_builder_position()
     if not builder_position then
@@ -4999,15 +5401,20 @@ local test_remote_interface = {
   setup_iron_plate_belt_export_ground_items_test_case = setup_iron_plate_belt_export_ground_items_test_case,
   setup_copper_plate_belt_export_ground_items_test_case = setup_copper_plate_belt_export_ground_items_test_case,
   setup_output_belts_can_overlap_resources_test_case = setup_output_belts_can_overlap_resources_test_case,
+  setup_output_belt_turn_avoids_resource_patch_test_case = setup_output_belt_turn_avoids_resource_patch_test_case,
   setup_solar_panel_factory_test_case = setup_solar_panel_factory_test_case,
   setup_solar_panel_factory_missing_sources_reports_blocker_test_case = setup_solar_panel_factory_missing_sources_reports_blocker_test_case,
   setup_scaling_collect_switches_site_test_case = setup_scaling_collect_switches_site_test_case,
   setup_scaling_early_expansion_over_coal_reserve_test_case = setup_scaling_early_expansion_over_coal_reserve_test_case,
   setup_scaling_builds_before_coal_reserve_test_case = setup_scaling_builds_before_coal_reserve_test_case,
+  setup_scaling_repeats_material_patterns_test_case = setup_scaling_repeats_material_patterns_test_case,
+  setup_scaling_firearm_outpost_respects_cap_test_case = setup_scaling_firearm_outpost_respects_cap_test_case,
   setup_scaling_material_expansion_before_firearm_outpost_test_case =
     setup_scaling_material_expansion_before_firearm_outpost_test_case,
   setup_assembler_output_collection_limits_test_case = setup_assembler_output_collection_limits_test_case,
   setup_wait_patrol_avoids_close_reposition_test_case = setup_wait_patrol_avoids_close_reposition_test_case,
+  setup_wait_patrol_stops_when_inventory_cap_reached_test_case =
+    setup_wait_patrol_stops_when_inventory_cap_reached_test_case,
   setup_wait_patrol_recovers_coal_when_producers_are_out_of_fuel_test_case =
     setup_wait_patrol_recovers_coal_when_producers_are_out_of_fuel_test_case,
   setup_machine_refuel_respects_minimum_batch_test_case = setup_machine_refuel_respects_minimum_batch_test_case,
@@ -5059,15 +5466,33 @@ local function complete_current_task(builder_state, task, completion_message)
     if task.scaling_pattern_name and builder_data.scaling and builder_data.scaling.cycle_pattern_names then
       local cycle_pattern_names = builder_data.scaling.cycle_pattern_names
       local next_pattern_index = builder_state.scaling_pattern_index or 1
+      local current_pattern_index = next_pattern_index
+      local current_pattern_name = cycle_pattern_names[current_pattern_index]
+      local advance_to_next_pattern = true
 
-      for index, pattern_name in ipairs(cycle_pattern_names) do
-        if pattern_name == task.scaling_pattern_name then
-          next_pattern_index = (index % #cycle_pattern_names) + 1
-          break
+      if current_pattern_name == task.scaling_pattern_name then
+        local cycle_weight = get_scaling_pattern_cycle_weight(task.scaling_pattern_name)
+        local repeat_count = builder_state.scaling_pattern_repeat_count or 0
+        if cycle_weight > 1 and (repeat_count + 1) < cycle_weight then
+          builder_state.scaling_pattern_repeat_count = repeat_count + 1
+          advance_to_next_pattern = false
+        else
+          builder_state.scaling_pattern_repeat_count = 0
         end
+      else
+        builder_state.scaling_pattern_repeat_count = 0
       end
 
-      builder_state.scaling_pattern_index = next_pattern_index
+      if advance_to_next_pattern then
+        for index, pattern_name in ipairs(cycle_pattern_names) do
+          if pattern_name == task.scaling_pattern_name then
+            next_pattern_index = (index % #cycle_pattern_names) + 1
+            break
+          end
+        end
+
+        builder_state.scaling_pattern_index = next_pattern_index
+      end
     end
 
     builder_state.scaling_active_task = nil
@@ -5349,6 +5774,15 @@ local function get_scaling_pattern_name(builder_state)
       end
     end
 
+    if unlocked and unlock and unlock.maximum_site_counts then
+      for dependency_pattern_name, dependency_count in pairs(unlock.maximum_site_counts) do
+        if (site_counts[dependency_pattern_name] or 0) >= dependency_count then
+          unlocked = false
+          break
+        end
+      end
+    end
+
     if unlocked and unlock and unlock.required_completed_milestones then
       ensure_builder_state_fields(builder_state)
 
@@ -5361,12 +5795,25 @@ local function get_scaling_pattern_name(builder_state)
     end
 
     if unlocked then
+      if candidate_index ~= pattern_index then
+        builder_state.scaling_pattern_repeat_count = 0
+      end
       builder_state.scaling_pattern_index = candidate_index
       return pattern_name
     end
   end
 
   return nil
+end
+
+function get_scaling_pattern_cycle_weight(pattern_name)
+  local scaling = builder_data.scaling
+  local configured_weight = scaling and scaling.pattern_cycle_weights and scaling.pattern_cycle_weights[pattern_name] or nil
+  if configured_weight and configured_weight > 0 then
+    return math.max(1, math.floor(configured_weight))
+  end
+
+  return 1
 end
 
 get_recipe = function(item_name)

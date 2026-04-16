@@ -42,6 +42,13 @@ return {
     "copper_plate_belt_export",
     "firearm_magazine_outpost"
   },
+  pattern_cycle_weights = {
+    coal_outpost = 2,
+    iron_smelting = 3,
+    steel_smelting = 2,
+    stone_outpost = 2,
+    copper_smelting = 2
+  },
   pattern_unlocks = {
     steel_smelting = {
       minimum_site_counts = {
@@ -80,6 +87,9 @@ return {
         coal_outpost = 3,
         iron_smelting = 8,
         copper_smelting = 3
+      },
+      maximum_site_counts = {
+        firearm_magazine_outpost = 5
       },
       required_completed_milestones = {"firearm-magazine-assembler"}
     }

@@ -1359,12 +1359,76 @@ local function build_belt_path_placements(surface, force, first_position, termin
     {"x", "y"},
     {"y", "x"}
   }
+  local scored_axis_orders = {}
+  local turn_resource_avoidance_lookahead = math.max(task.belt_turn_resource_avoidance_lookahead or 4, 0)
 
-  for _, axis_order in ipairs(axis_orders) do
+  local function build_axis_order_resource_score(positions)
+    local turn_index = nil
+    local turn_overlap_count = 0
+    local total_overlap_count = 0
+
+    for index, position in ipairs(positions) do
+      if entity_refs.entity_name_overlaps_resources(surface, task.belt_entity_name, position) then
+        total_overlap_count = total_overlap_count + 1
+      end
+
+      if index > 1 and index < #positions and not turn_index then
+        local previous_position = positions[index - 1]
+        local next_position = positions[index + 1]
+        local incoming_direction_name =
+          get_direction_name_from_delta(position.x - previous_position.x, position.y - previous_position.y)
+        local outgoing_direction_name =
+          get_direction_name_from_delta(next_position.x - position.x, next_position.y - position.y)
+
+        if incoming_direction_name ~= outgoing_direction_name then
+          turn_index = index
+        end
+      end
+    end
+
+    if turn_index then
+      local lookahead_end_index = math.min(#positions, turn_index + turn_resource_avoidance_lookahead)
+      for index = turn_index, lookahead_end_index do
+        if entity_refs.entity_name_overlaps_resources(surface, task.belt_entity_name, positions[index]) then
+          turn_overlap_count = turn_overlap_count + 1
+        end
+      end
+    end
+
+    return turn_overlap_count, total_overlap_count
+  end
+
+  for axis_order_index, axis_order in ipairs(axis_orders) do
     local positions = build_belt_path_positions(first_position, terminal_position, axis_order, ctx)
     if not positions then
       goto continue
     end
+    local turn_overlap_count, total_overlap_count = build_axis_order_resource_score(positions)
+    scored_axis_orders[#scored_axis_orders + 1] = {
+      axis_order = axis_order,
+      axis_order_index = axis_order_index,
+      positions = positions,
+      turn_overlap_count = turn_overlap_count,
+      total_overlap_count = total_overlap_count
+    }
+
+    ::continue::
+  end
+
+  table.sort(scored_axis_orders, function(left, right)
+    if left.turn_overlap_count ~= right.turn_overlap_count then
+      return left.turn_overlap_count < right.turn_overlap_count
+    end
+
+    if left.total_overlap_count ~= right.total_overlap_count then
+      return left.total_overlap_count < right.total_overlap_count
+    end
+
+    return left.axis_order_index < right.axis_order_index
+  end)
+
+  for _, axis_order_entry in ipairs(scored_axis_orders) do
+    local positions = axis_order_entry.positions
     local placements = {}
     local path_valid = true
     local seen_positions = {}
@@ -1433,8 +1497,6 @@ local function build_belt_path_placements(surface, force, first_position, termin
     if path_valid and #placements > 0 then
       return placements
     end
-
-    ::continue::
   end
 
   return nil
@@ -2355,6 +2417,27 @@ function queries.find_output_belt_layout_for_miner_site(surface, force, task, mi
     hub_key = patch_key,
     belt_terminal_position = terminal_position
   }, summary
+end
+
+function queries.find_output_belt_path_between_positions(surface, force, first_position, terminal_position, task, ctx)
+  local summary = {
+    positions_checked = 0,
+    placeable_positions = 0,
+    resource_overlap_rejections = 0,
+    terminal_positions_found = 1,
+    valid_belt_paths = 0,
+    failed_belt_paths = 0,
+    failed_inserter_geometry = 0
+  }
+
+  local placements = build_belt_path_placements(surface, force, first_position, terminal_position, task, summary, ctx)
+  if placements and #placements > 0 then
+    summary.valid_belt_paths = 1
+  else
+    summary.failed_belt_paths = 1
+  end
+
+  return placements, summary
 end
 
 function queries.find_nearest_resource(surface, origin, task, ctx)

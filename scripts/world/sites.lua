@@ -36,6 +36,10 @@ function sites.get_resource_site_counts()
     end
   end
 
+  for pattern_name, production_count in pairs(production.get_pattern_site_counts()) do
+    counts[pattern_name] = (counts[pattern_name] or 0) + production_count
+  end
+
   return counts
 end
 

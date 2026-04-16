@@ -56,6 +56,12 @@ function predicates.unlock_requirements_met(builder_state, unlock, get_resource_
     end
   end
 
+  for pattern_name, maximum_count in pairs(unlock.maximum_site_counts or {}) do
+    if (site_counts[pattern_name] or 0) >= maximum_count then
+      return false
+    end
+  end
+
   for _, milestone_name in ipairs(unlock.required_completed_milestones or {}) do
     if not (builder_state and builder_state.completed_scaling_milestones and builder_state.completed_scaling_milestones[milestone_name]) then
       return false
@@ -176,6 +182,21 @@ function predicates.get_unlock_blockers(builder_data, snapshot, pattern_name)
           pattern_name = dependency_name,
           current_count = current_count,
           target_count = minimum_count
+        }
+      )
+    end
+  end
+
+  for dependency_name, maximum_count in pairs(unlock.maximum_site_counts or {}) do
+    local current_count = (snapshot.resource_site_counts and snapshot.resource_site_counts[dependency_name]) or 0
+    if current_count >= maximum_count then
+      blockers[#blockers + 1] = instances.make_blocker(
+        "site-count-at-most",
+        "limit " .. common.humanize_identifier(dependency_name) .. " sites " .. current_count .. "/" .. maximum_count,
+        {
+          pattern_name = dependency_name,
+          current_count = current_count,
+          target_count = maximum_count
         }
       )
     end
