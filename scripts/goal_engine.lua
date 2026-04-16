@@ -291,6 +291,16 @@ local function get_scaling_collection_arrival_distance(builder_data, collection_
   return 1.1
 end
 
+local function get_scaling_fuel_recovery_threshold(builder_data)
+  local wait_patrol = builder_data.scaling and builder_data.scaling.wait_patrol or nil
+  local threshold = wait_patrol and wait_patrol.fuel_recovery_unfueled_machine_threshold or nil
+  if threshold and threshold > 0 then
+    return math.max(1, math.floor(threshold))
+  end
+
+  return 3
+end
+
 local function site_matches_pattern_names(site, pattern_names)
   if not (site and pattern_names and site.pattern_name) then
     return false
@@ -364,6 +374,9 @@ local function find_wait_patrol_site(builder_data, builder_state, item_name, ada
 end
 
 local start_scaling_collection
+local function reset_scaling_fuel_recovery_observation(builder_state)
+  builder_state.scaling_fuel_recovery = nil
+end
 
 local function get_entity_total_fuel_count(entity)
   local fuel_inventory = entity and entity.valid and entity.get_fuel_inventory and entity.get_fuel_inventory() or nil
@@ -411,75 +424,95 @@ local function collect_fuel_burner_entities_for_site(site)
   return burner_entities
 end
 
-local function collect_producer_sites_for_item(builder_state, item_name, adapters)
-  adapters.discover_resource_sites(builder_state)
+local function get_fuel_observation_entity_key(entity)
+  if not (entity and entity.valid) then
+    return nil
+  end
 
-  local producer_sites = {}
-  for _, site in ipairs(adapters.cleanup_resource_sites()) do
-    local collect_position = adapters.get_site_collect_position(site)
-    local allowed_item_names = adapters.get_site_allowed_items(site)
-    if collect_position and item_name and allowed_item_names and allowed_item_names[item_name] then
-      producer_sites[#producer_sites + 1] = site
+  return tostring(entity.unit_number or (entity.name .. ":" .. entity.position.x .. ":" .. entity.position.y))
+end
+
+local function note_unfueled_burner_entities(builder_state, item_name, site)
+  if not (builder_state and item_name and site) then
+    return 0, 0, 0
+  end
+
+  if not (builder_state.scaling_fuel_recovery and builder_state.scaling_fuel_recovery.item_name == item_name) then
+    builder_state.scaling_fuel_recovery = {
+      item_name = item_name,
+      seen_site_keys = {},
+      seen_entity_keys = {},
+      unfueled_entity_count = 0,
+      observed_site_count = 0
+    }
+  end
+
+  local observation = builder_state.scaling_fuel_recovery
+  local unfueled_entity_count = 0
+  local new_entity_count = 0
+
+  for _, burner_entity in ipairs(collect_fuel_burner_entities_for_site(site)) do
+    if (get_entity_total_fuel_count(burner_entity) or 0) <= 0 then
+      unfueled_entity_count = unfueled_entity_count + 1
+      local entity_key = get_fuel_observation_entity_key(burner_entity)
+      if entity_key and not observation.seen_entity_keys[entity_key] then
+        observation.seen_entity_keys[entity_key] = true
+        observation.unfueled_entity_count = (observation.unfueled_entity_count or 0) + 1
+        new_entity_count = new_entity_count + 1
+      end
     end
   end
 
-  return producer_sites
+  local site_key = get_collectable_site_key(site)
+  if site_key and unfueled_entity_count > 0 and not observation.seen_site_keys[site_key] then
+    observation.seen_site_keys[site_key] = true
+    observation.observed_site_count = (observation.observed_site_count or 0) + 1
+  end
+
+  return unfueled_entity_count, observation.unfueled_entity_count or 0, new_entity_count
 end
 
-local function site_is_fuel_starved_for_item(site, item_name, adapters)
+local function try_start_scaling_fuel_recovery(builder_data, builder_state, item_name, site, tick, display_task, adapters)
+  if not item_name or item_name == "coal" or not site then
+    return nil
+  end
+
   if adapters.get_site_collect_count(site, item_name) > 0 then
-    return false
+    return nil
   end
 
-  local burner_entities = collect_fuel_burner_entities_for_site(site)
-  if #burner_entities == 0 then
-    return false
+  local site_unfueled_count, observed_unfueled_count, new_entity_count =
+    note_unfueled_burner_entities(builder_state, item_name, site)
+  if site_unfueled_count <= 0 then
+    return nil
   end
 
-  for _, burner_entity in ipairs(burner_entities) do
-    if (get_entity_total_fuel_count(burner_entity) or 0) > 0 then
-      return false
-    end
+  local threshold = get_scaling_fuel_recovery_threshold(builder_data)
+  if new_entity_count > 0 and observed_unfueled_count < threshold then
+    adapters.debug_log(
+      "scaling: observed " .. tostring(site_unfueled_count) .. " unfueled burner machines at " ..
+      ((site.pattern_name or "site")) .. " while waiting for " .. item_name ..
+      " (" .. tostring(observed_unfueled_count) .. "/" .. tostring(threshold) .. ")"
+    )
   end
 
-  return true
-end
-
-local function try_start_scaling_fuel_recovery(builder_data, builder_state, item_name, tick, display_task, adapters)
-  if not item_name or item_name == "coal" then
+  if observed_unfueled_count < threshold then
     return nil
   end
 
   local fuel_name = (((builder_data.logistics or {}).nearby_machine_refuel or {}).fuel_name) or "coal"
-  local minimum_refuel_batch =
-    ((((builder_data.logistics or {}).nearby_machine_refuel or {}).minimum_item_transfer_count) or 1)
-  if adapters.get_item_count(builder_state.entity, fuel_name) >= minimum_refuel_batch then
-    return nil
-  end
-
-  local producer_sites = collect_producer_sites_for_item(builder_state, item_name, adapters)
-  if #producer_sites == 0 then
-    return nil
-  end
-
-  for _, site in ipairs(producer_sites) do
-    if not site_is_fuel_starved_for_item(site, item_name, adapters) then
-      return nil
-    end
-  end
-
   local recovery_site = find_collectable_site(builder_state, fuel_name, false, adapters)
   if not recovery_site then
     return nil
   end
 
+  local observation = builder_state.scaling_fuel_recovery or {}
   adapters.debug_log(
-    "scaling: all " .. tostring(#producer_sites) .. " " ..
-    common.humanize_identifier(item_name) ..
-    " producer sites are out of fuel and builder has only " ..
-    tostring(adapters.get_item_count(builder_state.entity, fuel_name)) .. " " .. fuel_name ..
-    "; collecting " .. fuel_name .. " to restart production"
+    "scaling: observed " .. tostring(observed_unfueled_count) .. " unfueled burner machines across " ..
+    tostring(observation.observed_site_count or 0) .. " " .. common.humanize_identifier(item_name) ..
+    " sites; collecting " .. fuel_name .. " to restart production"
   )
+  reset_scaling_fuel_recovery_observation(builder_state)
   start_scaling_collection(builder_state, recovery_site, fuel_name, tick, false, display_task, adapters)
   return "fuel-recovery"
 end
@@ -497,6 +530,10 @@ start_scaling_collection = function(builder_state, site, item_name, tick, allow_
       adapters
     )
     return
+  end
+
+  if builder_state.scaling_fuel_recovery and builder_state.scaling_fuel_recovery.item_name ~= item_name then
+    reset_scaling_fuel_recovery_observation(builder_state)
   end
 
   set_scaling_display_task(builder_state, display_task)
@@ -552,12 +589,6 @@ start_scaling_collection = function(builder_state, site, item_name, tick, allow_
 end
 
 local function start_scaling_wait_patrol(builder_data, builder_state, item_name, tick, display_task, adapters, exclude_site)
-  local fuel_recovery_result =
-    try_start_scaling_fuel_recovery(builder_data, builder_state, item_name, tick, display_task, adapters)
-  if fuel_recovery_result then
-    return fuel_recovery_result
-  end
-
   local site = find_wait_patrol_site(builder_data, builder_state, item_name, adapters, exclude_site)
   if not site then
     return nil
@@ -660,6 +691,12 @@ local function handle_empty_scaling_collection_site(builder_data, builder_state,
 
   local item_name = task_state and task_state.target_item_name or nil
   local current_site = task_state and task_state.scaling_site or nil
+  local fuel_recovery_result =
+    try_start_scaling_fuel_recovery(builder_data, builder_state, item_name, current_site, tick, display_task, adapters)
+  if fuel_recovery_result then
+    return true
+  end
+
   local alternate_site = find_collectable_site(builder_state, item_name, false, adapters)
 
   if alternate_site and alternate_site ~= current_site then
@@ -1132,6 +1169,9 @@ local function advance_scaling(builder_data, builder_state, tick, adapters)
     end
 
     adapters.debug_log("scaling: " .. reason .. "; moved " .. adapters.format_products(moved_items))
+    if builder_state.scaling_fuel_recovery and builder_state.scaling_fuel_recovery.item_name == task_state.target_item_name then
+      reset_scaling_fuel_recovery_observation(builder_state)
+    end
     if continue_scaling_site_crawl(
         builder_state,
         tick,

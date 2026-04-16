@@ -3690,15 +3690,17 @@ function setup_wait_patrol_recovers_coal_when_producers_are_out_of_fuel_test_cas
   end
 
   local builder_position = {x = 0, y = 0}
-  local iron_patch_position = {x = 28, y = 0}
-  local coal_patch_position = {x = 28, y = 24}
-  local area = make_test_area({x = 20, y = 12}, 40, 32)
+  local iron_patch_position_a = {x = 28, y = 0}
+  local iron_patch_position_b = {x = 28, y = 12}
+  local coal_patch_position = {x = 28, y = 28}
+  local area = make_test_area({x = 20, y = 14}, 40, 40)
   local patrol_arrival_distance = (((builder_data.scaling or {}).wait_patrol or {}).arrival_distance) or 2.5
 
   surface.always_day = true
   clear_test_area(surface, area)
 
-  create_test_resource_patch(surface, "iron-ore", iron_patch_position, 3, 5000)
+  create_test_resource_patch(surface, "iron-ore", iron_patch_position_a, 3, 5000)
+  create_test_resource_patch(surface, "iron-ore", iron_patch_position_b, 3, 5000)
   create_test_resource_patch(surface, "coal", coal_patch_position, 3, 5000)
 
   return setup_scaling_test{
@@ -3708,7 +3710,8 @@ function setup_wait_patrol_recovers_coal_when_producers_are_out_of_fuel_test_cas
     suppress_player_autospawn = true,
     disable_nearby_machine_output_collection = true,
     mutate_builder_state = function(builder_state, test_surface)
-      local iron_site = place_test_runtime_iron_smelting_site(test_surface, iron_patch_position)
+      local iron_site_a = place_test_runtime_iron_smelting_site(test_surface, iron_patch_position_a)
+      local iron_site_b = place_test_runtime_iron_smelting_site(test_surface, iron_patch_position_b)
       local coal_site = place_test_runtime_coal_outpost_site(test_surface, coal_patch_position)
       local coal_inventory = coal_site.output_container and coal_site.output_container.valid and
         get_container_inventory(coal_site.output_container) or nil
@@ -3721,7 +3724,12 @@ function setup_wait_patrol_recovers_coal_when_producers_are_out_of_fuel_test_cas
         error("enemy-builder test: failed to seed coal outpost with recovery coal")
       end
 
-      for _, fueled_entity in ipairs({iron_site.miner, iron_site.anchor_furnace}) do
+      for _, fueled_entity in ipairs({
+        iron_site_a.miner,
+        iron_site_a.anchor_furnace,
+        iron_site_b.miner,
+        iron_site_b.anchor_furnace
+      }) do
         local fuel_inventory = fueled_entity and fueled_entity.valid and fueled_entity.get_fuel_inventory and
           fueled_entity.get_fuel_inventory() or nil
         if not fuel_inventory then
@@ -3739,7 +3747,7 @@ function setup_wait_patrol_recovers_coal_when_producers_are_out_of_fuel_test_cas
 
       local scaling_site = nil
       for _, resource_site in ipairs(storage.resource_sites or {}) do
-        if resource_site.pattern_name == "iron_smelting" and resource_site.downstream_machine == iron_site.anchor_furnace then
+        if resource_site.pattern_name == "iron_smelting" and resource_site.downstream_machine == iron_site_a.anchor_furnace then
           scaling_site = resource_site
           break
         end
@@ -3749,12 +3757,12 @@ function setup_wait_patrol_recovers_coal_when_producers_are_out_of_fuel_test_cas
         error("enemy-builder test: failed to find registered iron smelting site for fuel recovery case")
       end
 
-      if builder_state.entity.teleport(clone_position(iron_site.anchor_furnace.position)) == false then
+      if builder_state.entity.teleport(clone_position(iron_site_a.anchor_furnace.position)) == false then
         error("enemy-builder test: failed to move builder onto iron smelting site for fuel recovery case")
       end
 
       builder_state.next_machine_refuel_tick = game.tick + 3600
-      local target_position = clone_position(iron_site.anchor_furnace.position)
+      local target_position = clone_position(iron_site_a.anchor_furnace.position)
       builder_state.task_state = {
         phase = "scaling-collecting-site",
         scaling_site = scaling_site,
