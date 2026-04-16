@@ -287,6 +287,7 @@ run_case "solar_panel_factory_missing_sources_reports_blocker" "setup_solar_pane
 run_case "scaling_collect_switches_site" "setup_scaling_collect_switches_site_test_case" "34205"
 run_case "assembler_output_collection_limits" "setup_assembler_output_collection_limits_test_case" "34209"
 run_case "wait_patrol_avoids_close_reposition" "setup_wait_patrol_avoids_close_reposition_test_case" "34210"
+run_case "wait_patrol_recovers_coal_when_producers_are_out_of_fuel" "setup_wait_patrol_recovers_coal_when_producers_are_out_of_fuel_test_case" "34219"
 run_case "machine_refuel_respects_minimum_batch" "setup_machine_refuel_respects_minimum_batch_test_case" "34212"
 run_case "steel_output_retries_blocked_anchors" "setup_steel_output_retries_blocked_anchors_test_case" "34213"
 run_case "copper_smelting_large_patch_open_half" "setup_copper_smelting_large_patch_open_half_test_case" "34211"

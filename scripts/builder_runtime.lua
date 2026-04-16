@@ -3683,6 +3683,105 @@ local function setup_wait_patrol_avoids_close_reposition_test_case()
   }
 end
 
+function setup_wait_patrol_recovers_coal_when_producers_are_out_of_fuel_test_case()
+  local surface = game.surfaces["nauvis"] or game.surfaces[1]
+  if not surface then
+    error("enemy-builder test: nauvis surface is unavailable")
+  end
+
+  local builder_position = {x = 0, y = 0}
+  local iron_patch_position = {x = 28, y = 0}
+  local coal_patch_position = {x = 28, y = 24}
+  local area = make_test_area({x = 20, y = 12}, 40, 32)
+  local patrol_arrival_distance = (((builder_data.scaling or {}).wait_patrol or {}).arrival_distance) or 2.5
+
+  surface.always_day = true
+  clear_test_area(surface, area)
+
+  create_test_resource_patch(surface, "iron-ore", iron_patch_position, 3, 5000)
+  create_test_resource_patch(surface, "coal", coal_patch_position, 3, 5000)
+
+  return setup_scaling_test{
+    case_name = "wait_patrol_recovers_coal_when_producers_are_out_of_fuel",
+    builder_position = builder_position,
+    surface_name = surface.name,
+    suppress_player_autospawn = true,
+    disable_nearby_machine_output_collection = true,
+    mutate_builder_state = function(builder_state, test_surface)
+      local iron_site = place_test_runtime_iron_smelting_site(test_surface, iron_patch_position)
+      local coal_site = place_test_runtime_coal_outpost_site(test_surface, coal_patch_position)
+      local coal_inventory = coal_site.output_container and coal_site.output_container.valid and
+        get_container_inventory(coal_site.output_container) or nil
+      if not coal_inventory then
+        error("enemy-builder test: missing coal outpost inventory for fuel recovery case")
+      end
+
+      local inserted_coal = coal_inventory.insert{name = "coal", count = 24}
+      if inserted_coal < 24 then
+        error("enemy-builder test: failed to seed coal outpost with recovery coal")
+      end
+
+      for _, fueled_entity in ipairs({iron_site.miner, iron_site.anchor_furnace}) do
+        local fuel_inventory = fueled_entity and fueled_entity.valid and fueled_entity.get_fuel_inventory and
+          fueled_entity.get_fuel_inventory() or nil
+        if not fuel_inventory then
+          error("enemy-builder test: missing fuel inventory for iron smelting site in fuel recovery case")
+        end
+
+        local removed_fuel = fuel_inventory.remove{
+          name = "coal",
+          count = fuel_inventory.get_item_count("coal")
+        }
+        if removed_fuel <= 0 then
+          error("enemy-builder test: expected iron smelting site to start with coal before clearing fuel")
+        end
+      end
+
+      local scaling_site = nil
+      for _, resource_site in ipairs(storage.resource_sites or {}) do
+        if resource_site.pattern_name == "iron_smelting" and resource_site.downstream_machine == iron_site.anchor_furnace then
+          scaling_site = resource_site
+          break
+        end
+      end
+
+      if not scaling_site then
+        error("enemy-builder test: failed to find registered iron smelting site for fuel recovery case")
+      end
+
+      if builder_state.entity.teleport(clone_position(iron_site.anchor_furnace.position)) == false then
+        error("enemy-builder test: failed to move builder onto iron smelting site for fuel recovery case")
+      end
+
+      builder_state.next_machine_refuel_tick = game.tick + 3600
+      local target_position = clone_position(iron_site.anchor_furnace.position)
+      builder_state.task_state = {
+        phase = "scaling-collecting-site",
+        scaling_site = scaling_site,
+        target_item_name = "iron-plate",
+        allowed_item_names = {["iron-plate"] = true},
+        allow_wait_for_items = false,
+        collection_mode = "wait-patrol",
+        arrival_distance = patrol_arrival_distance,
+        target_position = target_position,
+        approach_position = clone_position(target_position),
+        last_position = clone_position(builder_state.entity.position),
+        last_progress_tick = game.tick
+      }
+    end,
+    assertion = {
+      case_name = "wait_patrol_recovers_coal_when_producers_are_out_of_fuel",
+      surface_name = surface.name,
+      area = area,
+      deadline_offset_ticks = 360,
+      skip_output_assertion = true,
+      minimum_builder_inventory_items = {
+        {name = "coal", count = 8}
+      }
+    }
+  }
+end
+
 local function setup_machine_refuel_respects_minimum_batch_test_case()
   local surface = game.surfaces["nauvis"] or game.surfaces[1]
   if not surface then
@@ -4762,6 +4861,8 @@ local test_remote_interface = {
   setup_scaling_builds_before_coal_reserve_test_case = setup_scaling_builds_before_coal_reserve_test_case,
   setup_assembler_output_collection_limits_test_case = setup_assembler_output_collection_limits_test_case,
   setup_wait_patrol_avoids_close_reposition_test_case = setup_wait_patrol_avoids_close_reposition_test_case,
+  setup_wait_patrol_recovers_coal_when_producers_are_out_of_fuel_test_case =
+    setup_wait_patrol_recovers_coal_when_producers_are_out_of_fuel_test_case,
   setup_machine_refuel_respects_minimum_batch_test_case = setup_machine_refuel_respects_minimum_batch_test_case,
   setup_steel_output_retries_blocked_anchors_test_case = setup_steel_output_retries_blocked_anchors_test_case,
   setup_copper_smelting_large_patch_open_half_test_case = setup_copper_smelting_large_patch_open_half_test_case,
