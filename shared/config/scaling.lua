@@ -76,6 +76,11 @@ return {
       }
     },
     firearm_magazine_outpost = {
+      minimum_site_counts = {
+        coal_outpost = 3,
+        iron_smelting = 8,
+        copper_smelting = 3
+      },
       required_completed_milestones = {"firearm-magazine-assembler"}
     }
   },
@@ -113,6 +118,13 @@ return {
     {
       name = "firearm-magazine-assembler",
       display_name = "Establish firearm magazine assembler",
+      unlock = {
+        minimum_site_counts = {
+          coal_outpost = 3,
+          iron_smelting = 8,
+          copper_smelting = 3
+        }
+      },
       inventory_thresholds = {
         {name = "iron-plate", count = 200},
         {name = "copper-plate", count = 200}

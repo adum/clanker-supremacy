@@ -446,6 +446,7 @@ $allCases = @(
   [pscustomobject]@{ Name = "copper_smelting_large_patch_open_half"; RemoteSetupName = "setup_copper_smelting_large_patch_open_half_test_case"; ServerPort = 34211; RemoteSetupArg = $null },
   [pscustomobject]@{ Name = "scaling_early_expansion_over_coal_reserve"; RemoteSetupName = "setup_scaling_early_expansion_over_coal_reserve_test_case"; ServerPort = 34207; RemoteSetupArg = $null },
   [pscustomobject]@{ Name = "scaling_builds_before_coal_reserve"; RemoteSetupName = "setup_scaling_builds_before_coal_reserve_test_case"; ServerPort = 34208; RemoteSetupArg = $null },
+  [pscustomobject]@{ Name = "scaling_material_expansion_before_firearm_outpost"; RemoteSetupName = "setup_scaling_material_expansion_before_firearm_outpost_test_case"; ServerPort = 34220; RemoteSetupArg = $null },
   [pscustomobject]@{ Name = "steel_smelting_physical_feed_north"; RemoteSetupName = "setup_steel_smelting_test_case"; ServerPort = 34201; RemoteSetupArg = "north" },
   [pscustomobject]@{ Name = "steel_smelting_physical_feed_east"; RemoteSetupName = "setup_steel_smelting_test_case"; ServerPort = 34202; RemoteSetupArg = "east" },
   [pscustomobject]@{ Name = "steel_smelting_physical_feed_south"; RemoteSetupName = "setup_steel_smelting_test_case"; ServerPort = 34203; RemoteSetupArg = "south" },

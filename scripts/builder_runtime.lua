@@ -2140,6 +2140,56 @@ local function place_test_runtime_iron_smelting_site(surface, origin_position)
   }
 end
 
+function place_test_runtime_copper_smelting_site(surface, origin_position)
+  local force = ensure_builder_force()
+  local copper_task = builder_data.site_patterns and builder_data.site_patterns.copper_smelting and
+    builder_data.site_patterns.copper_smelting.build_task or nil
+  if not copper_task then
+    error("enemy-builder test: missing copper_smelting build task")
+  end
+
+  local site = find_resource_site(surface, force, origin_position, copper_task)
+  if not site then
+    error("enemy-builder test: failed to find runtime copper smelting site near " .. format_position(origin_position))
+  end
+
+  local miner = surface.create_entity{
+    name = copper_task.miner_name,
+    position = site.build_position,
+    direction = site.build_direction,
+    force = force,
+    create_build_effect_smoke = false
+  }
+
+  if not (miner and miner.valid) then
+    error("enemy-builder test: failed to create runtime copper miner")
+  end
+
+  local furnace = surface.create_entity{
+    name = copper_task.downstream_machine.name,
+    position = site.downstream_machine_position,
+    force = force,
+    create_build_effect_smoke = false
+  }
+
+  if not (furnace and furnace.valid) then
+    miner.destroy()
+    error("enemy-builder test: failed to create runtime copper furnace")
+  end
+
+  insert_entity_fuel(miner, copper_task.fuel)
+  insert_entity_fuel(furnace, copper_task.downstream_machine.fuel)
+
+  register_smelting_site(copper_task, miner, furnace, nil)
+  register_resource_site(copper_task, miner, furnace, nil)
+
+  return {
+    miner = miner,
+    anchor_furnace = furnace,
+    miner_position = miner.position
+  }
+end
+
 function place_test_runtime_steel_smelting_site(surface, builder_state, layout_orientation, anchor_position)
   local anchor_site = place_test_iron_smelting_anchor(surface, layout_orientation, anchor_position)
   local steel_task = builder_data.site_patterns and builder_data.site_patterns.steel_smelting and
@@ -3530,6 +3580,93 @@ local function setup_scaling_builds_before_coal_reserve_test_case()
   }
 end
 
+function setup_scaling_material_expansion_before_firearm_outpost_test_case()
+  local surface = game.surfaces["nauvis"] or game.surfaces[1]
+  if not surface then
+    error("enemy-builder test: nauvis surface is unavailable")
+  end
+
+  local builder_position = {x = 0, y = 0}
+  local coal_patch_positions = {
+    {x = 24, y = -24},
+    {x = 24, y = 0},
+    {x = 24, y = 24}
+  }
+  local copper_patch_positions = {
+    {x = 56, y = -24},
+    {x = 56, y = 0},
+    {x = 56, y = 24}
+  }
+  local iron_patch_positions = {
+    {x = 88, y = -36},
+    {x = 88, y = -24},
+    {x = 88, y = -12},
+    {x = 88, y = 0},
+    {x = 88, y = 12},
+    {x = 88, y = 24},
+    {x = 88, y = 36}
+  }
+  local extra_iron_patch = {x = 120, y = 0}
+  local area = make_test_area({x = 72, y = 0}, 200, 104)
+
+  surface.always_day = true
+  clear_test_area(surface, area)
+
+  for _, patch_position in ipairs(coal_patch_positions) do
+    create_test_resource_patch(surface, "coal", patch_position, 3, 5000)
+    place_test_runtime_coal_outpost_site(surface, patch_position)
+  end
+
+  for _, patch_position in ipairs(copper_patch_positions) do
+    create_test_resource_patch(surface, "copper-ore", patch_position, 3, 5000)
+    place_test_runtime_copper_smelting_site(surface, patch_position)
+  end
+
+  for _, patch_position in ipairs(iron_patch_positions) do
+    create_test_resource_patch(surface, "iron-ore", patch_position, 3, 5000)
+    place_test_runtime_iron_smelting_site(surface, patch_position)
+  end
+  create_test_resource_patch(surface, "iron-ore", extra_iron_patch, 3, 5000)
+
+  return setup_scaling_test{
+    case_name = "scaling_material_expansion_before_firearm_outpost",
+    builder_position = builder_position,
+    surface_name = surface.name,
+    suppress_player_autospawn = true,
+    disable_nearby_machine_output_collection = true,
+    inventory = {
+      {name = "assembling-machine-1", count = 1},
+      {name = "burner-inserter", count = 2},
+      {name = "gun-turret", count = 2},
+      {name = "small-electric-pole", count = 4},
+      {name = "solar-panel", count = 4},
+      {name = "burner-mining-drill", count = 1},
+      {name = "stone-furnace", count = 1},
+      {name = "iron-plate", count = 200},
+      {name = "copper-plate", count = 200},
+      {name = "coal", count = 40}
+    },
+    mutate_builder_state = function(builder_state)
+      builder_state.scaling_pattern_index = 2
+    end,
+    assertion = {
+      case_name = "scaling_material_expansion_before_firearm_outpost",
+      surface_name = surface.name,
+      area = area,
+      deadline_offset_ticks = 3600,
+      skip_output_assertion = true,
+      minimum_resource_site_counts = {
+        coal_outpost = 3,
+        copper_smelting = 3,
+        iron_smelting = 8
+      },
+      maximum_counts = {
+        [builder_data.prototypes.firearm_magazine_assembler_name] = 0
+      }
+    }
+  }
+end
+
 local function setup_assembler_output_collection_limits_test_case()
   local surface = game.surfaces["nauvis"] or game.surfaces[1]
   if not surface then
@@ -4867,6 +5004,8 @@ local test_remote_interface = {
   setup_scaling_collect_switches_site_test_case = setup_scaling_collect_switches_site_test_case,
   setup_scaling_early_expansion_over_coal_reserve_test_case = setup_scaling_early_expansion_over_coal_reserve_test_case,
   setup_scaling_builds_before_coal_reserve_test_case = setup_scaling_builds_before_coal_reserve_test_case,
+  setup_scaling_material_expansion_before_firearm_outpost_test_case =
+    setup_scaling_material_expansion_before_firearm_outpost_test_case,
   setup_assembler_output_collection_limits_test_case = setup_assembler_output_collection_limits_test_case,
   setup_wait_patrol_avoids_close_reposition_test_case = setup_wait_patrol_avoids_close_reposition_test_case,
   setup_wait_patrol_recovers_coal_when_producers_are_out_of_fuel_test_case =

@@ -293,6 +293,7 @@ run_case "steel_output_retries_blocked_anchors" "setup_steel_output_retries_bloc
 run_case "copper_smelting_large_patch_open_half" "setup_copper_smelting_large_patch_open_half_test_case" "34211"
 run_case "scaling_early_expansion_over_coal_reserve" "setup_scaling_early_expansion_over_coal_reserve_test_case" "34207"
 run_case "scaling_builds_before_coal_reserve" "setup_scaling_builds_before_coal_reserve_test_case" "34208"
+run_case "scaling_material_expansion_before_firearm_outpost" "setup_scaling_material_expansion_before_firearm_outpost_test_case" "34220"
 run_case "steel_smelting_physical_feed_north" "setup_steel_smelting_test_case" "34201" "north"
 run_case "steel_smelting_physical_feed_east" "setup_steel_smelting_test_case" "34202" "east"
 run_case "steel_smelting_physical_feed_south" "setup_steel_smelting_test_case" "34203" "south"
