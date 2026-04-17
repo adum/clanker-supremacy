@@ -381,21 +381,11 @@ local function make_retrofit_output_belt_task(pattern_name, anchor_pattern_names
         count = 4
       }
     },
+    simple_output_belt_planning = true,
+    simple_output_belt_ore_scan_steps = 20,
+    simple_output_belt_build_steps = 15,
     belt_entity_name = "transport-belt",
     belt_item_name = "transport-belt",
-    belt_hub_search = {
-      heading_count = 16,
-      heading_attempts = 8,
-      ray_step = 1,
-      max_distance = 80,
-      extra_distance_min = 18,
-      extra_distance_max = 24,
-      local_search_radius = 4,
-      local_search_step = 1
-    },
-    belt_terminal_search_radius = 3,
-    belt_terminal_search_step = 1,
-    belt_turn_resource_avoidance_lookahead = 4,
     forbid_resource_overlap = true,
     clear_ground_item_blockers = true
   }

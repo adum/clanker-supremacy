@@ -3510,6 +3510,87 @@ function setup_output_belt_prefers_less_ore_direction_test_case()
   }
 end
 
+local function assert_simple_output_belt_layout(case_label, layout_site, task)
+  local first_placement = layout_site.placements[1]
+  if not (first_placement and first_placement.site_role == "output-inserter") then
+    error(
+      "enemy-builder test: expected " .. case_label .. " to place inserter first; " ..
+      "first-role=" .. tostring(first_placement and first_placement.site_role or "nil")
+    )
+  end
+
+  local first_belt = layout_site.placements[2]
+  if not (first_belt and first_belt.site_role == "output-belt") then
+    error(
+      "enemy-builder test: expected " .. case_label .. " to place a belt after the inserter; " ..
+      "second-role=" .. tostring(first_belt and first_belt.site_role or "nil")
+    )
+  end
+
+  local expected_direction = first_belt.build_direction
+  local direction_vector = nil
+
+  if expected_direction == direction_by_name.north then
+    direction_vector = {x = 0, y = -1}
+  elseif expected_direction == direction_by_name.south then
+    direction_vector = {x = 0, y = 1}
+  elseif expected_direction == direction_by_name.west then
+    direction_vector = {x = -1, y = 0}
+  else
+    direction_vector = {x = 1, y = 0}
+  end
+
+  local belt_count = 0
+  local previous_position = nil
+
+  for index = 2, #layout_site.placements do
+    local placement = layout_site.placements[index]
+    if placement.site_role ~= "output-belt" then
+      error(
+        "enemy-builder test: expected only straight belts after inserter for " .. case_label .. "; " ..
+        "index=" .. tostring(index) .. " role=" .. tostring(placement.site_role)
+      )
+    end
+
+    if placement.build_direction ~= expected_direction then
+      error(
+        "enemy-builder test: expected straight output belt directions for " .. case_label .. "; " ..
+        "index=" .. tostring(index) ..
+        " direction=" .. tostring(placement.build_direction) ..
+        " expected=" .. tostring(expected_direction)
+      )
+    end
+
+    if previous_position then
+      local expected_position = {
+        x = previous_position.x + direction_vector.x,
+        y = previous_position.y + direction_vector.y
+      }
+      if math.abs(placement.build_position.x - expected_position.x) > 0.01 or
+        math.abs(placement.build_position.y - expected_position.y) > 0.01
+      then
+        error(
+          "enemy-builder test: expected straight one-tile belt step for " .. case_label ..
+          " at index " .. tostring(index) ..
+          "; got " .. format_position(placement.build_position) ..
+          " expected " .. format_position(expected_position)
+        )
+      end
+    end
+
+    previous_position = placement.build_position
+    belt_count = belt_count + 1
+  end
+
+  if belt_count > (task.simple_output_belt_build_steps or 0) then
+    error(
+      "enemy-builder test: expected " .. case_label .. " length to honor simple_output_belt_build_steps; " ..
+      "count=" .. tostring(belt_count) ..
+      " limit=" .. tostring(task.simple_output_belt_build_steps)
+    )
+  end
+end
+
 function setup_output_belt_layout_places_inserter_then_straight_belts_test_case()
   local surface = game.surfaces["nauvis"] or game.surfaces[1]
   if not surface then
@@ -3556,83 +3637,7 @@ function setup_output_belt_layout_places_inserter_then_straight_belts_test_case(
         )
       end
 
-      local first_placement = layout_site.placements[1]
-      if not (first_placement and first_placement.site_role == "output-inserter") then
-        error(
-          "enemy-builder test: expected fresh output belt layout to place inserter first; " ..
-          "first-role=" .. tostring(first_placement and first_placement.site_role or "nil")
-        )
-      end
-
-      local first_belt = layout_site.placements[2]
-      if not (first_belt and first_belt.site_role == "output-belt") then
-        error(
-          "enemy-builder test: expected fresh output belt layout to place a belt after the inserter; " ..
-          "second-role=" .. tostring(first_belt and first_belt.site_role or "nil")
-        )
-      end
-
-      local expected_direction = first_belt.build_direction
-      local direction_vector = nil
-
-      if expected_direction == direction_by_name.north then
-        direction_vector = {x = 0, y = -1}
-      elseif expected_direction == direction_by_name.south then
-        direction_vector = {x = 0, y = 1}
-      elseif expected_direction == direction_by_name.west then
-        direction_vector = {x = -1, y = 0}
-      else
-        direction_vector = {x = 1, y = 0}
-      end
-
-      local belt_count = 0
-      local previous_position = nil
-
-      for index = 2, #layout_site.placements do
-        local placement = layout_site.placements[index]
-        if placement.site_role ~= "output-belt" then
-          error(
-            "enemy-builder test: expected only straight belts after inserter; " ..
-            "index=" .. tostring(index) .. " role=" .. tostring(placement.site_role)
-          )
-        end
-
-        if placement.build_direction ~= expected_direction then
-          error(
-            "enemy-builder test: expected straight output belt directions; " ..
-            "index=" .. tostring(index) ..
-            " direction=" .. tostring(placement.build_direction) ..
-            " expected=" .. tostring(expected_direction)
-          )
-        end
-
-        if previous_position then
-          local expected_position = {
-            x = previous_position.x + direction_vector.x,
-            y = previous_position.y + direction_vector.y
-          }
-          if math.abs(placement.build_position.x - expected_position.x) > 0.01 or
-            math.abs(placement.build_position.y - expected_position.y) > 0.01
-          then
-            error(
-              "enemy-builder test: expected straight one-tile belt step at index " .. tostring(index) ..
-              "; got " .. format_position(placement.build_position) ..
-              " expected " .. format_position(expected_position)
-            )
-          end
-        end
-
-        previous_position = placement.build_position
-        belt_count = belt_count + 1
-      end
-
-      if belt_count > (task.simple_output_belt_build_steps or 0) then
-        error(
-          "enemy-builder test: expected fresh output belt length to honor simple_output_belt_build_steps; " ..
-          "count=" .. tostring(belt_count) ..
-          " limit=" .. tostring(task.simple_output_belt_build_steps)
-        )
-      end
+      assert_simple_output_belt_layout("fresh output belt layout", layout_site, task)
     end,
     assertion = {
       case_name = "output_belt_layout_places_inserter_then_straight_belts",
@@ -3644,7 +3649,7 @@ function setup_output_belt_layout_places_inserter_then_straight_belts_test_case(
   }
 end
 
-function setup_steel_output_belt_layout_places_belts_before_inserter_test_case()
+function setup_steel_output_belt_layout_places_inserter_then_straight_belts_test_case()
   local surface = game.surfaces["nauvis"] or game.surfaces[1]
   if not surface then
     error("enemy-builder test: nauvis surface is unavailable")
@@ -3658,7 +3663,7 @@ function setup_steel_output_belt_layout_places_belts_before_inserter_test_case()
   clear_test_area(surface, area)
 
   return setup_scaling_test{
-    case_name = "steel_output_belt_layout_places_belts_before_inserter",
+    case_name = "steel_output_belt_layout_places_inserter_then_straight_belts",
     builder_position = builder_position,
     surface_name = surface.name,
     suppress_player_autospawn = true,
@@ -3684,24 +3689,10 @@ function setup_steel_output_belt_layout_places_belts_before_inserter_test_case()
         )
       end
 
-      local first_placement = layout_site.placements[1]
-      local last_placement = layout_site.placements[#layout_site.placements]
-      if not (first_placement and first_placement.site_role == "output-belt") then
-        error(
-          "enemy-builder test: expected steel output belt layout to place belt first; " ..
-          "first-role=" .. tostring(first_placement and first_placement.site_role or "nil")
-        )
-      end
-
-      if not (last_placement and last_placement.site_role == "output-inserter") then
-        error(
-          "enemy-builder test: expected steel output belt layout to place inserter last; " ..
-          "last-role=" .. tostring(last_placement and last_placement.site_role or "nil")
-        )
-      end
+      assert_simple_output_belt_layout("steel output belt layout", layout_site, task)
     end,
     assertion = {
-      case_name = "steel_output_belt_layout_places_belts_before_inserter",
+      case_name = "steel_output_belt_layout_places_inserter_then_straight_belts",
       surface_name = surface.name,
       area = area,
       deadline_offset_ticks = 1,
@@ -5873,8 +5864,8 @@ local test_remote_interface = {
   setup_output_belt_prefers_less_ore_direction_test_case = setup_output_belt_prefers_less_ore_direction_test_case,
   setup_output_belt_layout_places_inserter_then_straight_belts_test_case =
     setup_output_belt_layout_places_inserter_then_straight_belts_test_case,
-  setup_steel_output_belt_layout_places_belts_before_inserter_test_case =
-    setup_steel_output_belt_layout_places_belts_before_inserter_test_case,
+  setup_steel_output_belt_layout_places_inserter_then_straight_belts_test_case =
+    setup_steel_output_belt_layout_places_inserter_then_straight_belts_test_case,
   setup_output_belt_abort_preserves_transport_belts_test_case =
     setup_output_belt_abort_preserves_transport_belts_test_case,
   setup_solar_panel_factory_test_case = setup_solar_panel_factory_test_case,
@@ -6296,7 +6287,7 @@ get_recipe = function(item_name)
   return builder_data.crafting and builder_data.crafting.recipes and builder_data.crafting.recipes[item_name] or nil
 end
 
-local function consume_recipe_ingredients(entity, recipe, craft_count, reason)
+function consume_recipe_ingredients(entity, recipe, craft_count, reason)
   local removed_ingredients = {}
 
   for _, ingredient in ipairs(recipe.ingredients) do
@@ -6318,11 +6309,11 @@ local function consume_recipe_ingredients(entity, recipe, craft_count, reason)
   return removed_ingredients
 end
 
-local function advance_task_phase(builder_state, task, tick)
+function advance_task_phase(builder_state, task, tick)
   task_executor.advance_task_phase(builder_state, task, tick, task_executor_context)
 end
 
-local goal_engine_adapters = {
+goal_engine_adapters = {
   advance_task_phase = advance_task_phase,
   build_runtime_snapshot = builder_runtime.build_runtime_snapshot,
   builder_data = builder_data,

@@ -5,6 +5,7 @@ local storage_helpers = require("scripts.world.storage")
 local queries = {}
 local find_or_create_belt_hub_position
 local build_output_belt_layout_for_anchor
+local build_simple_output_belt_layout_for_machine
 
 local function find_nearby_output_container_position(surface, anchor_entity, container_config)
   local area = anchor_entity.selection_box
@@ -202,6 +203,17 @@ local function build_output_belt_layout_site_for_machine(surface, force, task, p
     )
   then
     return nil
+  end
+
+  if task.simple_output_belt_planning then
+    return build_simple_output_belt_layout_for_machine(
+      surface,
+      force,
+      task,
+      output_machine,
+      summary,
+      ctx
+    )
   end
 
   local effective_patch = patch or {
@@ -1675,7 +1687,7 @@ local function count_resources_along_straight_belt(surface, entity_name, start_p
   return overlap_count
 end
 
-local function build_simple_output_belt_layout_for_machine(surface, force, task, output_machine, summary, ctx)
+build_simple_output_belt_layout_for_machine = function(surface, force, task, output_machine, summary, ctx)
   local best_candidate = nil
   local direction_order = {"north", "east", "south", "west"}
   local belt_build_steps = math.max(task.simple_output_belt_build_steps or 15, 1)
@@ -2684,39 +2696,26 @@ function queries.find_output_belt_layout_for_miner_site(surface, force, task, mi
     return nil, summary
   end
 
-  local layout_site = nil
-
-  if task.simple_output_belt_planning then
-    layout_site = build_simple_output_belt_layout_for_machine(
-      surface,
-      force,
-      task,
-      output_machine,
-      summary,
-      ctx
-    )
-  else
-    local patch = get_patch_for_site(
-      {
-        miner = miner,
-        resource_name = task.resource_name
-      },
-      task,
-      ctx
-    ) or {
-      anchor_position = ctx.clone_position(miner.position),
+  local patch = get_patch_for_site(
+    {
+      miner = miner,
       resource_name = task.resource_name
-    }
-    layout_site = build_output_belt_layout_site_for_machine(
-      surface,
-      force,
-      task,
-      patch,
-      output_machine,
-      summary,
-      ctx
-    )
-  end
+    },
+    task,
+    ctx
+  ) or {
+    anchor_position = ctx.clone_position(miner.position),
+    resource_name = task.resource_name
+  }
+  local layout_site = build_output_belt_layout_site_for_machine(
+    surface,
+    force,
+    task,
+    patch,
+    output_machine,
+    summary,
+    ctx
+  )
 
   if not layout_site then
     return nil, summary

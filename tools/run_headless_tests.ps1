@@ -437,7 +437,7 @@ $allCases = @(
   [pscustomobject]@{ Name = "copper_plate_belt_export_ignores_ground_items"; RemoteSetupName = "setup_copper_plate_belt_export_ground_items_test_case"; ServerPort = 34218; RemoteSetupArg = $null },
     [pscustomobject]@{ Name = "output_belt_prefers_less_ore_direction"; RemoteSetupName = "setup_output_belt_prefers_less_ore_direction_test_case"; ServerPort = 34223; RemoteSetupArg = $null },
     [pscustomobject]@{ Name = "output_belt_layout_places_inserter_then_straight_belts"; RemoteSetupName = "setup_output_belt_layout_places_inserter_then_straight_belts_test_case"; ServerPort = 34226; RemoteSetupArg = $null },
-  [pscustomobject]@{ Name = "steel_output_belt_layout_places_belts_before_inserter"; RemoteSetupName = "setup_steel_output_belt_layout_places_belts_before_inserter_test_case"; ServerPort = 34227; RemoteSetupArg = $null },
+  [pscustomobject]@{ Name = "steel_output_belt_layout_places_inserter_then_straight_belts"; RemoteSetupName = "setup_steel_output_belt_layout_places_inserter_then_straight_belts_test_case"; ServerPort = 34227; RemoteSetupArg = $null },
   [pscustomobject]@{ Name = "output_belt_abort_preserves_transport_belts"; RemoteSetupName = "setup_output_belt_abort_preserves_transport_belts_test_case"; ServerPort = 34228; RemoteSetupArg = $null },
   [pscustomobject]@{ Name = "solar_panel_factory_physical_feed"; RemoteSetupName = "setup_solar_panel_factory_test_case"; ServerPort = 34206; RemoteSetupArg = $null; TimeoutSecs = 600 },
   [pscustomobject]@{ Name = "solar_panel_factory_missing_sources_reports_blocker"; RemoteSetupName = "setup_solar_panel_factory_missing_sources_reports_blocker_test_case"; ServerPort = 34215; RemoteSetupArg = $null },
