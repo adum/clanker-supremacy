@@ -30,6 +30,8 @@ return {
     blocked_goal_cooldown_ticks = 15 * 60
   },
   movement = {
-    approach_randomness = 0.6
+    approach_randomness = 0.6,
+    build_standoff_distance = 0.85,
+    build_approach_tolerance = 0.3
   }
 }

@@ -1066,17 +1066,48 @@ local function get_approach_randomness(task, arrival_distance)
   return max_offset
 end
 
-local function create_randomized_approach_position(target_position, max_offset)
+function task_prefers_build_standoff(task)
+  if not task then
+    return false
+  end
+
+  return task.type == "place-miner-on-resource" or
+    task.type == "place-machine-near-site" or
+    task.type == "place-layout-near-machine" or
+    task.type == "place-output-belt-line" or
+    task.type == "place-assembly-block" or
+    task.type == "place-assembly-input-route"
+end
+
+function get_build_standoff_distance(task, arrival_distance)
+  if not task_prefers_build_standoff(task) then
+    return 0
+  end
+
+  local movement_settings = builder_data.movement or {}
+  local standoff_distance = movement_settings.build_standoff_distance or 0.85
+  local max_standoff = math.max((arrival_distance or (task and task.arrival_distance) or 1.1) * 0.9, 0.2)
+  return math.max(math.min(standoff_distance, max_standoff), 0.2)
+end
+
+function create_randomized_approach_position(target_position, max_offset, min_offset)
   if not target_position then
     return nil
   end
+
+  min_offset = math.max(min_offset or 0, 0)
 
   if not max_offset or max_offset <= 0 then
     return clone_position(target_position)
   end
 
   local angle = (next_random_index(360) - 1) * (math.pi / 180)
-  local radius = ((next_random_index(1000) - 1) / 999) * max_offset
+  local effective_max_offset = math.max(max_offset, min_offset)
+  local radius = min_offset
+
+  if effective_max_offset > min_offset then
+    radius = min_offset + (((next_random_index(1000) - 1) / 999) * (effective_max_offset - min_offset))
+  end
 
   return {
     x = target_position.x + (math.cos(angle) * radius),
@@ -1084,10 +1115,40 @@ local function create_randomized_approach_position(target_position, max_offset)
   }
 end
 
-local function create_task_approach_position(task, target_position, arrival_distance)
+function create_cardinal_approach_position(target_position, offset)
+  if not target_position then
+    return nil
+  end
+
+  local distance = math.max(offset or 0, 0)
+  if distance <= 0 then
+    return clone_position(target_position)
+  end
+
+  local cardinal_offsets = {
+    {x = distance, y = 0},
+    {x = -distance, y = 0},
+    {x = 0, y = distance},
+    {x = 0, y = -distance}
+  }
+  local chosen_offset = cardinal_offsets[next_random_index(#cardinal_offsets)]
+
+  return {
+    x = target_position.x + chosen_offset.x,
+    y = target_position.y + chosen_offset.y
+  }
+end
+
+function create_task_approach_position(task, target_position, arrival_distance)
+  local max_offset = get_approach_randomness(task, arrival_distance or (task and task.arrival_distance) or nil)
+  local min_offset = get_build_standoff_distance(task, arrival_distance)
+  if min_offset > 0 then
+    return create_cardinal_approach_position(target_position, math.max(max_offset, min_offset))
+  end
   return create_randomized_approach_position(
     target_position,
-    get_approach_randomness(task, arrival_distance or (task and task.arrival_distance) or nil)
+    math.max(max_offset, min_offset),
+    min_offset
   )
 end
 
@@ -3638,6 +3699,157 @@ function setup_output_belt_layout_places_inserter_then_straight_belts_test_case(
   }
 end
 
+function setup_output_belt_sidestep_before_building_test_case()
+  local surface = game.surfaces["nauvis"] or game.surfaces[1]
+  if not surface then
+    error("enemy-builder test: nauvis surface is unavailable")
+  end
+
+  local builder_position = {x = 0, y = 0}
+  local iron_patch_position = {x = 24, y = 0}
+  local area = make_test_area({x = 28, y = 0}, 64, 24)
+
+  surface.always_day = true
+  clear_test_area(surface, area)
+  create_test_resource_patch(surface, "iron-ore", iron_patch_position, 3, 5000)
+
+  return setup_scaling_test{
+    case_name = "output_belt_sidestep_before_building",
+    builder_position = builder_position,
+    surface_name = surface.name,
+    suppress_player_autospawn = true,
+    disable_nearby_machine_output_collection = true,
+    inventory = {
+      {name = "burner-inserter", count = 1},
+      {name = "transport-belt", count = 16}
+    },
+    mutate_builder_state = function(builder_state, test_surface)
+      local iron_site = place_test_runtime_iron_smelting_site(test_surface, iron_patch_position)
+      local task = deep_copy(builder_data.site_patterns.iron_plate_belt_export.build_task)
+      task.id = "test-output-belt-sidestep-before-building"
+      task.consume_items_on_place = true
+
+      local layout_site, summary = world_model.find_output_belt_layout_for_miner_site(
+        test_surface,
+        builder_state.entity.force,
+        task,
+        iron_site.miner,
+        iron_site.anchor_furnace,
+        world_model_context
+      )
+
+      if not (layout_site and layout_site.placements and #layout_site.placements > 1) then
+        error(
+          "enemy-builder test: expected output belt layout for sidestep test; " ..
+          "valid=" .. tostring(summary and summary.valid_belt_paths or 0) ..
+          " failed=" .. tostring(summary and summary.failed_belt_paths or 0) ..
+          " detail=" .. tostring(summary and summary.failed_belt_path_detail or "nil")
+        )
+      end
+
+      local first_belt = layout_site.placements[2]
+      if not (first_belt and first_belt.site_role == "output-belt") then
+        error("enemy-builder test: expected first belt placement in sidestep test")
+      end
+
+      local placed_inserter = test_surface.create_entity{
+        name = layout_site.placements[1].entity_name,
+        position = layout_site.placements[1].build_position,
+        direction = layout_site.placements[1].build_direction,
+        force = builder_state.entity.force,
+        create_build_effect_smoke = false
+      }
+      if not (placed_inserter and placed_inserter.valid) then
+        error("enemy-builder test: failed to create existing output inserter for sidestep test")
+      end
+
+      if not builder_state.entity.teleport(clone_position(first_belt.build_position)) then
+        error("enemy-builder test: failed to move builder onto first belt position for sidestep test")
+      end
+
+      builder_state.task_state = {
+        phase = "building",
+        build_position = clone_position(iron_site.miner.position),
+        build_direction = iron_site.miner.direction,
+        downstream_machine_position = clone_position(iron_site.anchor_furnace.position),
+        placed_miner = iron_site.miner,
+        placed_downstream_machine = iron_site.anchor_furnace,
+        layout_placements = deep_copy(layout_site.placements),
+        layout_index = 2,
+        placed_layout_entities = {
+          {
+            id = layout_site.placements[1].id,
+            site_role = layout_site.placements[1].site_role,
+            entity = placed_inserter
+          }
+        },
+        last_position = clone_position(builder_state.entity.position),
+        last_progress_tick = game.tick
+      }
+
+      task_executor.advance_task_phase(builder_state, task, game.tick, task_executor_context)
+
+      if builder_state.task_state.phase ~= "moving" then
+        error(
+          "enemy-builder test: expected sidestep to switch task into moving phase; phase=" ..
+          tostring(builder_state.task_state.phase)
+        )
+      end
+
+      if not builder_state.task_state.approach_position then
+        error("enemy-builder test: expected sidestep to set an approach position")
+      end
+
+      if square_distance(builder_state.task_state.approach_position, first_belt.build_position) <= 0.04 then
+        error("enemy-builder test: sidestep approach position stayed on the blocked belt tile")
+      end
+
+      if not builder_state.entity.teleport(clone_position(builder_state.task_state.approach_position)) then
+        error("enemy-builder test: failed to move builder onto sidestep approach position")
+      end
+
+      builder_state.task_state.last_position = clone_position(builder_state.entity.position)
+      builder_state.task_state.last_progress_tick = game.tick + 1
+      task_executor.advance_task_phase(builder_state, task, game.tick + 1, task_executor_context)
+
+      if builder_state.task_state.phase ~= "building" then
+        error(
+          "enemy-builder test: expected sidestep move to return to building; phase=" ..
+          tostring(builder_state.task_state.phase)
+        )
+      end
+
+      task_executor.advance_task_phase(builder_state, task, game.tick + 2, task_executor_context)
+
+      local placed_belts = test_surface.find_entities_filtered{
+        area = {
+          {area.left_top.x, area.left_top.y},
+          {area.right_bottom.x, area.right_bottom.y}
+        },
+        force = builder_state.entity.force,
+        name = "transport-belt"
+      }
+      if #placed_belts < 1 then
+        error("enemy-builder test: expected at least one belt after sidestep placement")
+      end
+
+      builder_state.task_state = {
+        phase = "scaling-waiting",
+        wait_reason = "test-idle",
+        next_attempt_tick = game.tick + 3600
+      }
+      builder_state.scaling_active_task = nil
+    end,
+    assertion = {
+      case_name = "output_belt_sidestep_before_building",
+      surface_name = surface.name,
+      area = area,
+      deadline_offset_ticks = 1,
+      skip_output_assertion = true
+    }
+  }
+end
+
 function setup_steel_output_belt_layout_places_inserter_then_straight_belts_test_case()
   local surface = game.surfaces["nauvis"] or game.surfaces[1]
   if not surface then
@@ -5373,6 +5585,11 @@ local function format_test_failure_summary(surface, force, assertion)
       entity_name .. "=" .. count_test_entities(surface, force, area, entity_name) .. "/" .. expected_count
   end
 
+  for entity_name, minimum_count in pairs(assertion.minimum_counts or {}) do
+    parts[#parts + 1] =
+      entity_name .. ">=" .. minimum_count .. " actual=" .. count_test_entities(surface, force, area, entity_name)
+  end
+
   for entity_name, maximum_count in pairs(assertion.maximum_counts or {}) do
     parts[#parts + 1] =
       entity_name .. "<=" .. maximum_count .. " actual=" .. count_test_entities(surface, force, area, entity_name)
@@ -5535,6 +5752,12 @@ local function test_assertion_passed(surface, force, assertion)
 
   for entity_name, expected_count in pairs(assertion.expected_counts or {}) do
     if count_test_entities(surface, force, area, entity_name) < expected_count then
+      return false
+    end
+  end
+
+  for entity_name, minimum_count in pairs(assertion.minimum_counts or {}) do
+    if count_test_entities(surface, force, area, entity_name) < minimum_count then
       return false
     end
   end
@@ -5853,6 +6076,8 @@ local test_remote_interface = {
   setup_output_belt_prefers_less_ore_direction_test_case = setup_output_belt_prefers_less_ore_direction_test_case,
   setup_output_belt_layout_places_inserter_then_straight_belts_test_case =
     setup_output_belt_layout_places_inserter_then_straight_belts_test_case,
+  setup_output_belt_sidestep_before_building_test_case =
+    setup_output_belt_sidestep_before_building_test_case,
   setup_steel_output_belt_layout_places_inserter_then_straight_belts_test_case =
     setup_steel_output_belt_layout_places_inserter_then_straight_belts_test_case,
   setup_output_belt_abort_preserves_transport_belts_test_case =
@@ -6153,6 +6378,7 @@ local function process_production_sites(tick)
 end
 
 local task_executor_context = {
+  builder_data = builder_data,
   builder_runtime = builder_runtime,
   clone_position = clone_position,
   complete_current_task = complete_current_task,

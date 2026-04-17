@@ -234,6 +234,95 @@ local function build_entity_placement_area(entity_name, position)
   }
 end
 
+local function areas_intersect(left, right)
+  if not (left and right and left.left_top and left.right_bottom and right.left_top and right.right_bottom) then
+    return false
+  end
+
+  return left.left_top.x < right.right_bottom.x and
+    left.right_bottom.x > right.left_top.x and
+    left.left_top.y < right.right_bottom.y and
+    left.right_bottom.y > right.left_top.y
+end
+
+local function builder_blocks_entity_placement(builder_entity, entity_name, position)
+  if not (builder_entity and builder_entity.valid and entity_name and position) then
+    return false
+  end
+
+  return areas_intersect(
+    build_entity_placement_area(builder_entity.name, builder_entity.position),
+    build_entity_placement_area(entity_name, position)
+  )
+end
+
+local function choose_build_sidestep_position(builder_entity, entity_name, position, ctx)
+  if not (builder_entity and builder_entity.valid and entity_name and position) then
+    return ctx.clone_position(position)
+  end
+
+  local target_area = build_entity_placement_area(entity_name, position)
+  local builder_area = build_entity_placement_area(builder_entity.name, {x = 0, y = 0})
+  local builder_width = math.max(builder_area.right_bottom.x - builder_area.left_top.x, 0.2)
+  local builder_height = math.max(builder_area.right_bottom.y - builder_area.left_top.y, 0.2)
+  local margin = ((ctx.builder_data and ctx.builder_data.movement and ctx.builder_data.movement.build_standoff_distance) or 0.85) * 0.35
+
+  local candidate_positions = {
+    {
+      x = target_area.left_top.x - (builder_width * 0.5) - margin,
+      y = position.y
+    },
+    {
+      x = target_area.right_bottom.x + (builder_width * 0.5) + margin,
+      y = position.y
+    },
+    {
+      x = position.x,
+      y = target_area.left_top.y - (builder_height * 0.5) - margin
+    },
+    {
+      x = position.x,
+      y = target_area.right_bottom.y + (builder_height * 0.5) + margin
+    }
+  }
+
+  table.sort(candidate_positions, function(left, right)
+    return ctx.square_distance(builder_entity.position, left) < ctx.square_distance(builder_entity.position, right)
+  end)
+
+  return candidate_positions[1]
+end
+
+local function begin_build_sidestep(builder_state, task, tick, entity_name, position, ctx)
+  local task_state = builder_state.task_state
+  local sidestep_position = choose_build_sidestep_position(builder_state.entity, entity_name, position, ctx)
+  local approach_tolerance = ((ctx.builder_data and ctx.builder_data.movement and
+    ctx.builder_data.movement.build_approach_tolerance) or 0.3)
+
+  task_state.phase = "moving"
+  task_state.move_destination_position = ctx.clone_position(sidestep_position)
+  task_state.move_next_phase = "building"
+  task_state.move_arrival_distance = approach_tolerance
+  task_state.move_require_approach = false
+  task_state.approach_position = ctx.clone_position(sidestep_position)
+  task_state.last_position = ctx.clone_position(builder_state.entity.position)
+  task_state.last_progress_tick = tick
+  ctx.debug_log(
+    "task " .. task.id .. ": stepping aside before placing " .. entity_name ..
+      " at " .. ctx.format_position(position) ..
+      " toward " .. ctx.format_position(sidestep_position)
+  )
+end
+
+local function ensure_builder_clear_for_placement(builder_state, task, tick, entity_name, position, ctx)
+  if not builder_blocks_entity_placement(builder_state.entity, entity_name, position) then
+    return false
+  end
+
+  begin_build_sidestep(builder_state, task, tick, entity_name, position, ctx)
+  return true
+end
+
 local function clear_ground_item_blockers(surface, entity_name, position, task, ctx)
   if not (surface and entity_name and position and task and task.clear_ground_item_blockers) then
     return false
@@ -762,6 +851,10 @@ function action_build.place_miner(builder_state, task, tick, ctx, refresh_task)
   local build_phase = get_next_build_phase(task_state, task)
 
   if build_phase == "place-miner" then
+    if ensure_builder_clear_for_placement(builder_state, task, tick, task.miner_name, task_state.build_position, ctx) then
+      return
+    end
+
     if not can_place_entity_with_ground_item_clearance(
         surface,
         entity.force,
@@ -863,6 +956,17 @@ function action_build.place_miner(builder_state, task, tick, ctx, refresh_task)
       end
     end
 
+    if ensure_builder_clear_for_placement(
+      builder_state,
+      task,
+      tick,
+      task.downstream_machine.name,
+      task_state.downstream_machine_position,
+      ctx
+    ) then
+      return
+    end
+
     if not can_place_entity_with_ground_item_clearance(
         surface,
         entity.force,
@@ -925,6 +1029,17 @@ function action_build.place_miner(builder_state, task, tick, ctx, refresh_task)
   if build_phase == "place-output-container" then
     if not task_state.output_container_position then
       abort_build("missing output container position")
+      return
+    end
+
+    if ensure_builder_clear_for_placement(
+      builder_state,
+      task,
+      tick,
+      task.output_container.name,
+      task_state.output_container_position,
+      ctx
+    ) then
       return
     end
 
@@ -1029,6 +1144,17 @@ function action_build.place_miner(builder_state, task, tick, ctx, refresh_task)
     local placement = task_state.layout_placements and task_state.layout_placements[task_state.layout_index]
     if not placement then
       task_state.phase = "build-complete"
+      return
+    end
+
+    if ensure_builder_clear_for_placement(
+      builder_state,
+      task,
+      tick,
+      placement.entity_name,
+      placement.build_position,
+      ctx
+    ) then
       return
     end
 
@@ -1161,6 +1287,10 @@ function action_build.place_machine_near_site(builder_state, task, tick, ctx, re
   end
 
   if not task_state.placed_entity then
+    if ensure_builder_clear_for_placement(builder_state, task, tick, task.entity_name, task_state.build_position, ctx) then
+      return
+    end
+
     if not surface.can_place_entity{
       name = task.entity_name,
       position = task_state.build_position,
@@ -1286,6 +1416,17 @@ function action_build.place_machine_near_site(builder_state, task, tick, ctx, re
 
     local placement = task_state.layout_placements and task_state.layout_placements[task_state.layout_index]
     if placement then
+      if ensure_builder_clear_for_placement(
+        builder_state,
+        task,
+        tick,
+        placement.entity_name,
+        placement.build_position,
+        ctx
+      ) then
+        return
+      end
+
       if not surface.can_place_entity{
         name = placement.entity_name,
         position = placement.build_position,
@@ -1428,6 +1569,17 @@ function action_build.place_layout_near_machine(builder_state, task, tick, ctx, 
   local placement = task_state.layout_placements and task_state.layout_placements[task_state.layout_index]
   if not placement then
     task_state.phase = "build-complete"
+    return
+  end
+
+  if ensure_builder_clear_for_placement(
+    builder_state,
+    task,
+    tick,
+    placement.entity_name,
+    placement.build_position,
+    ctx
+  ) then
     return
   end
 

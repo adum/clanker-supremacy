@@ -284,6 +284,7 @@ run_case "copper_plate_belt_export_ignores_ground_items" "setup_copper_plate_bel
 run_case "output_belts_can_overlap_resources" "setup_output_belts_can_overlap_resources_test_case" "34216"
 run_case "output_belt_prefers_less_ore_direction" "setup_output_belt_prefers_less_ore_direction_test_case" "34223"
 run_case "output_belt_layout_places_inserter_then_straight_belts" "setup_output_belt_layout_places_inserter_then_straight_belts_test_case" "34226"
+run_case "output_belt_sidestep_before_building" "setup_output_belt_sidestep_before_building_test_case" "34229"
 run_case "steel_output_belt_layout_places_inserter_then_straight_belts" "setup_steel_output_belt_layout_places_inserter_then_straight_belts_test_case" "34227"
 run_case "output_belt_abort_preserves_transport_belts" "setup_output_belt_abort_preserves_transport_belts_test_case" "34228"
 run_case "solar_panel_factory_physical_feed" "setup_solar_panel_factory_test_case" "34206" "" "600"

@@ -1,13 +1,39 @@
 local action_move = {}
 
-local function move_builder_to_position(builder_state, task, tick, destination_position, next_phase, approach_position, ctx, refresh_task)
+local function move_builder_to_position(
+  builder_state,
+  task,
+  tick,
+  destination_position,
+  next_phase,
+  approach_position,
+  ctx,
+  refresh_task,
+  arrival_distance,
+  require_approach_position
+)
   local entity = builder_state.entity
   local task_state = builder_state.task_state
   local movement_position = approach_position or destination_position
+  local effective_arrival_distance = arrival_distance or task.arrival_distance
+  local destination_reached =
+    ctx.square_distance(entity.position, destination_position) <= (effective_arrival_distance * effective_arrival_distance)
+  local approach_reached = true
 
-  if ctx.square_distance(entity.position, destination_position) <= (task.arrival_distance * task.arrival_distance) then
+  if require_approach_position and approach_position then
+    local movement_settings = (ctx.builder_data and ctx.builder_data.movement) or {}
+    local approach_tolerance = movement_settings.build_approach_tolerance or 0.3
+    approach_reached =
+      ctx.square_distance(entity.position, approach_position) <= (approach_tolerance * approach_tolerance)
+  end
+
+  if destination_reached and approach_reached then
     ctx.set_idle(entity)
     task_state.phase = next_phase
+    task_state.move_destination_position = nil
+    task_state.move_next_phase = nil
+    task_state.move_arrival_distance = nil
+    task_state.move_require_approach = nil
     ctx.builder_runtime.clear_recovery(builder_state)
     ctx.debug_log("task " .. task.id .. ": reached target position " .. ctx.format_position(destination_position))
     return
@@ -37,15 +63,29 @@ local function move_builder_to_position(builder_state, task, tick, destination_p
 end
 
 function action_move.move_builder(builder_state, task, tick, ctx, refresh_task)
+  local task_state = builder_state.task_state
+  local destination_position = task_state.move_destination_position or task_state.build_position
+  local next_phase = task_state.move_next_phase or "building"
+  local require_approach_position = task_state.move_require_approach
+
+  if require_approach_position == nil then
+    require_approach_position =
+      task_state.approach_position ~= nil and
+      destination_position ~= nil and
+      ctx.square_distance(task_state.approach_position, destination_position) > 0.01
+  end
+
   move_builder_to_position(
     builder_state,
     task,
     tick,
-    builder_state.task_state.build_position,
-    "building",
-    builder_state.task_state.approach_position,
+    destination_position,
+    next_phase,
+    task_state.approach_position,
     ctx,
-    refresh_task
+    refresh_task,
+    task_state.move_arrival_distance or task.arrival_distance,
+    require_approach_position
   )
 end
 
