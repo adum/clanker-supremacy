@@ -56,7 +56,6 @@ local function make_fresh_output_belt_task(pattern_name, resource_name, output_i
         count = 4
       }
     },
-    simple_output_belt_planning = true,
     simple_output_belt_ore_scan_steps = 20,
     simple_output_belt_build_steps = 15,
     belt_entity_name = "transport-belt",
@@ -381,7 +380,6 @@ local function make_retrofit_output_belt_task(pattern_name, anchor_pattern_names
         count = 4
       }
     },
-    simple_output_belt_planning = true,
     simple_output_belt_ore_scan_steps = 20,
     simple_output_belt_build_steps = 15,
     belt_entity_name = "transport-belt",

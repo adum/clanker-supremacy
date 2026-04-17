@@ -3299,17 +3299,6 @@ function setup_output_belts_can_overlap_resources_test_case()
 
           if miner and miner.valid and output_machine and output_machine.valid then
             local layout_task = deep_copy(base_task)
-            layout_task.belt_hub_search = {
-              heading_count = 1,
-              heading_attempts = 1,
-              ray_step = 1,
-              max_distance = 48,
-              extra_distance_min = 8,
-              extra_distance_max = 8,
-              local_search_radius = 3,
-              local_search_step = 1
-            }
-
             local layout_site, layout_summary =
               find_output_belt_layout_for_miner_site(test_surface, force, layout_task, miner, output_machine)
             local overlap_count = layout_site and

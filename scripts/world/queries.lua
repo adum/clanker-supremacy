@@ -3,8 +3,6 @@ local sites = require("scripts.world.sites")
 local storage_helpers = require("scripts.world.storage")
 
 local queries = {}
-local find_or_create_belt_hub_position
-local build_output_belt_layout_for_anchor
 local build_simple_output_belt_layout_for_machine
 
 local function find_nearby_output_container_position(surface, anchor_entity, container_config)
@@ -205,84 +203,14 @@ local function build_output_belt_layout_site_for_machine(surface, force, task, p
     return nil
   end
 
-  if task.simple_output_belt_planning then
-    return build_simple_output_belt_layout_for_machine(
-      surface,
-      force,
-      task,
-      output_machine,
-      summary,
-      ctx
-    )
-  end
-
-  local effective_patch = patch or {
-    anchor_position = ctx.clone_position(output_machine.position),
-    resource_name = task.resource_name
-  }
-  local hub_position, patch_key = find_or_create_belt_hub_position(surface, force, effective_patch, task, summary, ctx)
-  if not hub_position then
-    return nil
-  end
-
-  local placements, terminal_position = build_output_belt_layout_for_anchor(
+  return build_simple_output_belt_layout_for_machine(
     surface,
     force,
-    output_machine,
-    hub_position,
     task,
+    output_machine,
     summary,
     ctx
   )
-  if not (placements and #placements > 0) then
-    return nil
-  end
-
-  return {
-    placements = placements,
-    hub_position = hub_position,
-    hub_key = patch_key,
-    belt_terminal_position = terminal_position
-  }
-end
-
-local function find_output_belt_layout_for_machine_position(surface, force, task, patch, output_machine_position, stats, ctx)
-  if not (task.output_inserter and task.belt_entity_name and task.downstream_machine and output_machine_position) then
-    return nil, nil, nil, nil
-  end
-
-  local probe_machine = surface.create_entity{
-    name = task.downstream_machine.name,
-    position = output_machine_position,
-    force = force,
-    create_build_effect_smoke = false,
-    raise_built = false
-  }
-
-  if not probe_machine then
-    return nil, nil, nil, nil
-  end
-
-  local layout_site = build_output_belt_layout_site_for_machine(
-    surface,
-    force,
-    task,
-    patch,
-    probe_machine,
-    stats,
-    ctx
-  )
-
-  probe_machine.destroy()
-
-  if not layout_site then
-    return nil, nil, nil, nil
-  end
-
-  return layout_site.placements,
-    layout_site.hub_position,
-    layout_site.hub_key,
-    layout_site.belt_terminal_position
 end
 
 local function count_registered_sites_near_position(requirement, position, ctx)
@@ -1248,21 +1176,6 @@ local function get_direction_vector(direction_name)
   return {x = 1, y = 0}
 end
 
-local function get_prioritized_output_directions(from_position, to_position)
-  local primary = get_direction_name_from_delta(to_position.x - from_position.x, to_position.y - from_position.y)
-  local directions = {primary}
-  local seen = {[primary] = true}
-  local all_directions = {"north", "east", "south", "west"}
-
-  for _, direction_name in ipairs(all_directions) do
-    if not seen[direction_name] then
-      directions[#directions + 1] = direction_name
-    end
-  end
-
-  return directions
-end
-
 local function get_opposite_direction_name(direction_name)
   if direction_name == "north" then
     return "south"
@@ -1365,70 +1278,6 @@ local function snap_position_to_tile_center(position)
   }
 end
 
-find_or_create_belt_hub_position = function(surface, force, patch, task, summary, ctx)
-  local belt_hubs = storage_helpers.ensure_belt_hubs()
-  local patch_key = get_patch_key(patch)
-  local existing = patch_key and belt_hubs[patch_key] or nil
-  if existing and existing.position then
-    return ctx.clone_position(existing.position), patch_key
-  end
-
-  local hub_task = {
-    entity_name = task.belt_entity_name,
-    resource_clearance_search = task.belt_hub_search,
-    placement_search_radius = (task.belt_hub_search and task.belt_hub_search.local_search_radius) or 4,
-    placement_step = (task.belt_hub_search and task.belt_hub_search.local_search_step) or 1
-  }
-
-  for _, search_origin in ipairs(build_resource_clearance_search_origins(
-    surface,
-    force,
-    hub_task,
-    patch.anchor_position,
-    summary,
-    ctx
-  )) do
-    local snapped_center = snap_position_to_tile_center(search_origin.center)
-    local hub_position, _, placement_stats = find_entity_placement_near_anchor(
-      surface,
-      force,
-      task.belt_entity_name,
-      snapped_center,
-      search_origin.search_radius,
-      search_origin.placement_step,
-      {
-        ctx.direction_by_name.north,
-        ctx.direction_by_name.east,
-        ctx.direction_by_name.south,
-        ctx.direction_by_name.west
-      },
-      function(position, direction)
-        if task.forbid_resource_overlap and candidate_entity_overlaps_resources(surface, force, task.belt_entity_name, position, direction) then
-          summary.resource_overlap_rejections = (summary.resource_overlap_rejections or 0) + 1
-          return false
-        end
-
-        return true
-      end,
-      ctx,
-      task
-    )
-    update_summary_with_placement_stats(summary, placement_stats)
-
-    if hub_position then
-      if patch_key then
-        belt_hubs[patch_key] = {
-          position = ctx.clone_position(hub_position),
-          resource_name = patch.resource_name
-        }
-      end
-      return ctx.clone_position(hub_position), patch_key
-    end
-  end
-
-  return nil, patch_key
-end
-
 local function step_toward(start_value, end_value)
   if end_value > start_value then
     return start_value + 1
@@ -1468,154 +1317,6 @@ local function build_belt_path_positions(first_position, terminal_position, axis
   end
 
   return positions
-end
-
-local function build_belt_path_placements(surface, force, first_position, terminal_position, task, summary, ctx)
-  local axis_orders = {
-    {"x", "y"},
-    {"y", "x"}
-  }
-  local scored_axis_orders = {}
-  local turn_resource_avoidance_lookahead = math.max(task.belt_turn_resource_avoidance_lookahead or 4, 0)
-
-  local function build_axis_order_resource_score(positions)
-    local turn_index = nil
-    local turn_overlap_count = 0
-    local total_overlap_count = 0
-
-    for index, position in ipairs(positions) do
-      if entity_refs.entity_name_overlaps_resources(surface, task.belt_entity_name, position) then
-        total_overlap_count = total_overlap_count + 1
-      end
-
-      if index > 1 and index < #positions and not turn_index then
-        local previous_position = positions[index - 1]
-        local next_position = positions[index + 1]
-        local incoming_direction_name =
-          get_direction_name_from_delta(position.x - previous_position.x, position.y - previous_position.y)
-        local outgoing_direction_name =
-          get_direction_name_from_delta(next_position.x - position.x, next_position.y - position.y)
-
-        if incoming_direction_name ~= outgoing_direction_name then
-          turn_index = index
-        end
-      end
-    end
-
-    if turn_index then
-      local lookahead_end_index = math.min(#positions, turn_index + turn_resource_avoidance_lookahead)
-      for index = turn_index, lookahead_end_index do
-        if entity_refs.entity_name_overlaps_resources(surface, task.belt_entity_name, positions[index]) then
-          turn_overlap_count = turn_overlap_count + 1
-        end
-      end
-    end
-
-    return turn_overlap_count, total_overlap_count
-  end
-
-  for axis_order_index, axis_order in ipairs(axis_orders) do
-    local positions = build_belt_path_positions(first_position, terminal_position, axis_order, ctx)
-    if not positions then
-      goto continue
-    end
-    local turn_overlap_count, total_overlap_count = build_axis_order_resource_score(positions)
-    scored_axis_orders[#scored_axis_orders + 1] = {
-      axis_order = axis_order,
-      axis_order_index = axis_order_index,
-      positions = positions,
-      turn_overlap_count = turn_overlap_count,
-      total_overlap_count = total_overlap_count
-    }
-
-    ::continue::
-  end
-
-  table.sort(scored_axis_orders, function(left, right)
-    if left.turn_overlap_count ~= right.turn_overlap_count then
-      return left.turn_overlap_count < right.turn_overlap_count
-    end
-
-    if left.total_overlap_count ~= right.total_overlap_count then
-      return left.total_overlap_count < right.total_overlap_count
-    end
-
-    return left.axis_order_index < right.axis_order_index
-  end)
-
-  for _, axis_order_entry in ipairs(scored_axis_orders) do
-    local positions = axis_order_entry.positions
-    local placements = {}
-    local path_valid = true
-    local seen_positions = {}
-
-    for index, position in ipairs(positions) do
-      local next_position = positions[index + 1]
-      local previous_position = positions[index - 1]
-      local direction_name = nil
-
-      if next_position then
-        direction_name = get_direction_name_from_delta(next_position.x - position.x, next_position.y - position.y)
-      elseif previous_position then
-        direction_name = get_direction_name_from_delta(position.x - previous_position.x, position.y - previous_position.y)
-      end
-
-      local direction = direction_name and ctx.direction_by_name[direction_name] or ctx.direction_by_name.east
-      local position_key = string.format("%.2f:%.2f", position.x, position.y)
-      if seen_positions[position_key] then
-        record_failed_belt_path_detail(
-          summary,
-          "duplicate path position " .. ctx.format_position(position) ..
-            " for route " .. ctx.format_position(first_position) .. " -> " .. ctx.format_position(terminal_position)
-        )
-        path_valid = false
-        break
-      end
-      seen_positions[position_key] = true
-
-      summary.positions_checked = summary.positions_checked + 1
-
-      if not can_place_entity_with_ground_item_clearance(surface, force, task.belt_entity_name, position, direction, task, summary) then
-        local occupant_names = collect_blocking_occupant_names(surface, position, ctx)
-        record_failed_belt_path_detail(
-          summary,
-          "blocked at " .. ctx.format_position(position) ..
-            " dir=" .. tostring(direction_name or "east") ..
-            (#occupant_names > 0 and (" by " .. table.concat(occupant_names, ",")) or "")
-        )
-        path_valid = false
-        break
-      end
-
-      summary.placeable_positions = summary.placeable_positions + 1
-
-      if task.forbid_resource_overlap and candidate_entity_overlaps_resources(surface, force, task.belt_entity_name, position, direction) then
-        summary.resource_overlap_rejections = (summary.resource_overlap_rejections or 0) + 1
-        record_failed_belt_path_detail(
-          summary,
-          "resource overlap at " .. ctx.format_position(position) ..
-            " dir=" .. tostring(direction_name or "east")
-        )
-        path_valid = false
-        break
-      end
-
-      placements[#placements + 1] = {
-        id = "belt-" .. tostring(index),
-        site_role = "output-belt",
-        entity_name = task.belt_entity_name,
-        item_name = task.belt_item_name or task.belt_entity_name,
-        build_position = ctx.clone_position(position),
-        build_direction = direction
-      }
-    end
-
-    if path_valid and #placements > 0 then
-      return placements
-    end
-  end
-
-  return nil
 end
 
 local function validate_output_inserter_geometry(surface, force, output_machine, inserter_position, inserter_direction, first_belt_placement, task, ctx)
@@ -1846,96 +1547,6 @@ build_simple_output_belt_layout_for_machine = function(surface, force, task, out
   }
 end
 
-build_output_belt_layout_for_anchor = function(surface, force, output_machine, hub_position, task, summary, ctx)
-  for _, direction_name in ipairs(get_prioritized_output_directions(output_machine.position, hub_position)) do
-    local inserter_direction = ctx.direction_by_name[get_opposite_direction_name(direction_name)]
-    for _, edge_candidate in ipairs(get_machine_edge_belt_candidates(output_machine, direction_name)) do
-      local terminal_position, _, placement_stats = find_entity_placement_near_anchor(
-        surface,
-        force,
-        task.belt_entity_name,
-        hub_position,
-        task.belt_terminal_search_radius or 0,
-        task.belt_terminal_search_step or 1,
-        {
-          ctx.direction_by_name.north,
-          ctx.direction_by_name.east,
-          ctx.direction_by_name.south,
-          ctx.direction_by_name.west
-        },
-        function(position, direction)
-          if not positions_share_tile_alignment(edge_candidate.first_belt_position.x, position.x) or
-            not positions_share_tile_alignment(edge_candidate.first_belt_position.y, position.y)
-          then
-            return false
-          end
-
-          if task.forbid_resource_overlap and candidate_entity_overlaps_resources(surface, force, task.belt_entity_name, position, direction) then
-            summary.resource_overlap_rejections = (summary.resource_overlap_rejections or 0) + 1
-            return false
-          end
-
-          return true
-        end,
-        ctx,
-        task
-      )
-      update_summary_with_placement_stats(summary, placement_stats)
-
-      if terminal_position then
-        summary.terminal_positions_found = (summary.terminal_positions_found or 0) + 1
-        local belt_placements = build_belt_path_placements(
-          surface,
-          force,
-          edge_candidate.first_belt_position,
-          terminal_position,
-          task,
-          summary,
-          ctx
-        )
-
-        if belt_placements and #belt_placements > 0 then
-          summary.valid_belt_paths = (summary.valid_belt_paths or 0) + 1
-        else
-          summary.failed_belt_paths = (summary.failed_belt_paths or 0) + 1
-        end
-
-        if belt_placements and #belt_placements > 0 and validate_output_inserter_geometry(
-            surface,
-            force,
-            output_machine,
-            edge_candidate.inserter_position,
-            inserter_direction,
-            belt_placements[1],
-            task,
-            ctx
-          ) then
-          local placements = {}
-          for _, placement in ipairs(belt_placements) do
-            placements[#placements + 1] = placement
-          end
-
-          placements[#placements + 1] = {
-            id = "output-inserter",
-            site_role = "output-inserter",
-            entity_name = task.output_inserter.entity_name,
-            item_name = task.output_inserter.item_name or task.output_inserter.entity_name,
-            build_position = ctx.clone_position(edge_candidate.inserter_position),
-            build_direction = inserter_direction,
-            fuel = task.output_inserter.fuel
-          }
-
-          return placements, ctx.clone_position(terminal_position)
-        elseif belt_placements and #belt_placements > 0 then
-          summary.failed_inserter_geometry = (summary.failed_inserter_geometry or 0) + 1
-        end
-      end
-    end
-  end
-
-  return nil, nil
-end
-
 local function find_miner_placement(surface, force, task, resource_position, patch, ctx)
   local site_selection = task.site_selection or {}
   local valid_candidate_limit = site_selection.max_valid_candidates or math.max(site_selection.random_candidate_pool or 1, 4)
@@ -2001,12 +1612,6 @@ local function find_miner_placement(surface, force, task, resource_position, pat
           local downstream_machine_position = nil
           local output_container_position = nil
           local has_output_container_spot = true
-          local belt_layout_placements = nil
-          local belt_hub_position = nil
-          local belt_hub_key = nil
-          local belt_terminal_position = nil
-          local has_output_belt_layout = true
-
           if resource_coverage > 0 then
             stats.mining_area_hits = stats.mining_area_hits + 1
             if resource_coverage > stats.best_resource_coverage then
@@ -2051,27 +1656,11 @@ local function find_miner_placement(surface, force, task, resource_position, pat
                 stats.output_container_hits = stats.output_container_hits + 1
               end
             end
-
-            if has_output_container_spot and downstream_machine_position and task.output_inserter and task.belt_entity_name and
-              not task.simple_output_belt_planning
-            then
-              belt_layout_placements, belt_hub_position, belt_hub_key, belt_terminal_position =
-                find_output_belt_layout_for_machine_position(
-                  surface,
-                  force,
-                  task,
-                  patch,
-                  downstream_machine_position,
-                  stats,
-                  ctx
-                )
-              has_output_belt_layout = belt_layout_placements ~= nil and #belt_layout_placements > 0
-            end
           end
 
           test_miner.destroy()
 
-          if mines_resource and has_output_container_spot and has_output_belt_layout then
+          if mines_resource and has_output_container_spot then
             stats.valid_candidates = stats.valid_candidates + 1
             valid_candidates[#valid_candidates + 1] = {
               build_position = {
@@ -2081,10 +1670,10 @@ local function find_miner_placement(surface, force, task, resource_position, pat
               build_direction = direction,
               output_container_position = output_container_position and ctx.clone_position(output_container_position) or nil,
               downstream_machine_position = downstream_machine_position and ctx.clone_position(downstream_machine_position) or nil,
-              belt_layout_placements = belt_layout_placements,
-              belt_hub_position = belt_hub_position and ctx.clone_position(belt_hub_position) or nil,
-              belt_hub_key = belt_hub_key,
-              belt_terminal_position = belt_terminal_position and ctx.clone_position(belt_terminal_position) or nil,
+              belt_layout_placements = nil,
+              belt_hub_position = nil,
+              belt_hub_key = nil,
+              belt_terminal_position = nil,
               resource_coverage = resource_coverage,
               resource_amount = resource_amount,
               patch_margin = patch_margin,
@@ -2722,27 +2311,6 @@ function queries.find_output_belt_layout_for_miner_site(surface, force, task, mi
   end
 
   return layout_site, summary
-end
-
-function queries.find_output_belt_path_between_positions(surface, force, first_position, terminal_position, task, ctx)
-  local summary = {
-    positions_checked = 0,
-    placeable_positions = 0,
-    resource_overlap_rejections = 0,
-    terminal_positions_found = 1,
-    valid_belt_paths = 0,
-    failed_belt_paths = 0,
-    failed_inserter_geometry = 0
-  }
-
-  local placements = build_belt_path_placements(surface, force, first_position, terminal_position, task, summary, ctx)
-  if placements and #placements > 0 then
-    summary.valid_belt_paths = 1
-  else
-    summary.failed_belt_paths = 1
-  end
-
-  return placements, summary
 end
 
 function queries.find_nearest_resource(surface, origin, task, ctx)
