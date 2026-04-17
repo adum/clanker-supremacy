@@ -364,6 +364,7 @@ build_tasks.iron_plate_belt_export = make_fresh_output_belt_task(
   "iron-ore",
   "iron-plate"
 )
+build_tasks.iron_plate_belt_export.completed_scaling_milestone_name = "iron-plate-belt-export-established"
 
 local function make_retrofit_output_belt_task(pattern_name, anchor_pattern_names, resource_name, output_item_name)
   return {

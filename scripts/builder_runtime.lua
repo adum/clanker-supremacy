@@ -4290,6 +4290,86 @@ function setup_scaling_material_expansion_before_firearm_outpost_test_case()
   }
 end
 
+function setup_steel_export_requires_iron_export_test_case()
+  local surface = game.surfaces["nauvis"] or game.surfaces[1]
+  if not surface then
+    error("enemy-builder test: nauvis surface is unavailable")
+  end
+
+  local builder_position = {x = 0, y = 0}
+  local steel_anchor_positions = {
+    {x = 32, y = -30},
+    {x = 32, y = -18},
+    {x = 32, y = -6},
+    {x = 32, y = 6},
+    {x = 32, y = 18},
+    {x = 32, y = 30}
+  }
+  local area = make_test_area({x = 32, y = 0}, 80, 80)
+  local steel_pattern_index = nil
+
+  for index, pattern_name in ipairs((builder_data.scaling and builder_data.scaling.cycle_pattern_names) or {}) do
+    if pattern_name == "steel_plate_belt_export" then
+      steel_pattern_index = index
+      break
+    end
+  end
+
+  if not steel_pattern_index then
+    error("enemy-builder test: missing steel_plate_belt_export in scaling cycle")
+  end
+
+  surface.always_day = true
+  clear_test_area(surface, area)
+
+  return setup_scaling_test{
+    case_name = "steel_export_requires_iron_export",
+    builder_position = builder_position,
+    surface_name = surface.name,
+    suppress_player_autospawn = true,
+    disable_nearby_machine_output_collection = true,
+    mutate_builder_state = function(builder_state, test_surface)
+      for _, anchor_position in ipairs(steel_anchor_positions) do
+        place_test_runtime_steel_smelting_site(test_surface, builder_state, "north", anchor_position)
+      end
+
+      builder_state.scaling_pattern_index = steel_pattern_index
+      builder_state.scaling_pattern_repeat_count = 0
+      local selected_without_iron_export = get_scaling_pattern_name(builder_state)
+      if selected_without_iron_export == "steel_plate_belt_export" then
+        error("enemy-builder test: steel export unlocked before iron export success milestone")
+      end
+
+      builder_state.completed_scaling_milestones["iron-plate-belt-export-established"] = true
+      builder_state.scaling_pattern_index = steel_pattern_index
+      builder_state.scaling_pattern_repeat_count = 0
+      local selected_with_iron_export = get_scaling_pattern_name(builder_state)
+      if selected_with_iron_export ~= "steel_plate_belt_export" then
+        error(
+          "enemy-builder test: expected steel export after iron export success milestone; selected=" ..
+            tostring(selected_with_iron_export)
+        )
+      end
+
+      builder_state.task_state = {
+        phase = "scaling-waiting",
+        wait_reason = "test-idle",
+        next_attempt_tick = game.tick + 3600
+      }
+    end,
+    assertion = {
+      case_name = "steel_export_requires_iron_export",
+      surface_name = surface.name,
+      area = area,
+      deadline_offset_ticks = 1,
+      skip_output_assertion = true,
+      minimum_resource_site_counts = {
+        steel_smelting = 6
+      }
+    }
+  }
+end
+
 local function setup_assembler_output_collection_limits_test_case()
   local surface = game.surfaces["nauvis"] or game.surfaces[1]
   if not surface then
@@ -5722,6 +5802,7 @@ local test_remote_interface = {
   setup_scaling_firearm_outpost_respects_cap_test_case = setup_scaling_firearm_outpost_respects_cap_test_case,
   setup_scaling_material_expansion_before_firearm_outpost_test_case =
     setup_scaling_material_expansion_before_firearm_outpost_test_case,
+  setup_steel_export_requires_iron_export_test_case = setup_steel_export_requires_iron_export_test_case,
   setup_assembler_output_collection_limits_test_case = setup_assembler_output_collection_limits_test_case,
   setup_wait_patrol_avoids_close_reposition_test_case = setup_wait_patrol_avoids_close_reposition_test_case,
   setup_wait_patrol_stops_when_inventory_cap_reached_test_case =

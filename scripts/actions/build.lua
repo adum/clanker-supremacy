@@ -154,6 +154,11 @@ local function finalize_output_belt_site(builder_state, task, tick, ctx, refresh
     hub_position
   )
 
+  if task.completed_scaling_milestone_name then
+    ctx.builder_runtime.ensure_builder_state_fields(builder_state)
+    builder_state.completed_scaling_milestones[task.completed_scaling_milestone_name] = true
+  end
+
   ctx.complete_current_task(
     builder_state,
     task,

@@ -75,7 +75,8 @@ return {
     steel_plate_belt_export = {
       minimum_site_counts = {
         steel_smelting = 6
-      }
+      },
+      required_completed_milestones = {"iron-plate-belt-export-established"}
     },
     copper_plate_belt_export = {
       minimum_site_counts = {

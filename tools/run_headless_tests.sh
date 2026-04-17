@@ -301,6 +301,7 @@ run_case "scaling_builds_before_coal_reserve" "setup_scaling_builds_before_coal_
 run_case "scaling_repeats_material_patterns" "setup_scaling_repeats_material_patterns_test_case" "34221"
 run_case "scaling_firearm_outpost_respects_cap" "setup_scaling_firearm_outpost_respects_cap_test_case" "34222"
 run_case "scaling_material_expansion_before_firearm_outpost" "setup_scaling_material_expansion_before_firearm_outpost_test_case" "34220"
+run_case "steel_export_requires_iron_export" "setup_steel_export_requires_iron_export_test_case" "34229"
 run_case "steel_smelting_physical_feed_north" "setup_steel_smelting_test_case" "34201" "north"
 run_case "steel_smelting_physical_feed_east" "setup_steel_smelting_test_case" "34202" "east"
 run_case "steel_smelting_physical_feed_south" "setup_steel_smelting_test_case" "34203" "south"

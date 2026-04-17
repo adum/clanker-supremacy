@@ -454,6 +454,7 @@ $allCases = @(
   [pscustomobject]@{ Name = "scaling_repeats_material_patterns"; RemoteSetupName = "setup_scaling_repeats_material_patterns_test_case"; ServerPort = 34221; RemoteSetupArg = $null },
   [pscustomobject]@{ Name = "scaling_firearm_outpost_respects_cap"; RemoteSetupName = "setup_scaling_firearm_outpost_respects_cap_test_case"; ServerPort = 34222; RemoteSetupArg = $null },
   [pscustomobject]@{ Name = "scaling_material_expansion_before_firearm_outpost"; RemoteSetupName = "setup_scaling_material_expansion_before_firearm_outpost_test_case"; ServerPort = 34220; RemoteSetupArg = $null },
+  [pscustomobject]@{ Name = "steel_export_requires_iron_export"; RemoteSetupName = "setup_steel_export_requires_iron_export_test_case"; ServerPort = 34229; RemoteSetupArg = $null },
   [pscustomobject]@{ Name = "steel_smelting_physical_feed_north"; RemoteSetupName = "setup_steel_smelting_test_case"; ServerPort = 34201; RemoteSetupArg = "north" },
   [pscustomobject]@{ Name = "steel_smelting_physical_feed_east"; RemoteSetupName = "setup_steel_smelting_test_case"; ServerPort = 34202; RemoteSetupArg = "east" },
   [pscustomobject]@{ Name = "steel_smelting_physical_feed_south"; RemoteSetupName = "setup_steel_smelting_test_case"; ServerPort = 34203; RemoteSetupArg = "south" },
