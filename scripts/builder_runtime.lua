@@ -5322,6 +5322,91 @@ local function setup_copper_smelting_large_patch_open_half_test_case()
   }
 end
 
+local function setup_iron_plate_belt_export_large_patch_sparse_near_edge_test_case()
+  local surface = game.surfaces["nauvis"] or game.surfaces[1]
+  if not surface then
+    error("enemy-builder test: nauvis surface is unavailable")
+  end
+
+  local builder_position = {x = 40, y = 0}
+  local patch_center = {x = 64, y = 0}
+  local sparse_band_max_x = patch_center.x
+  local area = make_test_area(patch_center, 28, 20)
+
+  surface.always_day = true
+  clear_test_area(surface, area)
+  create_test_resource_patch(surface, "iron-ore", patch_center, 12, 5000)
+
+  return setup_scaling_test{
+    case_name = "iron_plate_belt_export_large_patch_sparse_near_edge",
+    builder_position = builder_position,
+    surface_name = surface.name,
+    suppress_player_autospawn = true,
+    disable_nearby_machine_output_collection = true,
+    mutate_builder_state = function(builder_state, test_surface)
+      local iron_task = builder_data.site_patterns and builder_data.site_patterns.iron_plate_belt_export and
+        builder_data.site_patterns.iron_plate_belt_export.build_task or nil
+      if not iron_task then
+        error("enemy-builder test: missing iron_plate_belt_export build task")
+      end
+
+      for _, resource in ipairs(test_surface.find_entities_filtered{
+        area = area,
+        type = "resource",
+        name = "iron-ore"
+      }) do
+        if resource.valid and resource.position.x <= sparse_band_max_x then
+          resource.amount = 40
+        end
+      end
+
+      local site, summary = find_resource_site(test_surface, builder_state.entity.force, builder_position, iron_task)
+      if not site then
+        error(
+          "enemy-builder test: expected iron belt export site on richer far edge; " ..
+          "considered " .. tostring(summary and summary.resources_considered or 0) ..
+          " anchors, best amount " .. tostring(summary and summary.best_resource_amount or 0)
+        )
+      end
+
+      if (summary and summary.resources_considered or 0) <= (iron_task.max_resource_candidates_per_radius or 0) then
+        error(
+          "enemy-builder test: expected sparse-edge fallback to scan beyond capped anchors; " ..
+          "considered " .. tostring(summary and summary.resources_considered or 0)
+        )
+      end
+
+      if (site.resource_amount or 0) < (iron_task.minimum_resource_amount or 0) then
+        error(
+          "enemy-builder test: expected iron belt export site to meet minimum resource amount; " ..
+          "amount=" .. tostring(site.resource_amount or 0) ..
+          " minimum=" .. tostring(iron_task.minimum_resource_amount or 0)
+        )
+      end
+
+      if not (site.anchor_position and site.anchor_position.x > sparse_band_max_x) then
+        error(
+          "enemy-builder test: expected iron belt export to skip sparse near edge band; " ..
+          "anchor=" .. format_position(site.anchor_position)
+        )
+      end
+
+      builder_state.task_state = {
+        phase = "scaling-waiting",
+        wait_reason = "test-idle",
+        next_attempt_tick = game.tick + 3600
+      }
+    end,
+    assertion = {
+      case_name = "iron_plate_belt_export_large_patch_sparse_near_edge",
+      surface_name = surface.name,
+      area = area,
+      deadline_offset_ticks = 1,
+      skip_output_assertion = true
+    }
+  }
+end
+
 local function finish_manual_test()
   if storage.enemy_builder_test then
     storage.enemy_builder_test.finished = true
@@ -6195,6 +6280,8 @@ local test_remote_interface = {
   setup_machine_refuel_respects_minimum_batch_test_case = setup_machine_refuel_respects_minimum_batch_test_case,
   setup_steel_output_retries_blocked_anchors_test_case = setup_steel_output_retries_blocked_anchors_test_case,
   setup_copper_smelting_large_patch_open_half_test_case = setup_copper_smelting_large_patch_open_half_test_case,
+  setup_iron_plate_belt_export_large_patch_sparse_near_edge_test_case =
+    setup_iron_plate_belt_export_large_patch_sparse_near_edge_test_case,
   setup_steel_smelting_test_case = setup_steel_smelting_test_case,
   setup_steel_smelting_missing_inserter_does_not_place_free_inserter_test_case =
     setup_steel_smelting_missing_inserter_does_not_place_free_inserter_test_case,

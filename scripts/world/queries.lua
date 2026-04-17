@@ -1846,6 +1846,72 @@ local function select_preferred_resource_site_candidate(site_candidates, site_se
   )
 end
 
+local function append_edge_resource_candidate(edge_resource_candidates, resource, patch, origin, ctx)
+  edge_resource_candidates[#edge_resource_candidates + 1] = {
+    resource = resource,
+    patch = patch,
+    resource_key = get_resource_position_key(resource),
+    distance = ctx.square_distance(origin, resource.position)
+  }
+end
+
+local function evaluate_edge_resource_site_candidates(
+  surface,
+  force,
+  origin,
+  task,
+  site_selection,
+  summary,
+  seen_resources,
+  edge_resource_candidates,
+  ctx,
+  limit
+)
+  local site_candidates = {}
+  local considered = 0
+  local low_resource_rejections_before = summary.low_resource_amount_rejections or 0
+
+  for _, edge_candidate in ipairs(edge_resource_candidates) do
+    local resource_key = edge_candidate.resource_key
+    if not seen_resources[resource_key] then
+      seen_resources[resource_key] = true
+      considered = considered + 1
+      summary.resources_considered = summary.resources_considered + 1
+
+      local site, placement_stats = find_first_miner_placement(
+        surface,
+        force,
+        task,
+        edge_candidate.resource,
+        edge_candidate.patch,
+        ctx
+      )
+      merge_resource_site_search_summary(summary, placement_stats)
+      summary.selected_candidate_pool_size = placement_stats.selected_candidate_pool_size or
+        summary.selected_candidate_pool_size
+
+      if site then
+        site_candidates[#site_candidates + 1] = {
+          resource = edge_candidate.resource,
+          anchor_position = ctx.clone_position(edge_candidate.resource.position),
+          build_position = site.build_position,
+          build_direction = site.build_direction,
+          resource_coverage = site.resource_coverage,
+          resource_amount = site.resource_amount,
+          patch_margin = site.patch_margin or placement_stats.selected_patch_margin or placement_stats.best_patch_margin or 0,
+          resource_distance = ctx.square_distance(origin, site.build_position)
+        }
+      end
+
+      if limit and considered >= limit then
+        break
+      end
+    end
+  end
+
+  return site_candidates, considered, (summary.low_resource_amount_rejections or 0) - low_resource_rejections_before
+end
+
 local function find_edge_resource_site(surface, force, origin, task, ctx)
   local seen_resources = {}
   local site_selection = task.site_selection or {}
@@ -1895,9 +1961,8 @@ local function find_edge_resource_site(surface, force, origin, task, ctx)
       max_resource_scan_entities,
       ctx
     )
-    local patches = build_resource_patches(resources, origin, ctx)
-    local considered_this_radius = 0
-    local site_candidates = {}
+    local patches = build_resource_patches(found_resources, origin, ctx)
+    local edge_resource_candidates = {}
 
     summary.resource_entities_found = summary.resource_entities_found + #found_resources
     summary.resource_entities_selected = summary.resource_entities_selected + #resources
@@ -1907,50 +1972,28 @@ local function find_edge_resource_site(surface, force, origin, task, ctx)
       for _, resource in ipairs(collect_patch_edge_resources(patch, origin, surface, force, task, ctx)) do
         local resource_key = get_resource_position_key(resource)
         if not seen_resources[resource_key] then
-          seen_resources[resource_key] = true
-          considered_this_radius = considered_this_radius + 1
-          summary.resources_considered = summary.resources_considered + 1
-
-          local site, placement_stats = find_first_miner_placement(surface, force, task, resource, patch, ctx)
-          summary.positions_checked = summary.positions_checked + placement_stats.positions_checked
-          summary.placeable_positions = summary.placeable_positions + placement_stats.placeable_positions
-          summary.test_miners_created = summary.test_miners_created + placement_stats.test_miners_created
-          summary.mining_area_hits = summary.mining_area_hits + placement_stats.mining_area_hits
-          summary.valid_candidates = summary.valid_candidates + placement_stats.valid_candidates
-          if placement_stats.best_resource_coverage > summary.best_resource_coverage then
-            summary.best_resource_coverage = placement_stats.best_resource_coverage
-          end
-          if placement_stats.best_resource_amount > summary.best_resource_amount then
-            summary.best_resource_amount = placement_stats.best_resource_amount
-          end
-          summary.low_resource_amount_rejections = summary.low_resource_amount_rejections +
-            (placement_stats.low_resource_amount_rejections or 0)
-          summary.selected_candidate_pool_size = placement_stats.selected_candidate_pool_size or
-            summary.selected_candidate_pool_size
-
-          if site then
-            site_candidates[#site_candidates + 1] = {
-              resource = resource,
-              anchor_position = ctx.clone_position(resource.position),
-              build_position = site.build_position,
-              build_direction = site.build_direction,
-              resource_coverage = site.resource_coverage,
-              resource_amount = site.resource_amount,
-              patch_margin = site.patch_margin or placement_stats.selected_patch_margin or placement_stats.best_patch_margin or 0,
-              resource_distance = ctx.square_distance(origin, site.build_position)
-            }
-          end
-
-          if task.max_resource_candidates_per_radius and considered_this_radius >= task.max_resource_candidates_per_radius then
-            break
-          end
+          append_edge_resource_candidate(edge_resource_candidates, resource, patch, origin, ctx)
         end
       end
-
-      if task.max_resource_candidates_per_radius and considered_this_radius >= task.max_resource_candidates_per_radius then
-        break
-      end
     end
+
+    table.sort(edge_resource_candidates, function(left, right)
+      return left.distance < right.distance
+    end)
+
+    local site_candidates, considered_this_radius, initial_low_resource_rejections =
+      evaluate_edge_resource_site_candidates(
+        surface,
+        force,
+        origin,
+        task,
+        site_selection,
+        summary,
+        seen_resources,
+        edge_resource_candidates,
+        ctx,
+        task.max_resource_candidates_per_radius
+      )
 
     local selected_candidate, pool_size = select_preferred_resource_site_candidate(
       site_candidates,
@@ -1971,6 +2014,47 @@ local function find_edge_resource_site(surface, force, origin, task, ctx)
         selected_from_patch_center = false,
         summary = summary
       }, summary
+    end
+
+    if task.max_resource_candidates_per_radius and
+      #site_candidates == 0 and
+      initial_low_resource_rejections > 0 and
+      #edge_resource_candidates > considered_this_radius
+    then
+      local fallback_site_candidates
+      fallback_site_candidates = evaluate_edge_resource_site_candidates(
+        surface,
+        force,
+        origin,
+        task,
+        site_selection,
+        summary,
+        seen_resources,
+        edge_resource_candidates,
+        ctx,
+        nil
+      )
+
+      selected_candidate, pool_size = select_preferred_resource_site_candidate(
+        fallback_site_candidates,
+        site_selection,
+        origin,
+        ctx
+      )
+
+      if selected_candidate then
+        summary.selected_candidate_pool_size = pool_size
+        return {
+          resource = selected_candidate.resource,
+          anchor_position = selected_candidate.anchor_position,
+          build_position = selected_candidate.build_position,
+          build_direction = selected_candidate.build_direction,
+          resource_coverage = selected_candidate.resource_coverage,
+          resource_amount = selected_candidate.resource_amount,
+          selected_from_patch_center = false,
+          summary = summary
+        }, summary
+      end
     end
   end
 
