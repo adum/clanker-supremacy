@@ -22,6 +22,12 @@ return {
     own_force_only = true,
     max_entities_per_scan = 24
   },
+  nearby_exhausted_miner_cleanup = {
+    interval_ticks = 10 * 60,
+    radius = 24,
+    own_force_only = true,
+    max_entities_per_scan = 12
+  },
   nearby_machine_input_supply = {
     interval_ticks = 4 * 60,
     radius = 24,

@@ -5143,6 +5143,68 @@ local function setup_machine_refuel_respects_minimum_batch_test_case()
   }
 end
 
+local function setup_cleanup_nearby_exhausted_miners_test_case()
+  local surface = game.surfaces["nauvis"] or game.surfaces[1]
+  if not surface then
+    error("enemy-builder test: nauvis surface is unavailable")
+  end
+
+  local builder_position = {x = 0, y = 0}
+  local coal_patch_position = {x = 6, y = 0}
+  local area = make_test_area(coal_patch_position, 20, 20)
+
+  surface.always_day = true
+  clear_test_area(surface, area)
+  create_test_resource_patch(surface, "coal", coal_patch_position, 3, 5000)
+
+  return setup_scaling_test{
+    case_name = "cleanup_nearby_exhausted_miners",
+    builder_position = builder_position,
+    surface_name = surface.name,
+    suppress_player_autospawn = true,
+    disable_nearby_machine_output_collection = true,
+    mutate_builder_state = function(builder_state, test_surface)
+      local coal_site = place_test_runtime_coal_outpost_site(test_surface, coal_patch_position)
+      local miner = coal_site and coal_site.miner or nil
+      if not (miner and miner.valid and miner.mining_area) then
+        error("enemy-builder test: failed to create runtime coal miner for exhausted cleanup case")
+      end
+
+      for _, resource in ipairs(test_surface.find_entities_filtered{
+        area = miner.mining_area,
+        type = "resource"
+      }) do
+        if resource and resource.valid then
+          resource.destroy()
+        end
+      end
+
+      builder_state.task_state = {
+        phase = "scaling-waiting",
+        wait_reason = "test-idle",
+        next_attempt_tick = game.tick + 3600
+      }
+      builder_state.next_exhausted_miner_cleanup_tick = game.tick
+      builder_state.next_machine_refuel_tick = game.tick + 3600
+      builder_state.next_machine_output_collection_tick = game.tick + 3600
+      builder_state.next_machine_input_supply_tick = game.tick + 3600
+    end,
+    assertion = {
+      case_name = "cleanup_nearby_exhausted_miners",
+      surface_name = surface.name,
+      area = area,
+      deadline_offset_ticks = 30,
+      skip_output_assertion = true,
+      maximum_counts = {
+        ["burner-mining-drill"] = 0
+      },
+      minimum_builder_inventory_items = {
+        {name = "burner-mining-drill", count = 1}
+      }
+    }
+  }
+end
+
 function setup_steel_output_retries_blocked_anchors_test_case()
   local surface = game.surfaces["nauvis"] or game.surfaces[1]
   if not surface then
@@ -5399,6 +5461,92 @@ local function setup_iron_plate_belt_export_large_patch_sparse_near_edge_test_ca
     end,
     assertion = {
       case_name = "iron_plate_belt_export_large_patch_sparse_near_edge",
+      surface_name = surface.name,
+      area = area,
+      deadline_offset_ticks = 1,
+      skip_output_assertion = true
+    }
+  }
+end
+
+local function setup_iron_plate_belt_export_large_patch_blocked_near_edge_test_case()
+  local surface = game.surfaces["nauvis"] or game.surfaces[1]
+  if not surface then
+    error("enemy-builder test: nauvis surface is unavailable")
+  end
+
+  local builder_position = {x = 40, y = 0}
+  local patch_center = {x = 64, y = 0}
+  local blocked_band_max_x = patch_center.x + 2
+  local area = make_test_area(patch_center, 28, 20)
+
+  surface.always_day = true
+  clear_test_area(surface, area)
+  create_test_resource_patch(surface, "iron-ore", patch_center, 12, 5000)
+
+  return setup_scaling_test{
+    case_name = "iron_plate_belt_export_large_patch_blocked_near_edge",
+    builder_position = builder_position,
+    surface_name = surface.name,
+    suppress_player_autospawn = true,
+    disable_nearby_machine_output_collection = true,
+    mutate_builder_state = function(builder_state, test_surface)
+      local iron_task = builder_data.site_patterns and builder_data.site_patterns.iron_plate_belt_export and
+        builder_data.site_patterns.iron_plate_belt_export.build_task or nil
+      if not iron_task then
+        error("enemy-builder test: missing iron_plate_belt_export build task")
+      end
+
+      local force = builder_state.entity.force
+      for x = patch_center.x - 14, blocked_band_max_x, 2 do
+        for y = patch_center.y - 10, patch_center.y + 10, 2 do
+          local blocker = test_surface.create_entity{
+            name = "stone-furnace",
+            position = {x = x, y = y},
+            force = force,
+            create_build_effect_smoke = false
+          }
+
+          if not (blocker and blocker.valid) then
+            error(
+              "enemy-builder test: failed to create iron blocker furnace at " ..
+              format_position({x = x, y = y})
+            )
+          end
+        end
+      end
+
+      local site, summary = find_resource_site(test_surface, force, builder_position, iron_task)
+      if not site then
+        error(
+          "enemy-builder test: expected iron belt export site beyond blocked near edge; " ..
+          "considered " .. tostring(summary and summary.resources_considered or 0) ..
+          " anchors, mining hits " .. tostring(summary and summary.mining_area_hits or 0)
+        )
+      end
+
+      if (summary and summary.resources_considered or 0) <= (iron_task.max_resource_candidates_per_radius or 0) then
+        error(
+          "enemy-builder test: expected blocked-edge fallback to scan beyond capped anchors; " ..
+          "considered " .. tostring(summary and summary.resources_considered or 0)
+        )
+      end
+
+      if not (site.anchor_position and site.anchor_position.x > blocked_band_max_x) then
+        error(
+          "enemy-builder test: expected iron belt export to skip blocked near edge band; " ..
+          "anchor=" .. format_position(site.anchor_position)
+        )
+      end
+
+      builder_state.task_state = {
+        phase = "scaling-waiting",
+        wait_reason = "test-idle",
+        next_attempt_tick = game.tick + 3600
+      }
+    end,
+    assertion = {
+      case_name = "iron_plate_belt_export_large_patch_blocked_near_edge",
       surface_name = surface.name,
       area = area,
       deadline_offset_ticks = 1,
@@ -6278,10 +6426,13 @@ local test_remote_interface = {
   setup_wait_patrol_recovers_coal_when_producers_are_out_of_fuel_test_case =
     setup_wait_patrol_recovers_coal_when_producers_are_out_of_fuel_test_case,
   setup_machine_refuel_respects_minimum_batch_test_case = setup_machine_refuel_respects_minimum_batch_test_case,
+  setup_cleanup_nearby_exhausted_miners_test_case = setup_cleanup_nearby_exhausted_miners_test_case,
   setup_steel_output_retries_blocked_anchors_test_case = setup_steel_output_retries_blocked_anchors_test_case,
   setup_copper_smelting_large_patch_open_half_test_case = setup_copper_smelting_large_patch_open_half_test_case,
   setup_iron_plate_belt_export_large_patch_sparse_near_edge_test_case =
     setup_iron_plate_belt_export_large_patch_sparse_near_edge_test_case,
+  setup_iron_plate_belt_export_large_patch_blocked_near_edge_test_case =
+    setup_iron_plate_belt_export_large_patch_blocked_near_edge_test_case,
   setup_steel_smelting_test_case = setup_steel_smelting_test_case,
   setup_steel_smelting_missing_inserter_does_not_place_free_inserter_test_case =
     setup_steel_smelting_missing_inserter_does_not_place_free_inserter_test_case,
@@ -6835,6 +6986,7 @@ maintenance_pass_context = {
   format_position = format_position,
   get_container_inventory = get_container_inventory,
   get_item_count = get_item_count,
+  insert_item = insert_item,
   pull_inventory_contents_to_builder = pull_inventory_contents_to_builder,
   remove_item = remove_item,
   square_distance = square_distance

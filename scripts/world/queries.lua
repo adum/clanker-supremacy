@@ -1981,7 +1981,7 @@ local function find_edge_resource_site(surface, force, origin, task, ctx)
       return left.distance < right.distance
     end)
 
-    local site_candidates, considered_this_radius, initial_low_resource_rejections =
+    local site_candidates, considered_this_radius =
       evaluate_edge_resource_site_candidates(
         surface,
         force,
@@ -2018,7 +2018,6 @@ local function find_edge_resource_site(surface, force, origin, task, ctx)
 
     if task.max_resource_candidates_per_radius and
       #site_candidates == 0 and
-      initial_low_resource_rejections > 0 and
       #edge_resource_candidates > considered_this_radius
     then
       local fallback_site_candidates
