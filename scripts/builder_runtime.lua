@@ -3385,36 +3385,21 @@ function setup_output_belts_can_overlap_resources_test_case()
   }
 end
 
-function setup_output_belt_turn_avoids_resource_patch_test_case()
+function setup_output_belt_prefers_less_ore_direction_test_case()
   local surface = game.surfaces["nauvis"] or game.surfaces[1]
   if not surface then
     error("enemy-builder test: nauvis surface is unavailable")
   end
 
   local builder_position = {x = 0, y = 0}
-  local area = make_test_area({x = 4, y = -2}, 16, 16)
+  local iron_patch_position = {x = 24, y = 0}
+  local area = make_test_area({x = 18, y = 0}, 24, 24)
 
   surface.always_day = true
   clear_test_area(surface, area)
 
-  for x = 5, 7 do
-    for y = -3, 0 do
-      local resource = surface.create_entity{
-        name = "iron-ore",
-        position = {x = x + 0.5, y = y + 0.5},
-        amount = 5000
-      }
-      if not (resource and resource.valid) then
-        error(
-          "enemy-builder test: failed to create resource strip tile at " ..
-          format_position({x = x + 0.5, y = y + 0.5})
-        )
-      end
-    end
-  end
-
   return setup_scaling_test{
-    case_name = "output_belt_turn_avoids_resource_patch",
+    case_name = "output_belt_prefers_less_ore_direction",
     builder_position = builder_position,
     surface_name = surface.name,
     suppress_player_autospawn = true,
@@ -3426,60 +3411,97 @@ function setup_output_belt_turn_avoids_resource_patch_test_case()
         next_attempt_tick = game.tick + 3600
       }
 
+      local iron_site = place_test_runtime_iron_smelting_site(test_surface, iron_patch_position)
       local task = deep_copy(builder_data.site_patterns.iron_plate_belt_export.build_task)
-      local first_position = {x = 0.5, y = 0.5}
-      local terminal_position = {x = 6.5, y = -4.5}
-      local placements, summary = world_model.find_output_belt_path_between_positions(
+      local furnace_area = iron_site.anchor_furnace.selection_box
+      local created_ore = {}
+      local direction_bands = {
+        east = 6,
+        south = 4,
+        west = 2
+      }
+
+      local function add_direction_band(direction_name, step_count)
+        local function add_ore(position)
+          local key = string.format("%.2f:%.2f", position.x, position.y)
+          if created_ore[key] then
+            return
+          end
+
+          created_ore[key] = true
+          local resource = test_surface.create_entity{
+            name = "iron-ore",
+            position = position,
+            amount = 5000
+          }
+          if not (resource and resource.valid) then
+            error("enemy-builder test: failed to create ore at " .. format_position(position))
+          end
+        end
+
+        if direction_name == "east" or direction_name == "west" then
+          local start_x = direction_name == "east" and (furnace_area.right_bottom.x + 1.5) or
+            (furnace_area.left_top.x - 1.5)
+          local step_x = direction_name == "east" and 1 or -1
+
+          for y = math.floor(furnace_area.left_top.y) + 0.5, math.ceil(furnace_area.right_bottom.y) - 0.5, 1 do
+            for step_index = 0, step_count - 1 do
+              add_ore({x = start_x + (step_x * step_index), y = y})
+            end
+          end
+          return
+        end
+
+        local start_y = direction_name == "north" and (furnace_area.left_top.y - 1.5) or
+          (furnace_area.right_bottom.y + 1.5)
+        local step_y = direction_name == "north" and -1 or 1
+
+        for x = math.floor(furnace_area.left_top.x) + 0.5, math.ceil(furnace_area.right_bottom.x) - 0.5, 1 do
+          for step_index = 0, step_count - 1 do
+            add_ore({x = x, y = start_y + (step_y * step_index)})
+          end
+        end
+      end
+
+      for direction_name, step_count in pairs(direction_bands) do
+        add_direction_band(direction_name, step_count)
+      end
+
+      local layout_site, summary = world_model.find_output_belt_layout_for_miner_site(
         test_surface,
         builder_state.entity.force,
-        first_position,
-        terminal_position,
         task,
+        iron_site.miner,
+        iron_site.anchor_furnace,
         world_model_context
       )
 
-      if not (placements and #placements > 0) then
+      if not (layout_site and layout_site.placements and #layout_site.placements > 1) then
         error(
-          "enemy-builder test: expected output belt path through heuristic case; " ..
+          "enemy-builder test: expected fresh output belt layout placements; " ..
           "valid=" .. tostring(summary and summary.valid_belt_paths or 0) ..
           " failed=" .. tostring(summary and summary.failed_belt_paths or 0) ..
           " detail=" .. tostring(summary and summary.failed_belt_path_detail or "nil")
         )
       end
 
-      local overlapping_belt_count = 0
-      for _, placement in ipairs(placements) do
-        if placement.entity_name == task.belt_entity_name and placement.build_position then
-          local overlapping_resources = test_surface.find_entities_filtered{
-            area = {
-              {placement.build_position.x - 0.49, placement.build_position.y - 0.49},
-              {placement.build_position.x + 0.49, placement.build_position.y + 0.49}
-            },
-            type = "resource"
-          }
-          if #overlapping_resources > 0 then
-            overlapping_belt_count = overlapping_belt_count + 1
-          end
+      local first_belt = nil
+      for _, placement in ipairs(layout_site.placements) do
+        if placement.site_role == "output-belt" then
+          first_belt = placement
+          break
         end
       end
 
-      if overlapping_belt_count ~= 0 then
+      if not (first_belt and first_belt.build_direction == direction_by_name.north) then
         error(
-          "enemy-builder test: expected heuristic to avoid turning into resource strip; " ..
-          "overlapping-belts=" .. tostring(overlapping_belt_count)
-        )
-      end
-
-      local first_placement = placements[1]
-      if not (first_placement and first_placement.build_direction == direction_by_name.north) then
-        error(
-          "enemy-builder test: expected output belt heuristic to choose north-first path; " ..
-          "direction=" .. tostring(first_placement and first_placement.build_direction or "nil")
+          "enemy-builder test: expected fresh output belt to choose the least-ore north direction; " ..
+          "direction=" .. tostring(first_belt and first_belt.build_direction or "nil")
         )
       end
     end,
     assertion = {
-      case_name = "output_belt_turn_avoids_resource_patch",
+      case_name = "output_belt_prefers_less_ore_direction",
       surface_name = surface.name,
       area = area,
       deadline_offset_ticks = 1,
@@ -3488,7 +3510,7 @@ function setup_output_belt_turn_avoids_resource_patch_test_case()
   }
 end
 
-function setup_output_belt_layout_places_belts_before_inserter_test_case()
+function setup_output_belt_layout_places_inserter_then_straight_belts_test_case()
   local surface = game.surfaces["nauvis"] or game.surfaces[1]
   if not surface then
     error("enemy-builder test: nauvis surface is unavailable")
@@ -3503,7 +3525,7 @@ function setup_output_belt_layout_places_belts_before_inserter_test_case()
   create_test_resource_patch(surface, "iron-ore", iron_patch_position, 3, 5000)
 
   return setup_scaling_test{
-    case_name = "output_belt_layout_places_belts_before_inserter",
+    case_name = "output_belt_layout_places_inserter_then_straight_belts",
     builder_position = builder_position,
     surface_name = surface.name,
     suppress_player_autospawn = true,
@@ -3535,23 +3557,85 @@ function setup_output_belt_layout_places_belts_before_inserter_test_case()
       end
 
       local first_placement = layout_site.placements[1]
-      local last_placement = layout_site.placements[#layout_site.placements]
-      if not (first_placement and first_placement.site_role == "output-belt") then
+      if not (first_placement and first_placement.site_role == "output-inserter") then
         error(
-          "enemy-builder test: expected output belt layout to place belt first; " ..
+          "enemy-builder test: expected fresh output belt layout to place inserter first; " ..
           "first-role=" .. tostring(first_placement and first_placement.site_role or "nil")
         )
       end
 
-      if not (last_placement and last_placement.site_role == "output-inserter") then
+      local first_belt = layout_site.placements[2]
+      if not (first_belt and first_belt.site_role == "output-belt") then
         error(
-          "enemy-builder test: expected output belt layout to place inserter last; " ..
-          "last-role=" .. tostring(last_placement and last_placement.site_role or "nil")
+          "enemy-builder test: expected fresh output belt layout to place a belt after the inserter; " ..
+          "second-role=" .. tostring(first_belt and first_belt.site_role or "nil")
+        )
+      end
+
+      local expected_direction = first_belt.build_direction
+      local direction_vector = nil
+
+      if expected_direction == direction_by_name.north then
+        direction_vector = {x = 0, y = -1}
+      elseif expected_direction == direction_by_name.south then
+        direction_vector = {x = 0, y = 1}
+      elseif expected_direction == direction_by_name.west then
+        direction_vector = {x = -1, y = 0}
+      else
+        direction_vector = {x = 1, y = 0}
+      end
+
+      local belt_count = 0
+      local previous_position = nil
+
+      for index = 2, #layout_site.placements do
+        local placement = layout_site.placements[index]
+        if placement.site_role ~= "output-belt" then
+          error(
+            "enemy-builder test: expected only straight belts after inserter; " ..
+            "index=" .. tostring(index) .. " role=" .. tostring(placement.site_role)
+          )
+        end
+
+        if placement.build_direction ~= expected_direction then
+          error(
+            "enemy-builder test: expected straight output belt directions; " ..
+            "index=" .. tostring(index) ..
+            " direction=" .. tostring(placement.build_direction) ..
+            " expected=" .. tostring(expected_direction)
+          )
+        end
+
+        if previous_position then
+          local expected_position = {
+            x = previous_position.x + direction_vector.x,
+            y = previous_position.y + direction_vector.y
+          }
+          if math.abs(placement.build_position.x - expected_position.x) > 0.01 or
+            math.abs(placement.build_position.y - expected_position.y) > 0.01
+          then
+            error(
+              "enemy-builder test: expected straight one-tile belt step at index " .. tostring(index) ..
+              "; got " .. format_position(placement.build_position) ..
+              " expected " .. format_position(expected_position)
+            )
+          end
+        end
+
+        previous_position = placement.build_position
+        belt_count = belt_count + 1
+      end
+
+      if belt_count > (task.simple_output_belt_build_steps or 0) then
+        error(
+          "enemy-builder test: expected fresh output belt length to honor simple_output_belt_build_steps; " ..
+          "count=" .. tostring(belt_count) ..
+          " limit=" .. tostring(task.simple_output_belt_build_steps)
         )
       end
     end,
     assertion = {
-      case_name = "output_belt_layout_places_belts_before_inserter",
+      case_name = "output_belt_layout_places_inserter_then_straight_belts",
       surface_name = surface.name,
       area = area,
       deadline_offset_ticks = 1,
@@ -5786,9 +5870,9 @@ local test_remote_interface = {
   setup_iron_plate_belt_export_ground_items_test_case = setup_iron_plate_belt_export_ground_items_test_case,
   setup_copper_plate_belt_export_ground_items_test_case = setup_copper_plate_belt_export_ground_items_test_case,
   setup_output_belts_can_overlap_resources_test_case = setup_output_belts_can_overlap_resources_test_case,
-  setup_output_belt_turn_avoids_resource_patch_test_case = setup_output_belt_turn_avoids_resource_patch_test_case,
-  setup_output_belt_layout_places_belts_before_inserter_test_case =
-    setup_output_belt_layout_places_belts_before_inserter_test_case,
+  setup_output_belt_prefers_less_ore_direction_test_case = setup_output_belt_prefers_less_ore_direction_test_case,
+  setup_output_belt_layout_places_inserter_then_straight_belts_test_case =
+    setup_output_belt_layout_places_inserter_then_straight_belts_test_case,
   setup_steel_output_belt_layout_places_belts_before_inserter_test_case =
     setup_steel_output_belt_layout_places_belts_before_inserter_test_case,
   setup_output_belt_abort_preserves_transport_belts_test_case =

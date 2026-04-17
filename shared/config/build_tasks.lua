@@ -56,21 +56,11 @@ local function make_fresh_output_belt_task(pattern_name, resource_name, output_i
         count = 4
       }
     },
+    simple_output_belt_planning = true,
+    simple_output_belt_ore_scan_steps = 20,
+    simple_output_belt_build_steps = 15,
     belt_entity_name = "transport-belt",
     belt_item_name = "transport-belt",
-    belt_hub_search = {
-      heading_count = 8,
-      heading_attempts = 4,
-      ray_step = 1,
-      max_distance = 48,
-      extra_distance_min = 8,
-      extra_distance_max = 12,
-      local_search_radius = 3,
-      local_search_step = 1
-    },
-    belt_terminal_search_radius = 3,
-    belt_terminal_search_step = 1,
-    belt_turn_resource_avoidance_lookahead = 4,
     forbid_resource_overlap = true,
     clear_ground_item_blockers = true
   }

@@ -1046,6 +1046,8 @@ local function get_total_resource_amount(resources)
 end
 
 local function find_first_miner_placement(surface, force, task, resource, patch, ctx)
+  local site_selection = task.site_selection or {}
+  local valid_candidate_limit = site_selection.max_valid_candidates or math.max(site_selection.random_candidate_pool or 1, 4)
   local stats = {
     positions_checked = 0,
     placeable_positions = 0,
@@ -1073,6 +1075,8 @@ local function find_first_miner_placement(surface, force, task, resource, patch,
     ground_item_blockers_cleared = 0
   }
   local minimum_resource_amount = task.minimum_resource_amount or 0
+  local valid_candidates = {}
+  local stop_search = false
 
   for _, position in ipairs(ctx.build_search_positions(resource.position, task.placement_search_radius, task.placement_step)) do
     for _, direction_name in ipairs(task.placement_directions) do
@@ -1112,31 +1116,89 @@ local function find_first_miner_placement(surface, force, task, resource, patch,
               if resource_amount > stats.best_resource_amount then
                 stats.best_resource_amount = resource_amount
               end
-              if resource_amount >= minimum_resource_amount then
-                stats.valid_candidates = 1
+              if patch_margin > stats.best_patch_margin then
                 stats.best_patch_margin = patch_margin
-                stats.selected_patch_margin = patch_margin
-                stats.selected_candidate_pool_size = 1
-                test_miner.destroy()
-                return {
+              end
+              if resource_amount >= minimum_resource_amount then
+                stats.valid_candidates = stats.valid_candidates + 1
+                valid_candidates[#valid_candidates + 1] = {
                   build_position = {
                     x = position.x,
                     y = position.y
                   },
                   build_direction = direction,
                   resource_coverage = resource_coverage,
-                  resource_amount = resource_amount
-                }, stats
+                  resource_amount = resource_amount,
+                  patch_margin = patch_margin,
+                  search_weight = position.weight,
+                  direction_name = direction_name
+                }
+                if #valid_candidates >= valid_candidate_limit then
+                  stop_search = true
+                end
+              else
+                stats.low_resource_amount_rejections = stats.low_resource_amount_rejections + 1
               end
-
-              stats.low_resource_amount_rejections = stats.low_resource_amount_rejections + 1
             end
           end
 
           test_miner.destroy()
         end
       end
+
+      if stop_search then
+        break
+      end
     end
+
+    if stop_search then
+      break
+    end
+  end
+
+  local selected_candidate, pool_size = ctx.select_preferred_candidate(
+    valid_candidates,
+    site_selection.random_candidate_pool or 1,
+    function(left, right)
+      if site_selection.prefer_patch_margin and left.patch_margin ~= right.patch_margin then
+        return left.patch_margin > right.patch_margin
+      end
+
+      if site_selection.prefer_middle ~= false and left.resource_coverage ~= right.resource_coverage then
+        return left.resource_coverage > right.resource_coverage
+      end
+
+      if left.search_weight ~= right.search_weight then
+        return left.search_weight < right.search_weight
+      end
+
+      return left.direction_name < right.direction_name
+    end,
+    function(candidate, best_candidate)
+      if site_selection.prefer_patch_margin and candidate.patch_margin ~= best_candidate.patch_margin then
+        return false
+      end
+
+      if site_selection.prefer_middle ~= false and candidate.resource_coverage ~= best_candidate.resource_coverage then
+        return false
+      end
+
+      return true
+    end
+  )
+
+  if selected_candidate then
+    stats.selected_resource_coverage = selected_candidate.resource_coverage or 0
+    stats.selected_resource_amount = selected_candidate.resource_amount or 0
+    stats.selected_patch_margin = selected_candidate.patch_margin or 0
+    stats.selected_candidate_pool_size = pool_size
+    return {
+      build_position = selected_candidate.build_position,
+      build_direction = selected_candidate.build_direction,
+      resource_coverage = selected_candidate.resource_coverage,
+      resource_amount = selected_candidate.resource_amount,
+      patch_margin = selected_candidate.patch_margin
+    }, stats
   end
 
   return nil, stats
@@ -1596,6 +1658,182 @@ local function validate_output_inserter_geometry(surface, force, output_machine,
   return valid
 end
 
+local function count_resources_along_straight_belt(surface, entity_name, start_position, direction_vector, step_count)
+  local overlap_count = 0
+
+  for step_index = 0, math.max(step_count or 0, 0) - 1 do
+    local position = {
+      x = start_position.x + (direction_vector.x * step_index),
+      y = start_position.y + (direction_vector.y * step_index)
+    }
+
+    if entity_refs.entity_name_overlaps_resources(surface, entity_name, position) then
+      overlap_count = overlap_count + 1
+    end
+  end
+
+  return overlap_count
+end
+
+local function build_simple_output_belt_layout_for_machine(surface, force, task, output_machine, summary, ctx)
+  local best_candidate = nil
+  local direction_order = {"north", "east", "south", "west"}
+  local belt_build_steps = math.max(task.simple_output_belt_build_steps or 15, 1)
+  local belt_scan_steps = math.max(task.simple_output_belt_ore_scan_steps or 20, belt_build_steps)
+
+  for direction_index, direction_name in ipairs(direction_order) do
+    local inserter_direction = ctx.direction_by_name[get_opposite_direction_name(direction_name)]
+    local belt_direction = ctx.direction_by_name[direction_name]
+    local direction_vector = get_direction_vector(direction_name)
+
+    for edge_index, edge_candidate in ipairs(get_machine_edge_belt_candidates(output_machine, direction_name)) do
+      local first_belt_placement = {
+        entity_name = task.belt_entity_name,
+        build_position = ctx.clone_position(edge_candidate.first_belt_position),
+        build_direction = belt_direction
+      }
+
+      if not validate_output_inserter_geometry(
+          surface,
+          force,
+          output_machine,
+          edge_candidate.inserter_position,
+          inserter_direction,
+          first_belt_placement,
+          task,
+          ctx
+        )
+      then
+        summary.failed_inserter_geometry = (summary.failed_inserter_geometry or 0) + 1
+        goto continue_edge_candidate
+      end
+
+      local belt_placements = {}
+
+      for step_index = 0, belt_build_steps - 1 do
+        local position = {
+          x = edge_candidate.first_belt_position.x + (direction_vector.x * step_index),
+          y = edge_candidate.first_belt_position.y + (direction_vector.y * step_index)
+        }
+
+        summary.positions_checked = summary.positions_checked + 1
+
+        if not can_place_entity_with_ground_item_clearance(
+            surface,
+            force,
+            task.belt_entity_name,
+            position,
+            belt_direction,
+            task,
+            summary
+          )
+        then
+          if #belt_placements == 0 then
+            local occupant_names = collect_blocking_occupant_names(surface, position, ctx)
+            record_failed_belt_path_detail(
+              summary,
+              "blocked at " .. ctx.format_position(position) ..
+                " dir=" .. tostring(direction_name) ..
+                (#occupant_names > 0 and (" by " .. table.concat(occupant_names, ",")) or "")
+            )
+            summary.failed_belt_paths = (summary.failed_belt_paths or 0) + 1
+          end
+          break
+        end
+
+        summary.placeable_positions = summary.placeable_positions + 1
+        belt_placements[#belt_placements + 1] = {
+          id = "belt-" .. tostring(step_index + 1),
+          site_role = "output-belt",
+          entity_name = task.belt_entity_name,
+          item_name = task.belt_item_name or task.belt_entity_name,
+          build_position = ctx.clone_position(position),
+          build_direction = belt_direction
+        }
+      end
+
+      if #belt_placements == 0 then
+        goto continue_edge_candidate
+      end
+
+      summary.valid_belt_paths = (summary.valid_belt_paths or 0) + 1
+
+      local ore_overlap_count = count_resources_along_straight_belt(
+        surface,
+        task.belt_entity_name,
+        edge_candidate.first_belt_position,
+        direction_vector,
+        belt_scan_steps
+      )
+
+      local candidate = {
+        direction_index = direction_index,
+        edge_index = edge_index,
+        direction_name = direction_name,
+        inserter_position = ctx.clone_position(edge_candidate.inserter_position),
+        inserter_direction = inserter_direction,
+        belt_placements = belt_placements,
+        ore_overlap_count = ore_overlap_count,
+        buildable_length = #belt_placements
+      }
+
+      if not best_candidate or
+        candidate.ore_overlap_count < best_candidate.ore_overlap_count or
+        (
+          candidate.ore_overlap_count == best_candidate.ore_overlap_count and
+          candidate.buildable_length > best_candidate.buildable_length
+        ) or
+        (
+          candidate.ore_overlap_count == best_candidate.ore_overlap_count and
+          candidate.buildable_length == best_candidate.buildable_length and
+          candidate.direction_index < best_candidate.direction_index
+        ) or
+        (
+          candidate.ore_overlap_count == best_candidate.ore_overlap_count and
+          candidate.buildable_length == best_candidate.buildable_length and
+          candidate.direction_index == best_candidate.direction_index and
+          candidate.edge_index < best_candidate.edge_index
+        )
+      then
+        best_candidate = candidate
+      end
+
+      ::continue_edge_candidate::
+    end
+  end
+
+  if not best_candidate then
+    if not summary.failed_belt_path_detail and (summary.failed_inserter_geometry or 0) == 0 then
+      record_failed_belt_path_detail(summary, "no straight belt direction fit around output machine")
+    end
+    return nil
+  end
+
+  local placements = {
+    {
+      id = "output-inserter",
+      site_role = "output-inserter",
+      entity_name = task.output_inserter.entity_name,
+      item_name = task.output_inserter.item_name or task.output_inserter.entity_name,
+      build_position = best_candidate.inserter_position,
+      build_direction = best_candidate.inserter_direction,
+      fuel = task.output_inserter.fuel
+    }
+  }
+
+  for _, placement in ipairs(best_candidate.belt_placements) do
+    placements[#placements + 1] = placement
+  end
+
+  local terminal_position = best_candidate.belt_placements[#best_candidate.belt_placements].build_position
+  return {
+    placements = placements,
+    hub_position = ctx.clone_position(terminal_position),
+    hub_key = nil,
+    belt_terminal_position = ctx.clone_position(terminal_position)
+  }
+end
+
 build_output_belt_layout_for_anchor = function(surface, force, output_machine, hub_position, task, summary, ctx)
   for _, direction_name in ipairs(get_prioritized_output_directions(output_machine.position, hub_position)) do
     local inserter_direction = ctx.direction_by_name[get_opposite_direction_name(direction_name)]
@@ -1802,7 +2040,9 @@ local function find_miner_placement(surface, force, task, resource_position, pat
               end
             end
 
-            if has_output_container_spot and downstream_machine_position and task.output_inserter and task.belt_entity_name then
+            if has_output_container_spot and downstream_machine_position and task.output_inserter and task.belt_entity_name and
+              not task.simple_output_belt_planning
+            then
               belt_layout_placements, belt_hub_position, belt_hub_key, belt_terminal_position =
                 find_output_belt_layout_for_machine_position(
                   surface,
@@ -2007,6 +2247,7 @@ end
 
 local function find_edge_resource_site(surface, force, origin, task, ctx)
   local seen_resources = {}
+  local site_selection = task.site_selection or {}
   local summary = {
     radii_checked = 0,
     resources_considered = 0,
@@ -2055,6 +2296,7 @@ local function find_edge_resource_site(surface, force, origin, task, ctx)
     )
     local patches = build_resource_patches(resources, origin, ctx)
     local considered_this_radius = 0
+    local site_candidates = {}
 
     summary.resource_entities_found = summary.resource_entities_found + #found_resources
     summary.resource_entities_selected = summary.resource_entities_selected + #resources
@@ -2086,16 +2328,16 @@ local function find_edge_resource_site(surface, force, origin, task, ctx)
             summary.selected_candidate_pool_size
 
           if site then
-            return {
+            site_candidates[#site_candidates + 1] = {
               resource = resource,
               anchor_position = ctx.clone_position(resource.position),
               build_position = site.build_position,
               build_direction = site.build_direction,
               resource_coverage = site.resource_coverage,
               resource_amount = site.resource_amount,
-              selected_from_patch_center = false,
-              summary = summary
-            }, summary
+              patch_margin = site.patch_margin or placement_stats.selected_patch_margin or placement_stats.best_patch_margin or 0,
+              resource_distance = ctx.square_distance(origin, site.build_position)
+            }
           end
 
           if task.max_resource_candidates_per_radius and considered_this_radius >= task.max_resource_candidates_per_radius then
@@ -2107,6 +2349,27 @@ local function find_edge_resource_site(surface, force, origin, task, ctx)
       if task.max_resource_candidates_per_radius and considered_this_radius >= task.max_resource_candidates_per_radius then
         break
       end
+    end
+
+    local selected_candidate, pool_size = select_preferred_resource_site_candidate(
+      site_candidates,
+      site_selection,
+      origin,
+      ctx
+    )
+
+    if selected_candidate then
+      summary.selected_candidate_pool_size = pool_size
+      return {
+        resource = selected_candidate.resource,
+        anchor_position = selected_candidate.anchor_position,
+        build_position = selected_candidate.build_position,
+        build_direction = selected_candidate.build_direction,
+        resource_coverage = selected_candidate.resource_coverage,
+        resource_amount = selected_candidate.resource_amount,
+        selected_from_patch_center = false,
+        summary = summary
+      }, summary
     end
   end
 
@@ -2421,26 +2684,39 @@ function queries.find_output_belt_layout_for_miner_site(surface, force, task, mi
     return nil, summary
   end
 
-  local patch = get_patch_for_site(
-    {
-      miner = miner,
+  local layout_site = nil
+
+  if task.simple_output_belt_planning then
+    layout_site = build_simple_output_belt_layout_for_machine(
+      surface,
+      force,
+      task,
+      output_machine,
+      summary,
+      ctx
+    )
+  else
+    local patch = get_patch_for_site(
+      {
+        miner = miner,
+        resource_name = task.resource_name
+      },
+      task,
+      ctx
+    ) or {
+      anchor_position = ctx.clone_position(miner.position),
       resource_name = task.resource_name
-    },
-    task,
-    ctx
-  ) or {
-    anchor_position = ctx.clone_position(miner.position),
-    resource_name = task.resource_name
-  }
-  local layout_site = build_output_belt_layout_site_for_machine(
-    surface,
-    force,
-    task,
-    patch,
-    output_machine,
-    summary,
-    ctx
-  )
+    }
+    layout_site = build_output_belt_layout_site_for_machine(
+      surface,
+      force,
+      task,
+      patch,
+      output_machine,
+      summary,
+      ctx
+    )
+  end
 
   if not layout_site then
     return nil, summary
