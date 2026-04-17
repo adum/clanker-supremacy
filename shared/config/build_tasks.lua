@@ -209,6 +209,18 @@ build_tasks.steel_smelting = {
   layout_site_kind = "steel-smelting-chain",
   layout_elements = {
     {
+      id = "steel-furnace",
+      site_role = "steel-furnace",
+      entity_name = "stone-furnace",
+      offset = {x = 3, y = 0},
+      placement_search_radius = 0.5,
+      placement_step = 0.5,
+      fuel = {
+        name = "coal",
+        count = 8
+      }
+    },
+    {
       id = "steel-feed-inserter",
       site_role = "steel-feed-inserter",
       entity_name = "burner-inserter",
@@ -219,18 +231,6 @@ build_tasks.steel_smelting = {
       fuel = {
         name = "coal",
         count = 4
-      }
-    },
-    {
-      id = "steel-furnace",
-      site_role = "steel-furnace",
-      entity_name = "stone-furnace",
-      offset = {x = 3, y = 0},
-      placement_search_radius = 0.5,
-      placement_step = 0.5,
-      fuel = {
-        name = "coal",
-        count = 8
       }
     }
   }

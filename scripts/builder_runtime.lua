@@ -3077,6 +3077,100 @@ local function setup_steel_smelting_test_case(layout_orientation)
   }
 end
 
+function setup_steel_smelting_missing_inserter_does_not_place_free_inserter_test_case()
+  local surface = game.surfaces["nauvis"] or game.surfaces[1]
+  if not surface then
+    error("enemy-builder test: nauvis surface is unavailable")
+  end
+
+  local builder_position = {x = 0, y = 0}
+  local anchor_position = {x = 32, y = 0}
+  local area = make_test_area(anchor_position, 48, 32)
+
+  surface.always_day = true
+  clear_test_area(surface, area)
+  place_test_iron_smelting_anchor(surface, "north", anchor_position)
+
+  return setup_scaling_test{
+    case_name = "steel_smelting_missing_inserter_does_not_place_free_inserter",
+    builder_position = builder_position,
+    surface_name = surface.name,
+    suppress_player_autospawn = true,
+    disable_nearby_machine_output_collection = true,
+    inventory = {
+      {name = "stone-furnace", count = 1},
+      {name = "coal", count = 40}
+    },
+    mutate_builder_state = function(builder_state, test_surface)
+      local task = deep_copy(builder_data.site_patterns.steel_smelting.build_task)
+      task.id = "test-steel-smelting-missing-inserter"
+      task.layout_orientations = {"north"}
+      task.consume_items_on_place = true
+
+      local layout_site, summary = find_layout_site_near_machine(builder_state, task)
+      if not (layout_site and layout_site.placements and #layout_site.placements >= 2) then
+        error(
+          "enemy-builder test: expected steel smelting layout placements; " ..
+          "checked=" .. tostring(summary and summary.anchor_entities_considered or 0) ..
+          " positions=" .. tostring(summary and summary.positions_checked or 0)
+        )
+      end
+
+      if layout_site.placements[1].site_role ~= "steel-furnace" then
+        error(
+          "enemy-builder test: expected steel smelting to place steel furnace first; first-role=" ..
+          tostring(layout_site.placements[1].site_role)
+        )
+      end
+
+      builder_state.task_state = {
+        phase = "building",
+        anchor_entity = layout_site.anchor_entity,
+        anchor_site = layout_site.site,
+        anchor_position = clone_position(layout_site.anchor_position),
+        build_position = clone_position(layout_site.build_position),
+        layout_orientation = layout_site.orientation,
+        layout_placements = deep_copy(layout_site.placements),
+        layout_index = 1,
+        placed_layout_entities = {},
+        last_position = clone_position(builder_state.entity.position),
+        last_progress_tick = game.tick
+      }
+      builder_state.scaling_active_task = task
+
+      task_executor.advance_task_phase(builder_state, task, game.tick, task_executor_context)
+
+      if count_test_entities(test_surface, builder_state.entity.force, area, "stone-furnace") < 2 then
+        error("enemy-builder test: expected steel furnace placement before missing inserter retry")
+      end
+
+      builder_state.task_state.phase = "building"
+      builder_state.task_state.layout_index = 2
+      builder_state.task_state.last_position = clone_position(builder_state.entity.position)
+      builder_state.task_state.last_progress_tick = game.tick + 1
+      task_executor.advance_task_phase(builder_state, task, game.tick + 1, task_executor_context)
+
+      if count_test_entities(test_surface, builder_state.entity.force, area, "burner-inserter") > 0 then
+        error("enemy-builder test: missing inserter should not leave a free burner-inserter in the world")
+      end
+
+      builder_state.task_state = {
+        phase = "scaling-waiting",
+        wait_reason = "test-idle",
+        next_attempt_tick = game.tick + 3600
+      }
+      builder_state.scaling_active_task = nil
+    end,
+    assertion = {
+      case_name = "steel_smelting_missing_inserter_does_not_place_free_inserter",
+      surface_name = surface.name,
+      area = area,
+      deadline_offset_ticks = 1,
+      skip_output_assertion = true
+    }
+  }
+end
+
 local function setup_plate_belt_export_test_case(spec)
   local surface = game.surfaces["nauvis"] or game.surfaces[1]
   if not surface then
@@ -6102,6 +6196,8 @@ local test_remote_interface = {
   setup_steel_output_retries_blocked_anchors_test_case = setup_steel_output_retries_blocked_anchors_test_case,
   setup_copper_smelting_large_patch_open_half_test_case = setup_copper_smelting_large_patch_open_half_test_case,
   setup_steel_smelting_test_case = setup_steel_smelting_test_case,
+  setup_steel_smelting_missing_inserter_does_not_place_free_inserter_test_case =
+    setup_steel_smelting_missing_inserter_does_not_place_free_inserter_test_case,
   setup_full_run_layout_snapshot_case = setup_full_run_layout_snapshot_case,
   get_entry_timing_settings = entry_timing.get_settings,
   set_entry_timing_enabled = entry_timing.set_enabled,

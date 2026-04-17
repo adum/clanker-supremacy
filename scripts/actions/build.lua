@@ -377,6 +377,38 @@ local function can_place_entity_with_ground_item_clearance(surface, force, entit
   return false
 end
 
+local function reserve_placement_item(builder_entity, task, item_name, position, ctx)
+  if not (task and task.consume_items_on_place) then
+    return true, 0
+  end
+
+  local removed_count = ctx.remove_item(
+    builder_entity,
+    item_name,
+    1,
+    "reserved " .. item_name .. " for placement at " .. ctx.format_position(position)
+  )
+  if removed_count < 1 then
+    ctx.debug_log("task " .. task.id .. ": missing " .. item_name .. " in builder inventory")
+    return false, 0
+  end
+
+  return true, removed_count
+end
+
+local function refund_reserved_placement_item(builder_entity, item_name, reserved_count, position, ctx)
+  if not reserved_count or reserved_count < 1 then
+    return
+  end
+
+  ctx.insert_item(
+    builder_entity,
+    item_name,
+    reserved_count,
+    "refunded " .. item_name .. " after failed placement at " .. ctx.format_position(position)
+  )
+end
+
 local function seed_entity_from_builder_inventory(builder, target_entity, seed_items, reason, ctx)
   local inserted_items = {}
 
@@ -810,20 +842,10 @@ function action_build.place_miner(builder_state, task, tick, ctx, refresh_task)
     task_state.consumed_build_items[item_name] = (task_state.consumed_build_items[item_name] or 0) + (count or 1)
   end
 
-  local function consume_build_item(item_name, placed_entity)
-    if not task.consume_items_on_place then
-      return true
+  local function commit_reserved_build_item(item_name, reserved_count)
+    if reserved_count and reserved_count > 0 then
+      record_consumed_build_item(item_name, reserved_count)
     end
-
-    local reason = "placed " .. item_name .. " at " .. ctx.format_position(placed_entity.position)
-    local removed_count = ctx.remove_item(entity, item_name, 1, reason)
-    if removed_count < 1 then
-      ctx.debug_log("task " .. task.id .. ": missing " .. item_name .. " in builder inventory for placement")
-      return false
-    end
-
-    record_consumed_build_item(item_name, removed_count)
-    return true
   end
 
   local function abort_build(reason)
@@ -873,6 +895,12 @@ function action_build.place_miner(builder_state, task, tick, ctx, refresh_task)
       return
     end
 
+    local item_reserved, reserved_count = reserve_placement_item(entity, task, task.miner_name, task_state.build_position, ctx)
+    if not item_reserved then
+      refresh_task(builder_state, task, tick, ctx)
+      return
+    end
+
     local miner = surface.create_entity{
       name = task.miner_name,
       position = task_state.build_position,
@@ -882,10 +910,13 @@ function action_build.place_miner(builder_state, task, tick, ctx, refresh_task)
     }
 
     if not miner then
+      refund_reserved_placement_item(entity, task.miner_name, reserved_count, task_state.build_position, ctx)
       ctx.debug_log("task " .. task.id .. ": create_entity returned nil for " .. task.miner_name .. " at " .. ctx.format_position(task_state.build_position))
       refresh_task(builder_state, task, tick, ctx)
       return
     end
+
+    commit_reserved_build_item(task.miner_name, reserved_count)
 
     if not (miner.mining_target and miner.mining_target.valid and miner.mining_target.name == task.resource_name) then
       local covered_resources = surface.find_entities_filtered{
@@ -903,10 +934,6 @@ function action_build.place_miner(builder_state, task, tick, ctx, refresh_task)
     end
 
     task_state.placed_miner = miner
-    if not consume_build_item(task.miner_name, miner) then
-      refresh_task(builder_state, task, tick, ctx)
-      return
-    end
     ctx.insert_entity_fuel(miner, task.fuel)
     ctx.debug_log("task " .. task.id .. ": placed " .. task.miner_name .. " at " .. ctx.format_position(miner.position))
     begin_post_place_pause(
@@ -991,6 +1018,18 @@ function action_build.place_miner(builder_state, task, tick, ctx, refresh_task)
       return
     end
 
+    local item_reserved, reserved_count = reserve_placement_item(
+      entity,
+      task,
+      task.downstream_machine.name,
+      task_state.downstream_machine_position,
+      ctx
+    )
+    if not item_reserved then
+      abort_build("missing " .. task.downstream_machine.name .. " in builder inventory")
+      return
+    end
+
     local downstream_machine = surface.create_entity{
       name = task.downstream_machine.name,
       position = task_state.downstream_machine_position,
@@ -999,9 +1038,18 @@ function action_build.place_miner(builder_state, task, tick, ctx, refresh_task)
     }
 
     if not downstream_machine then
+      refund_reserved_placement_item(
+        entity,
+        task.downstream_machine.name,
+        reserved_count,
+        task_state.downstream_machine_position,
+        ctx
+      )
       abort_build("failed to place downstream machine at " .. ctx.format_position(task_state.downstream_machine_position))
       return
     end
+
+    commit_reserved_build_item(task.downstream_machine.name, reserved_count)
 
     if task.downstream_machine.cover_drop_position and not ctx.point_in_area(miner.drop_position, downstream_machine.selection_box) then
       abort_build(task.downstream_machine.name .. " no longer covers miner drop position at " .. ctx.format_position(miner.drop_position))
@@ -1009,10 +1057,6 @@ function action_build.place_miner(builder_state, task, tick, ctx, refresh_task)
     end
 
     task_state.placed_downstream_machine = downstream_machine
-    if not consume_build_item(task.downstream_machine.name, downstream_machine) then
-      abort_build("missing " .. task.downstream_machine.name .. " in builder inventory")
-      return
-    end
     ctx.insert_entity_fuel(downstream_machine, task.downstream_machine.fuel)
     ctx.debug_log("task " .. task.id .. ": placed " .. task.downstream_machine.name .. " at " .. ctx.format_position(downstream_machine.position))
     begin_post_place_pause(
@@ -1067,6 +1111,18 @@ function action_build.place_miner(builder_state, task, tick, ctx, refresh_task)
       return
     end
 
+    local item_reserved, reserved_count = reserve_placement_item(
+      entity,
+      task,
+      task.output_container.name,
+      task_state.output_container_position,
+      ctx
+    )
+    if not item_reserved then
+      abort_build("missing " .. task.output_container.name .. " in builder inventory")
+      return
+    end
+
     local container = surface.create_entity{
       name = task.output_container.name,
       position = task_state.output_container_position,
@@ -1075,15 +1131,20 @@ function action_build.place_miner(builder_state, task, tick, ctx, refresh_task)
     }
 
     if not container then
+      refund_reserved_placement_item(
+        entity,
+        task.output_container.name,
+        reserved_count,
+        task_state.output_container_position,
+        ctx
+      )
       abort_build("failed to place output container at " .. ctx.format_position(task_state.output_container_position))
       return
     end
 
+    commit_reserved_build_item(task.output_container.name, reserved_count)
+
     task_state.placed_output_container = container
-    if not consume_build_item(task.output_container.name, container) then
-      abort_build("missing " .. task.output_container.name .. " in builder inventory")
-      return
-    end
     ctx.debug_log("task " .. task.id .. ": placed " .. task.output_container.name .. " at " .. ctx.format_position(container.position))
     begin_post_place_pause(
       builder_state,
@@ -1175,6 +1236,18 @@ function action_build.place_miner(builder_state, task, tick, ctx, refresh_task)
       return
     end
 
+    local item_reserved, reserved_count = reserve_placement_item(
+      entity,
+      task,
+      placement.item_name,
+      placement.build_position,
+      ctx
+    )
+    if not item_reserved then
+      abort_build("missing " .. placement.item_name .. " in builder inventory")
+      return
+    end
+
     local placed_entity = surface.create_entity{
       name = placement.entity_name,
       position = placement.build_position,
@@ -1184,14 +1257,12 @@ function action_build.place_miner(builder_state, task, tick, ctx, refresh_task)
     }
 
     if not placed_entity then
+      refund_reserved_placement_item(entity, placement.item_name, reserved_count, placement.build_position, ctx)
       abort_build("failed to place " .. placement.entity_name .. " at " .. ctx.format_position(placement.build_position))
       return
     end
 
-    if not consume_build_item(placement.item_name, placed_entity) then
-      abort_build("missing " .. placement.item_name .. " in builder inventory")
-      return
-    end
+    commit_reserved_build_item(placement.item_name, reserved_count)
 
     ctx.insert_entity_fuel(placed_entity, placement.fuel)
 
@@ -1305,6 +1376,18 @@ function action_build.place_machine_near_site(builder_state, task, tick, ctx, re
       return
     end
 
+    local item_reserved, reserved_count = reserve_placement_item(
+      entity,
+      task,
+      consumed_item_name,
+      task_state.build_position,
+      ctx
+    )
+    if not item_reserved then
+      refresh_task(builder_state, task, tick, ctx)
+      return
+    end
+
     local placed_entity = surface.create_entity{
       name = task.entity_name,
       position = task_state.build_position,
@@ -1314,9 +1397,14 @@ function action_build.place_machine_near_site(builder_state, task, tick, ctx, re
     }
 
     if not placed_entity then
+      refund_reserved_placement_item(entity, consumed_item_name, reserved_count, task_state.build_position, ctx)
       ctx.debug_log("task " .. task.id .. ": failed to create " .. task.entity_name .. " at " .. ctx.format_position(task_state.build_position))
       refresh_task(builder_state, task, tick, ctx)
       return
+    end
+
+    if reserved_count > 0 then
+      task_state.consumed_machine_item = reserved_count
     end
 
     if task.recipe_name and task.recipe_is_fixed then
@@ -1348,18 +1436,6 @@ function action_build.place_machine_near_site(builder_state, task, tick, ctx, re
     end
 
     task_state.placed_entity = placed_entity
-
-    if task.consume_items_on_place then
-      local reason = "placed " .. consumed_item_name .. " at " .. ctx.format_position(placed_entity.position)
-      local removed_count = ctx.remove_item(entity, consumed_item_name, 1, reason)
-      if removed_count < 1 then
-        ctx.debug_log("task " .. task.id .. ": missing " .. consumed_item_name .. " in builder inventory for placement")
-        refresh_task(builder_state, task, tick, ctx)
-        return
-      end
-
-      task_state.consumed_machine_item = removed_count
-    end
 
     ctx.debug_log(
       "task " .. task.id .. ": placed " .. task.entity_name ..
@@ -1449,6 +1525,23 @@ function action_build.place_machine_near_site(builder_state, task, tick, ctx, re
         return
       end
 
+      local item_reserved, reserved_count = reserve_placement_item(
+        entity,
+        task,
+        placement.item_name,
+        placement.build_position,
+        ctx
+      )
+      if not item_reserved then
+        if task.abandon_partial_site_on_failure then
+          complete_partial_site("missing " .. placement.item_name .. " in builder inventory")
+          return
+        end
+
+        abort_build("missing " .. placement.item_name .. " in builder inventory")
+        return
+      end
+
       local placed_support_entity = surface.create_entity{
         name = placement.entity_name,
         position = placement.build_position,
@@ -1458,6 +1551,7 @@ function action_build.place_machine_near_site(builder_state, task, tick, ctx, re
       }
 
       if not placed_support_entity then
+        refund_reserved_placement_item(entity, placement.item_name, reserved_count, placement.build_position, ctx)
         if task.abandon_partial_site_on_failure then
           complete_partial_site("failed to place " .. placement.entity_name .. " at " .. ctx.format_position(placement.build_position))
           return
@@ -1466,6 +1560,8 @@ function action_build.place_machine_near_site(builder_state, task, tick, ctx, re
         abort_build("failed to place " .. placement.entity_name .. " at " .. ctx.format_position(placement.build_position))
         return
       end
+
+      record_consumed_build_item(placement.item_name, reserved_count)
 
       if placement.recipe_name then
         local recipe_set, recipe_error = try_set_entity_recipe(placed_support_entity, placement.recipe_name)
@@ -1481,26 +1577,6 @@ function action_build.place_machine_near_site(builder_state, task, tick, ctx, re
           abort_build("failed to set recipe " .. placement.recipe_name .. " on " .. placement.entity_name .. ": " .. tostring(recipe_error))
           return
         end
-      end
-
-      if task.consume_items_on_place then
-        local removed_count = ctx.remove_item(
-          entity,
-          placement.item_name,
-          1,
-          "placed " .. placement.item_name .. " at " .. ctx.format_position(placed_support_entity.position)
-        )
-        if removed_count < 1 then
-          if task.abandon_partial_site_on_failure then
-            complete_partial_site("missing " .. placement.item_name .. " in builder inventory")
-            return
-          end
-
-          abort_build("missing " .. placement.item_name .. " in builder inventory")
-          return
-        end
-
-        record_consumed_build_item(placement.item_name, removed_count)
       end
 
       ctx.insert_entity_fuel(placed_support_entity, placement.fuel)
@@ -1600,6 +1676,18 @@ function action_build.place_layout_near_machine(builder_state, task, tick, ctx, 
     return
   end
 
+  local item_reserved, reserved_count = reserve_placement_item(
+    entity,
+    task,
+    placement.item_name,
+    placement.build_position,
+    ctx
+  )
+  if not item_reserved then
+    abort_build("missing " .. placement.item_name .. " in builder inventory")
+    return
+  end
+
   local placed_entity = surface.create_entity{
     name = placement.entity_name,
     position = placement.build_position,
@@ -1609,9 +1697,12 @@ function action_build.place_layout_near_machine(builder_state, task, tick, ctx, 
   }
 
   if not placed_entity then
+    refund_reserved_placement_item(entity, placement.item_name, reserved_count, placement.build_position, ctx)
     abort_build("failed to place " .. placement.entity_name .. " at " .. ctx.format_position(placement.build_position))
     return
   end
+
+  record_consumed_build_item(placement.item_name, reserved_count)
 
   if placement.recipe_name then
     local recipe_set, recipe_error = try_set_entity_recipe(placed_entity, placement.recipe_name)
@@ -1619,21 +1710,6 @@ function action_build.place_layout_near_machine(builder_state, task, tick, ctx, 
       abort_build("failed to set recipe " .. placement.recipe_name .. " on " .. placement.entity_name .. ": " .. tostring(recipe_error))
       return
     end
-  end
-
-  if task.consume_items_on_place then
-    local removed_count = ctx.remove_item(
-      entity,
-      placement.item_name,
-      1,
-      "placed " .. placement.item_name .. " at " .. ctx.format_position(placed_entity.position)
-    )
-    if removed_count < 1 then
-      abort_build("missing " .. placement.item_name .. " in builder inventory")
-      return
-    end
-
-    record_consumed_build_item(placement.item_name, removed_count)
   end
 
   ctx.insert_entity_fuel(placed_entity, placement.fuel)
