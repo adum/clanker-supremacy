@@ -443,6 +443,7 @@ $allCases = @(
   [pscustomobject]@{ Name = "solar_panel_factory_physical_feed"; RemoteSetupName = "setup_solar_panel_factory_test_case"; ServerPort = 34206; RemoteSetupArg = $null; TimeoutSecs = 600 },
   [pscustomobject]@{ Name = "solar_panel_factory_missing_sources_reports_blocker"; RemoteSetupName = "setup_solar_panel_factory_missing_sources_reports_blocker_test_case"; ServerPort = 34215; RemoteSetupArg = $null },
   [pscustomobject]@{ Name = "scaling_collect_switches_site"; RemoteSetupName = "setup_scaling_collect_switches_site_test_case"; ServerPort = 34205; RemoteSetupArg = $null },
+  [pscustomobject]@{ Name = "scaling_stays_in_starter_core_until_solar_block"; RemoteSetupName = "setup_scaling_stays_in_starter_core_until_solar_block_test_case"; ServerPort = 34236; RemoteSetupArg = $null },
   [pscustomobject]@{ Name = "assembler_output_collection_limits"; RemoteSetupName = "setup_assembler_output_collection_limits_test_case"; ServerPort = 34209; RemoteSetupArg = $null },
   [pscustomobject]@{ Name = "wait_patrol_avoids_close_reposition"; RemoteSetupName = "setup_wait_patrol_avoids_close_reposition_test_case"; ServerPort = 34210; RemoteSetupArg = $null },
   [pscustomobject]@{ Name = "wait_patrol_stops_when_inventory_cap_reached"; RemoteSetupName = "setup_wait_patrol_stops_when_inventory_cap_reached_test_case"; ServerPort = 34224; RemoteSetupArg = $null },

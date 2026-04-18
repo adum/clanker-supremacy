@@ -113,18 +113,32 @@ local function get_progressive_search_task(builder_state, task, ctx)
     scoped_task[key] = value
   end
 
+  scoped_task.original_task = task.original_task or task
   scoped_task.search_radii = {search_radii[radius_index]}
   return scoped_task, search_radii[radius_index]
+end
+
+local function extend_place_miner_search_task(builder_state, task, ctx)
+  if not (builder_state and task and ctx and ctx.builder_runtime and ctx.builder_runtime.apply_resource_search_restrictions) then
+    return task, nil
+  end
+
+  return ctx.builder_runtime.apply_resource_search_restrictions(builder_state, task)
 end
 
 local function start_place_miner_task(builder_state, task, tick, ctx)
   local entity = builder_state.entity
   local search_origin = task.manual_search_origin or entity.position
   local search_task, search_radius = get_progressive_search_task(builder_state, task, ctx)
+  local starter_resource_core
+  search_task, starter_resource_core = extend_place_miner_search_task(builder_state, search_task, ctx)
   ctx.debug_log(
     "task " .. task.id .. ": scanning for " .. task.resource_name ..
     " from " .. ctx.format_position(search_origin) ..
-    (search_radius and (" using radius " .. tostring(search_radius)) or "")
+    (search_radius and (" using radius " .. tostring(search_radius)) or "") ..
+    (starter_resource_core and (" inside starter resource core " ..
+      ctx.format_position(starter_resource_core.area.left_top) .. " -> " ..
+      ctx.format_position(starter_resource_core.area.right_bottom)) or "")
   )
   local site, search_summary = ctx.find_resource_site(entity.surface, entity.force, search_origin, search_task)
 
@@ -155,7 +169,8 @@ local function start_place_miner_task(builder_state, task, tick, ctx)
       (search_summary.valid_belt_paths or 0) .. " valid belt paths, " ..
       (search_summary.failed_belt_paths or 0) .. " failed belt paths, " ..
       (search_summary.failed_inserter_geometry or 0) .. " inserter-geometry failures, " ..
-      (search_summary.resource_overlap_rejections or 0) .. " resource-overlap rejections; retry at tick " ..
+      (search_summary.resource_overlap_rejections or 0) .. " resource-overlap rejections, " ..
+      (search_summary.outside_allowed_area_rejections or 0) .. " outside-area rejections; retry at tick " ..
       builder_state.task_state.next_attempt_tick
     )
     return

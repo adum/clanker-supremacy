@@ -31,6 +31,13 @@ return {
   enabled = true,
   idle_retry_ticks = 2 * 60,
   pursue_milestones_proactively = false,
+  starter_resource_core = {
+    resource_names = {"coal", "iron-ore", "copper-ore", "stone"},
+    discovery_radius = 128,
+    edge_padding = 24,
+    minimum_half_extent = 64,
+    fallback_half_extent = 96
+  },
   cycle_pattern_names = {
     "coal_outpost",
     "iron_smelting",
@@ -147,6 +154,7 @@ return {
       name = "solar-panel-factory-block",
       display_name = "Place solar panel factory block",
       pursue_proactively = true,
+      unlocks_remote_resource_expansion = true,
       unlock = {
         required_completed_milestones = {"firearm-magazine-assembler"},
         minimum_site_counts = {

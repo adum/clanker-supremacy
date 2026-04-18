@@ -83,6 +83,29 @@ local function expand_bounding_box(area, padding)
   }
 end
 
+local function filter_resources_to_allowed_area(resources, task, summary, ctx)
+  if not (resources and task and task.allowed_resource_area and ctx and ctx.point_in_area) then
+    return resources or {}
+  end
+
+  local kept_resources = {}
+  local rejected_count = 0
+
+  for _, resource in ipairs(resources) do
+    if ctx.point_in_area(resource.position, task.allowed_resource_area) then
+      kept_resources[#kept_resources + 1] = resource
+    else
+      rejected_count = rejected_count + 1
+    end
+  end
+
+  if summary and rejected_count > 0 then
+    summary.outside_allowed_area_rejections = (summary.outside_allowed_area_rejections or 0) + rejected_count
+  end
+
+  return kept_resources
+end
+
 local function clear_ground_item_blockers(surface, entity_name, position, task, summary)
   if not (surface and entity_name and position and task and task.clear_ground_item_blockers) then
     return false
@@ -1939,6 +1962,7 @@ local function find_edge_resource_site(surface, force, origin, task, ctx)
     resource_overlap_rejections = 0,
     low_resource_amount_rejections = 0,
     ground_item_blockers_cleared = 0,
+    outside_allowed_area_rejections = 0,
     resource_entities_found = 0,
     resource_entities_selected = 0,
     resource_entities_truncated = false
@@ -1953,6 +1977,8 @@ local function find_edge_resource_site(surface, force, origin, task, ctx)
       type = "resource",
       name = task.resource_name
     }
+    summary.resource_entities_found = summary.resource_entities_found + #found_resources
+    found_resources = filter_resources_to_allowed_area(found_resources, task, summary, ctx)
     local max_resource_scan_entities = task.max_resource_scan_entities_per_radius or
       math.max((task.max_resource_candidates_per_radius or 48) * 4, 64)
     local resources, resources_truncated = select_nearest_resources(
@@ -1964,7 +1990,6 @@ local function find_edge_resource_site(surface, force, origin, task, ctx)
     local patches = build_resource_patches(found_resources, origin, ctx)
     local edge_resource_candidates = {}
 
-    summary.resource_entities_found = summary.resource_entities_found + #found_resources
     summary.resource_entities_selected = summary.resource_entities_selected + #resources
     summary.resource_entities_truncated = summary.resource_entities_truncated or resources_truncated
 
@@ -2089,6 +2114,7 @@ function queries.find_resource_site(surface, force, origin, task, ctx)
     failed_inserter_geometry = 0,
     resource_overlap_rejections = 0,
     low_resource_amount_rejections = 0,
+    outside_allowed_area_rejections = 0,
     resource_entities_found = 0,
     resource_entities_selected = 0,
     resource_entities_truncated = false
@@ -2104,6 +2130,8 @@ function queries.find_resource_site(surface, force, origin, task, ctx)
       type = "resource",
       name = task.resource_name
     }
+    summary.resource_entities_found = summary.resource_entities_found + #found_resources
+    found_resources = filter_resources_to_allowed_area(found_resources, task, summary, ctx)
 
     local max_resource_scan_entities = task.max_resource_scan_entities_per_radius or
       math.max((task.max_resource_candidates_per_radius or 48) * 4, 64)
@@ -2113,7 +2141,6 @@ function queries.find_resource_site(surface, force, origin, task, ctx)
       max_resource_scan_entities,
       ctx
     )
-    summary.resource_entities_found = summary.resource_entities_found + #found_resources
     summary.resource_entities_selected = summary.resource_entities_selected + #resources
     summary.resource_entities_truncated = summary.resource_entities_truncated or resources_truncated
 

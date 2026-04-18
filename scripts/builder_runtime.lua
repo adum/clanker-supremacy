@@ -38,6 +38,7 @@ local pull_inventory_contents_to_builder
 local find_assembly_block_site
 local find_assembly_input_route_site
 local find_layout_site_near_machine
+local start_task
 local find_output_belt_line_site
 local find_machine_site_near_resource_sites
 local find_downstream_machine_site
@@ -579,6 +580,10 @@ local function ensure_builder_state_fields(builder_state)
     builder_state.resource_site_discovery = {
       next_tick = 0
     }
+  end
+
+  if builder_state.starter_resource_core == nil then
+    builder_state.starter_resource_core = nil
   end
 
   return builder_state
@@ -1577,6 +1582,173 @@ end
 local function point_in_area(position, area)
   return position.x >= area.left_top.x and position.x <= area.right_bottom.x and
     position.y >= area.left_top.y and position.y <= area.right_bottom.y
+end
+
+function builder_runtime.find_nearest_resource_position(surface, origin, resource_name, discovery_radius)
+  if not (surface and origin and resource_name and discovery_radius and discovery_radius > 0) then
+    return nil
+  end
+
+  local resources = surface.find_entities_filtered{
+    position = origin,
+    radius = discovery_radius,
+    type = "resource",
+    name = resource_name
+  }
+  local nearest_position = nil
+  local nearest_distance = nil
+
+  for _, resource in ipairs(resources) do
+    local distance = square_distance(origin, resource.position)
+    if not nearest_position or distance < nearest_distance then
+      nearest_position = clone_position(resource.position)
+      nearest_distance = distance
+    end
+  end
+
+  return nearest_position
+end
+
+function builder_runtime.build_starter_resource_core(builder_state)
+  ensure_builder_state_fields(builder_state)
+
+  if not (builder_state and builder_state.entity and builder_state.entity.valid) then
+    return nil
+  end
+
+  local scaling = builder_data.scaling or {}
+  local config = scaling.starter_resource_core or nil
+  if not config then
+    return nil
+  end
+
+  local origin = builder_state.starter_resource_core_origin or clone_position(builder_state.entity.position)
+  builder_state.starter_resource_core_origin = clone_position(origin)
+
+  local discovery_radius = config.discovery_radius or 128
+  local edge_padding = config.edge_padding or 24
+  local minimum_half_extent = config.minimum_half_extent or 64
+  local fallback_half_extent = config.fallback_half_extent or math.max(minimum_half_extent, 96)
+  local positions = {clone_position(origin)}
+  local discovered_resources = {}
+
+  for _, resource_name in ipairs(config.resource_names or {}) do
+    local resource_position =
+      builder_runtime.find_nearest_resource_position(builder_state.entity.surface, origin, resource_name, discovery_radius)
+    if resource_position then
+      positions[#positions + 1] = resource_position
+      discovered_resources[#discovered_resources + 1] = resource_name
+    end
+  end
+
+  local minimum_x = math.huge
+  local maximum_x = -math.huge
+  local minimum_y = math.huge
+  local maximum_y = -math.huge
+
+  for _, position in ipairs(positions) do
+    minimum_x = math.min(minimum_x, position.x)
+    maximum_x = math.max(maximum_x, position.x)
+    minimum_y = math.min(minimum_y, position.y)
+    maximum_y = math.max(maximum_y, position.y)
+  end
+
+  local center = {
+    x = (minimum_x + maximum_x) * 0.5,
+    y = (minimum_y + maximum_y) * 0.5
+  }
+  local half_width = math.max(((maximum_x - minimum_x) * 0.5) + edge_padding, minimum_half_extent)
+  local half_height = math.max(((maximum_y - minimum_y) * 0.5) + edge_padding, minimum_half_extent)
+
+  if #discovered_resources == 0 then
+    center = clone_position(origin)
+    half_width = fallback_half_extent
+    half_height = fallback_half_extent
+  end
+
+  builder_state.starter_resource_core = {
+    center = clone_position(center),
+    area = {
+      left_top = {
+        x = center.x - half_width,
+        y = center.y - half_height
+      },
+      right_bottom = {
+        x = center.x + half_width,
+        y = center.y + half_height
+      }
+    },
+    discovered_resource_names = discovered_resources
+  }
+
+  debug_log(
+    "starter resource core: " ..
+    format_position(builder_state.starter_resource_core.area.left_top) .. " -> " ..
+    format_position(builder_state.starter_resource_core.area.right_bottom) ..
+    " from " .. tostring(#discovered_resources) .. " nearby core resource type(s)"
+  )
+
+  return builder_state.starter_resource_core
+end
+
+function builder_runtime.get_starter_resource_core(builder_state)
+  ensure_builder_state_fields(builder_state)
+
+  if builder_state and builder_state.starter_resource_core then
+    return builder_state.starter_resource_core
+  end
+
+  return builder_runtime.build_starter_resource_core(builder_state)
+end
+
+function builder_runtime.is_remote_resource_expansion_unlocked(builder_state)
+  ensure_builder_state_fields(builder_state)
+
+  local scaling = builder_data.scaling or {}
+  for _, milestone in ipairs(scaling.production_milestones or {}) do
+    if milestone.unlocks_remote_resource_expansion and
+      builder_state.completed_scaling_milestones[milestone.name]
+    then
+      return true, milestone.name
+    end
+  end
+
+  return false, nil
+end
+
+function builder_runtime.apply_resource_search_restrictions(builder_state, task)
+  if not (builder_state and task and task.restrict_to_starter_resource_core) then
+    return task, nil
+  end
+
+  local active_task = task.original_task or task
+  if builder_state.scaling_active_task ~= active_task then
+    return task, nil
+  end
+
+  if builder_state.manual_goal_request then
+    return task, nil
+  end
+
+  if builder_runtime.is_remote_resource_expansion_unlocked(builder_state) then
+    return task, nil
+  end
+
+  local starter_resource_core = builder_runtime.get_starter_resource_core(builder_state)
+  if not (starter_resource_core and starter_resource_core.area) then
+    return task, nil
+  end
+
+  local scoped_task = {}
+  for key, value in pairs(task) do
+    scoped_task[key] = value
+  end
+  scoped_task.allowed_resource_area = {
+    left_top = clone_position(starter_resource_core.area.left_top),
+    right_bottom = clone_position(starter_resource_core.area.right_bottom)
+  }
+
+  return scoped_task, starter_resource_core
 end
 
 local function build_search_positions(anchor_position, radius, step)
@@ -4373,7 +4545,7 @@ local function setup_scaling_builds_before_coal_reserve_test_case()
   local coal_patch_b = {x = 24, y = 16}
   local iron_patch_a = {x = 56, y = -16}
   local iron_patch_b = {x = 56, y = 16}
-  local extra_iron_patch = {x = 88, y = 0}
+  local extra_iron_patch = {x = 72, y = 0}
   local area = make_test_area({x = 56, y = 0}, 144, 72)
 
   surface.always_day = true
@@ -4460,6 +4632,101 @@ function setup_scaling_repeats_material_patterns_test_case()
       minimum_resource_site_counts = {
         iron_smelting = 2
       }
+    }
+  }
+end
+
+function setup_scaling_stays_in_starter_core_until_solar_block_test_case()
+  local surface = game.surfaces["nauvis"] or game.surfaces[1]
+  if not surface then
+    error("enemy-builder test: nauvis surface is unavailable")
+  end
+
+  local builder_position = {x = 0, y = 0}
+  local remote_iron_patch = {x = 192, y = 0}
+  local area = make_test_area({x = 96, y = 0}, 160, 96)
+
+  surface.always_day = true
+  clear_test_area(surface, area)
+
+  return setup_scaling_test{
+    case_name = "scaling_stays_in_starter_core_until_solar_block",
+    builder_position = builder_position,
+    surface_name = surface.name,
+    suppress_player_autospawn = true,
+    disable_nearby_machine_output_collection = true,
+    mutate_builder_state = function(builder_state, test_surface)
+      create_test_resource_patch(test_surface, "coal", {x = 24, y = -20}, 3, 5000)
+      create_test_resource_patch(test_surface, "copper-ore", {x = 24, y = 20}, 3, 5000)
+      create_test_resource_patch(test_surface, "stone", {x = 8, y = 0}, 3, 5000)
+      create_test_resource_patch(test_surface, "iron-ore", {x = 32, y = 0}, 0, 50)
+      create_test_resource_patch(test_surface, "iron-ore", remote_iron_patch, 4, 5000)
+
+      local local_only_task = deep_copy(build_tasks.iron_smelting)
+      local_only_task.id = "test-starter-core-local-only"
+      local_only_task.search_radii = {256}
+      local_only_task.minimum_resource_amount = 500
+      builder_state.scaling_active_task = local_only_task
+      start_task(builder_state, local_only_task, game.tick)
+
+      if not (builder_state.task_state and builder_state.task_state.phase == "waiting-for-resource") then
+        error("enemy-builder test: expected local-only scaling task to wait for a starter-core iron site")
+      end
+
+      if builder_state.task_state.wait_reason ~= "no-build-site" then
+        error(
+          "enemy-builder test: expected local-only scaling task wait reason no-build-site; actual=" ..
+          tostring(builder_state.task_state.wait_reason)
+        )
+      end
+
+      local starter_resource_core = builder_runtime.get_starter_resource_core(builder_state)
+      if not (starter_resource_core and starter_resource_core.area) then
+        error("enemy-builder test: expected starter resource core to be captured")
+      end
+
+      local remote_patch_position = {
+        x = remote_iron_patch.x + 0.5,
+        y = remote_iron_patch.y + 0.5
+      }
+      if point_in_area(remote_patch_position, starter_resource_core.area) then
+        error("enemy-builder test: remote iron patch should sit outside the starter resource core")
+      end
+
+      builder_state.completed_scaling_milestones["solar-panel-factory-block"] = true
+
+      local remote_allowed_task = deep_copy(build_tasks.iron_smelting)
+      remote_allowed_task.id = "test-starter-core-remote-allowed"
+      remote_allowed_task.search_radii = {256}
+      remote_allowed_task.minimum_resource_amount = 500
+      builder_state.scaling_active_task = remote_allowed_task
+      builder_state.task_state = nil
+      start_task(builder_state, remote_allowed_task, game.tick + 1)
+
+      if not (builder_state.task_state and builder_state.task_state.phase == "moving") then
+        error("enemy-builder test: expected remote iron patch search to start moving after solar unlock")
+      end
+
+      if not (builder_state.task_state.resource_position and builder_state.task_state.resource_position.x > 150) then
+        error(
+          "enemy-builder test: expected moving task to target remote iron patch after solar unlock; position=" ..
+          format_position(builder_state.task_state.resource_position or builder_position)
+        )
+      end
+
+      builder_state.task_state = {
+        phase = "scaling-waiting",
+        wait_reason = "test-idle",
+        next_attempt_tick = game.tick + 3600
+      }
+      builder_state.scaling_active_task = nil
+    end,
+    assertion = {
+      case_name = "scaling_stays_in_starter_core_until_solar_block",
+      surface_name = surface.name,
+      area = area,
+      deadline_offset_ticks = 1,
+      skip_output_assertion = true
     }
   }
 end
@@ -6540,6 +6807,8 @@ local test_remote_interface = {
   setup_solar_panel_factory_test_case = setup_solar_panel_factory_test_case,
   setup_solar_panel_factory_missing_sources_reports_blocker_test_case = setup_solar_panel_factory_missing_sources_reports_blocker_test_case,
   setup_scaling_collect_switches_site_test_case = setup_scaling_collect_switches_site_test_case,
+  setup_scaling_stays_in_starter_core_until_solar_block_test_case =
+    setup_scaling_stays_in_starter_core_until_solar_block_test_case,
   setup_scaling_early_expansion_over_coal_reserve_test_case = setup_scaling_early_expansion_over_coal_reserve_test_case,
   setup_scaling_builds_before_coal_reserve_test_case = setup_scaling_builds_before_coal_reserve_test_case,
   setup_scaling_repeats_material_patterns_test_case = setup_scaling_repeats_material_patterns_test_case,
@@ -6888,7 +7157,7 @@ local task_executor_context = {
   square_distance = square_distance
 }
 
-local function start_task(builder_state, task, tick)
+start_task = function(builder_state, task, tick)
   task_executor.start_task(builder_state, task, tick, task_executor_context)
 end
 
