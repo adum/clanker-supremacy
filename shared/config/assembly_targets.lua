@@ -14,13 +14,9 @@ return {
       local_search_step = 1
     },
     power_anchor_entity_name = "small-electric-pole",
-    source_route_extractor = {
-      entity_name = "burner-inserter",
-      item_name = "burner-inserter",
-      fuel = {
-        name = "coal",
-        count = 4
-      }
+    source_route_splitter = {
+      entity_name = "splitter",
+      item_name = "splitter"
     },
     local_poles = {
       {

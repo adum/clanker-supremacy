@@ -3189,9 +3189,98 @@ local function build_source_route_entry_options(surface, force, terminal_belt, r
     return options
   end
 
+  local start_direction_vector = get_direction_vector_from_direction(terminal_belt.direction, ctx)
+  local splitter_spec = task.assembly_target and task.assembly_target.source_route_splitter or nil
+  if splitter_spec and start_direction_vector then
+    local lateral_vector = {
+      x = -start_direction_vector.y,
+      y = start_direction_vector.x
+    }
+    local splitter_candidates = {}
+    local seen_splitter_entries = {}
+
+    for _, splitter_offset_sign in ipairs({-0.5, 0.5}) do
+      local splitter_position = {
+        x = terminal_belt.position.x + start_direction_vector.x + (lateral_vector.x * splitter_offset_sign),
+        y = terminal_belt.position.y + start_direction_vector.y + (lateral_vector.y * splitter_offset_sign)
+      }
+
+      if surface.can_place_entity{
+        name = splitter_spec.entity_name,
+        position = splitter_position,
+        direction = terminal_belt.direction,
+        force = force
+      } then
+        local splitter_overlaps_resources = task.forbid_resource_overlap and
+          candidate_entity_overlaps_resources(surface, force, splitter_spec.entity_name, splitter_position, terminal_belt.direction)
+
+        if splitter_overlaps_resources then
+          summary.resource_overlap_rejections = (summary.resource_overlap_rejections or 0) + 1
+        else
+          local belt_offset_sign = -splitter_offset_sign
+          local path_start_position = {
+            x = splitter_position.x + (start_direction_vector.x * 2) + (lateral_vector.x * belt_offset_sign),
+            y = splitter_position.y + (start_direction_vector.y * 2) + (lateral_vector.y * belt_offset_sign)
+          }
+          local entry_key = string.format(
+            "%.2f:%.2f",
+            path_start_position.x,
+            path_start_position.y
+          )
+
+          if not seen_splitter_entries[entry_key] and
+            surface.can_place_entity{
+              name = task.belt_entity_name,
+              position = path_start_position,
+              direction = terminal_belt.direction,
+              force = force
+            }
+          then
+            local belt_overlaps_resources = task.forbid_resource_overlap and
+              candidate_entity_overlaps_resources(surface, force, task.belt_entity_name, path_start_position, terminal_belt.direction)
+
+            if belt_overlaps_resources then
+              summary.resource_overlap_rejections = (summary.resource_overlap_rejections or 0) + 1
+            else
+              seen_splitter_entries[entry_key] = true
+              splitter_candidates[#splitter_candidates + 1] = {
+                splitter_position = splitter_position,
+                path_start_position = path_start_position
+              }
+            end
+          end
+        end
+      else
+        summary.failed_source_extractors = (summary.failed_source_extractors or 0) + 1
+      end
+    end
+
+    table.sort(splitter_candidates, function(left, right)
+      local left_dx = left.path_start_position.x - route_target_position.x
+      local left_dy = left.path_start_position.y - route_target_position.y
+      local right_dx = right.path_start_position.x - route_target_position.x
+      local right_dy = right.path_start_position.y - route_target_position.y
+      return ((left_dx * left_dx) + (left_dy * left_dy)) < ((right_dx * right_dx) + (right_dy * right_dy))
+    end)
+
+    for _, candidate in ipairs(splitter_candidates) do
+      options[#options + 1] = {
+        path_start_position = ctx.clone_position(candidate.path_start_position),
+        prefix_placements = {{
+          entity_name = splitter_spec.entity_name,
+          item_name = splitter_spec.item_name or splitter_spec.entity_name,
+          build_position = ctx.clone_position(candidate.splitter_position),
+          build_direction = terminal_belt.direction,
+          site_role = "assembly-source-splitter"
+        }}
+      }
+    end
+
+    return options
+  end
+
   local extractor_spec = task.assembly_target and task.assembly_target.source_route_extractor or nil
   if not extractor_spec then
-    local start_direction_vector = get_direction_vector_from_direction(terminal_belt.direction, ctx)
     if start_direction_vector then
       options[#options + 1] = {
         path_start_position = {

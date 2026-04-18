@@ -180,7 +180,7 @@ return {
       },
       required_items = {
         {name = "transport-belt", count = 96},
-        {name = "burner-inserter", count = 1}
+        {name = "splitter", count = 1}
       },
       task = solar_panel_factory_iron_input_task
     },
@@ -193,7 +193,7 @@ return {
       },
       required_items = {
         {name = "transport-belt", count = 96},
-        {name = "burner-inserter", count = 1}
+        {name = "splitter", count = 1}
       },
       task = solar_panel_factory_copper_cable_input_task
     },
@@ -206,7 +206,7 @@ return {
       },
       required_items = {
         {name = "transport-belt", count = 96},
-        {name = "burner-inserter", count = 1}
+        {name = "splitter", count = 1}
       },
       task = solar_panel_factory_copper_solar_input_task
     },
@@ -219,7 +219,7 @@ return {
       },
       required_items = {
         {name = "transport-belt", count = 96},
-        {name = "burner-inserter", count = 1}
+        {name = "splitter", count = 1}
       },
       task = solar_panel_factory_steel_input_task
     }

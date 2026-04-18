@@ -4456,8 +4456,9 @@ local function setup_solar_panel_factory_test_case()
     disable_nearby_machine_output_collection = true,
     inventory = {
       {name = "assembling-machine-1", count = 3},
-      {name = "burner-inserter", count = 10},
+      {name = "burner-inserter", count = 6},
       {name = "small-electric-pole", count = 8},
+      {name = "splitter", count = 4},
       {name = "transport-belt", count = 256},
       {name = "coal", count = 200}
     },
@@ -4470,7 +4471,8 @@ local function setup_solar_panel_factory_test_case()
       expected_counts = {
         ["assembling-machine-1"] = 3,
         ["burner-inserter"] = 10,
-        ["small-electric-pole"] = 4
+        ["small-electric-pole"] = 4,
+        ["splitter"] = 4
       },
       output_entity_names = {"assembling-machine-1"},
       output_item_name = "solar-panel",
@@ -4511,8 +4513,9 @@ local function setup_solar_panel_factory_missing_sources_reports_blocker_test_ca
     disable_nearby_machine_input_supply = true,
     inventory = {
       {name = "assembling-machine-1", count = 3},
-      {name = "burner-inserter", count = 10},
+      {name = "burner-inserter", count = 6},
       {name = "small-electric-pole", count = 8},
+      {name = "splitter", count = 4},
       {name = "transport-belt", count = 256},
       {name = "coal", count = 200}
     },
