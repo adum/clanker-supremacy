@@ -4171,6 +4171,104 @@ function setup_steel_output_belt_layout_places_inserter_then_straight_belts_test
   }
 end
 
+function setup_steel_output_belt_counts_as_export_site_test_case()
+  local surface = game.surfaces["nauvis"] or game.surfaces[1]
+  if not surface then
+    error("enemy-builder test: nauvis surface is unavailable")
+  end
+
+  local builder_position = {x = 0, y = 0}
+  local anchor_position = {x = 32, y = 0}
+  local area = make_test_area(anchor_position, 48, 32)
+
+  surface.always_day = true
+  clear_test_area(surface, area)
+
+  return setup_scaling_test{
+    case_name = "steel_output_belt_counts_as_export_site",
+    builder_position = builder_position,
+    surface_name = surface.name,
+    suppress_player_autospawn = true,
+    disable_nearby_machine_output_collection = true,
+    mutate_builder_state = function(builder_state, test_surface)
+      local steel_site = place_test_runtime_steel_smelting_site(test_surface, builder_state, "north", anchor_position)
+
+      local task = deep_copy(builder_data.site_patterns.steel_plate_belt_export.build_task)
+      local layout_site, summary = find_output_belt_line_site(builder_state, task)
+
+      if not (layout_site and layout_site.placements and #layout_site.placements > 1) then
+        error(
+          "enemy-builder test: expected steel output belt placements for count test; " ..
+          "checked=" .. tostring(summary and summary.anchor_entities_considered or 0) ..
+          " valid=" .. tostring(summary and summary.valid_belt_paths or 0) ..
+          " failed=" .. tostring(summary and summary.failed_belt_paths or 0)
+        )
+      end
+
+      local output_inserter = nil
+      local belt_entities = {}
+      for _, placement in ipairs(layout_site.placements) do
+        local entity = test_surface.create_entity{
+          name = placement.entity_name,
+          position = placement.build_position,
+          direction = placement.build_direction,
+          force = builder_state.entity.force,
+          create_build_effect_smoke = false
+        }
+        if not (entity and entity.valid) then
+          error("enemy-builder test: failed to create steel export placement " .. tostring(placement.entity_name))
+        end
+
+        if placement.fuel then
+          insert_entity_fuel(entity, placement.fuel)
+        end
+
+        if placement.site_role == "output-inserter" then
+          output_inserter = entity
+        elseif placement.site_role == "output-belt" then
+          belt_entities[#belt_entities + 1] = entity
+        end
+      end
+
+      if not (output_inserter and output_inserter.valid and #belt_entities > 0) then
+        error("enemy-builder test: steel export count test missing inserter or belts")
+      end
+
+      register_output_belt_site(
+        task,
+        steel_site.steel_furnace,
+        output_inserter,
+        belt_entities,
+        belt_entities[#belt_entities].position
+      )
+
+      local production_sites = ensure_production_sites()
+      local latest_site = production_sites[#production_sites]
+      if latest_site then
+        -- Simulate a legacy save where steel output belts were registered before pattern_name was stored.
+        latest_site.pattern_name = nil
+      end
+
+      builder_state.task_state = {
+        phase = "scaling-waiting",
+        wait_reason = "test-idle",
+        next_attempt_tick = game.tick + 3600
+      }
+    end,
+    assertion = {
+      case_name = "steel_output_belt_counts_as_export_site",
+      surface_name = surface.name,
+      area = area,
+      deadline_offset_ticks = 1,
+      skip_output_assertion = true,
+      minimum_resource_site_counts = {
+        steel_smelting = 1,
+        steel_plate_belt_export = 1
+      }
+    }
+  }
+end
+
 function setup_output_belt_abort_preserves_transport_belts_test_case()
   local surface = game.surfaces["nauvis"] or game.surfaces[1]
   if not surface then
@@ -6802,6 +6900,8 @@ local test_remote_interface = {
     setup_output_belt_sidestep_before_building_test_case,
   setup_steel_output_belt_layout_places_inserter_then_straight_belts_test_case =
     setup_steel_output_belt_layout_places_inserter_then_straight_belts_test_case,
+  setup_steel_output_belt_counts_as_export_site_test_case =
+    setup_steel_output_belt_counts_as_export_site_test_case,
   setup_output_belt_abort_preserves_transport_belts_test_case =
     setup_output_belt_abort_preserves_transport_belts_test_case,
   setup_solar_panel_factory_test_case = setup_solar_panel_factory_test_case,

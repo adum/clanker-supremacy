@@ -364,6 +364,7 @@ local function make_retrofit_output_belt_task(pattern_name, anchor_pattern_names
   return {
     type = "place-output-belt-line",
     pattern_name = pattern_name,
+    count_output_belt_as_pattern_site = true,
     resource_name = resource_name,
     output_item_name = output_item_name,
     anchor_pattern_names = anchor_pattern_names,

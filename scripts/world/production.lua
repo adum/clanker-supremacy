@@ -20,6 +20,24 @@ local function get_site_identity_key(site)
   return nil
 end
 
+local function get_output_belt_pattern_name(site)
+  if not site then
+    return nil
+  end
+
+  if site.pattern_name then
+    return site.pattern_name
+  end
+
+  local task_id = site.task_id or ""
+  if string.find(task_id, "steel_plate_belt_export", 1, true) then
+    site.pattern_name = "steel_plate_belt_export"
+    return site.pattern_name
+  end
+
+  return nil
+end
+
 function production.register_smelting_site(task, miner, downstream_machine, output_container, ctx)
   local production_sites = storage_helpers.ensure_production_sites()
   local task_id = (task and task.id) or (task and task.pattern_name) or "smelting-site"
@@ -174,6 +192,18 @@ function production.get_pattern_site_counts()
           break
         end
       end
+    elseif site.site_type == "smelting-output-belt" and
+      get_output_belt_pattern_name(site) and
+      site.output_machine and site.output_machine.valid and
+      site.output_inserter and site.output_inserter.valid
+    then
+      local pattern_name = get_output_belt_pattern_name(site)
+      for _, belt_entity in ipairs(site.belt_entities or {}) do
+        if belt_entity and belt_entity.valid then
+          counts[pattern_name] = (counts[pattern_name] or 0) + 1
+          break
+        end
+      end
     end
   end
 
@@ -202,6 +232,7 @@ function production.register_output_belt_site(task, output_machine, output_inser
   for _, site in ipairs(production_sites) do
     if site.site_type == "smelting-output-belt" and site.output_machine == output_machine then
       site.task_id = task_id
+      site.pattern_name = task.count_output_belt_as_pattern_site and task.pattern_name or nil
       site.output_item_name = task.output_item_name
       site.output_machine = output_machine
       site.output_inserter = output_inserter
@@ -214,6 +245,7 @@ function production.register_output_belt_site(task, output_machine, output_inser
   production_sites[#production_sites + 1] = {
     task_id = task_id,
     site_type = "smelting-output-belt",
+    pattern_name = task.count_output_belt_as_pattern_site and task.pattern_name or nil,
     output_item_name = task.output_item_name,
     output_machine = output_machine,
     output_inserter = output_inserter,
