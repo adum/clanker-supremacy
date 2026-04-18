@@ -449,6 +449,8 @@ $allCases = @(
   [pscustomobject]@{ Name = "wait_patrol_recovers_coal_when_producers_are_out_of_fuel"; RemoteSetupName = "setup_wait_patrol_recovers_coal_when_producers_are_out_of_fuel_test_case"; ServerPort = 34219; RemoteSetupArg = $null },
   [pscustomobject]@{ Name = "machine_refuel_respects_minimum_batch"; RemoteSetupName = "setup_machine_refuel_respects_minimum_batch_test_case"; ServerPort = 34212; RemoteSetupArg = $null },
   [pscustomobject]@{ Name = "cleanup_nearby_exhausted_miners"; RemoteSetupName = "setup_cleanup_nearby_exhausted_miners_test_case"; ServerPort = 34232; RemoteSetupArg = $null },
+  [pscustomobject]@{ Name = "cleanup_exhausted_miner_removes_orphan_furnace"; RemoteSetupName = "setup_cleanup_exhausted_miner_removes_orphan_furnace_test_case"; ServerPort = 34234; RemoteSetupArg = $null },
+  [pscustomobject]@{ Name = "cleanup_exhausted_miner_removes_orphan_steel_chain"; RemoteSetupName = "setup_cleanup_exhausted_miner_removes_orphan_steel_chain_test_case"; ServerPort = 34235; RemoteSetupArg = $null },
   [pscustomobject]@{ Name = "steel_output_retries_blocked_anchors"; RemoteSetupName = "setup_steel_output_retries_blocked_anchors_test_case"; ServerPort = 34213; RemoteSetupArg = $null },
   [pscustomobject]@{ Name = "steel_smelting_missing_inserter_does_not_place_free_inserter"; RemoteSetupName = "setup_steel_smelting_missing_inserter_does_not_place_free_inserter_test_case"; ServerPort = 34230; RemoteSetupArg = $null },
   [pscustomobject]@{ Name = "copper_smelting_large_patch_open_half"; RemoteSetupName = "setup_copper_smelting_large_patch_open_half_test_case"; ServerPort = 34211; RemoteSetupArg = $null },

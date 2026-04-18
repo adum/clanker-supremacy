@@ -5143,7 +5143,7 @@ local function setup_machine_refuel_respects_minimum_batch_test_case()
   }
 end
 
-local function setup_cleanup_nearby_exhausted_miners_test_case()
+function setup_cleanup_nearby_exhausted_miners_test_case()
   local surface = game.surfaces["nauvis"] or game.surfaces[1]
   if not surface then
     error("enemy-builder test: nauvis surface is unavailable")
@@ -5200,6 +5200,134 @@ local function setup_cleanup_nearby_exhausted_miners_test_case()
       },
       minimum_builder_inventory_items = {
         {name = "burner-mining-drill", count = 1}
+      }
+    }
+  }
+end
+
+function destroy_resources_in_mining_area(surface, miner)
+  if not (surface and miner and miner.valid and miner.mining_area) then
+    return
+  end
+
+  for _, resource in ipairs(surface.find_entities_filtered{
+    area = miner.mining_area,
+    type = "resource"
+  }) do
+    if resource and resource.valid then
+      resource.destroy()
+    end
+  end
+end
+
+function setup_cleanup_exhausted_miner_removes_orphan_furnace_test_case()
+  local surface = game.surfaces["nauvis"] or game.surfaces[1]
+  if not surface then
+    error("enemy-builder test: nauvis surface is unavailable")
+  end
+
+  local builder_position = {x = 0, y = 0}
+  local iron_patch_position = {x = 8, y = 0}
+  local area = make_test_area(iron_patch_position, 24, 24)
+
+  surface.always_day = true
+  clear_test_area(surface, area)
+  create_test_resource_patch(surface, "iron-ore", iron_patch_position, 3, 5000)
+
+  return setup_scaling_test{
+    case_name = "cleanup_exhausted_miner_removes_orphan_furnace",
+    builder_position = builder_position,
+    surface_name = surface.name,
+    suppress_player_autospawn = true,
+    disable_nearby_machine_output_collection = true,
+    mutate_builder_state = function(builder_state, test_surface)
+      local iron_site = place_test_runtime_iron_smelting_site(test_surface, iron_patch_position)
+      if not (iron_site and iron_site.miner and iron_site.miner.valid) then
+        error("enemy-builder test: failed to create runtime iron smelting site for furnace cleanup case")
+      end
+
+      destroy_resources_in_mining_area(test_surface, iron_site.miner)
+
+      builder_state.task_state = {
+        phase = "scaling-waiting",
+        wait_reason = "test-idle",
+        next_attempt_tick = game.tick + 3600
+      }
+      builder_state.next_exhausted_miner_cleanup_tick = game.tick
+      builder_state.next_machine_refuel_tick = game.tick + 3600
+      builder_state.next_machine_output_collection_tick = game.tick + 3600
+      builder_state.next_machine_input_supply_tick = game.tick + 3600
+    end,
+    assertion = {
+      case_name = "cleanup_exhausted_miner_removes_orphan_furnace",
+      surface_name = surface.name,
+      area = area,
+      deadline_offset_ticks = 30,
+      skip_output_assertion = true,
+      maximum_counts = {
+        ["burner-mining-drill"] = 0,
+        ["stone-furnace"] = 0
+      },
+      minimum_builder_inventory_items = {
+        {name = "burner-mining-drill", count = 1},
+        {name = "stone-furnace", count = 1}
+      }
+    }
+  }
+end
+
+function setup_cleanup_exhausted_miner_removes_orphan_steel_chain_test_case()
+  local surface = game.surfaces["nauvis"] or game.surfaces[1]
+  if not surface then
+    error("enemy-builder test: nauvis surface is unavailable")
+  end
+
+  local builder_position = {x = 0, y = 0}
+  local anchor_position = {x = 20, y = 0}
+  local area = make_test_area(anchor_position, 48, 32)
+
+  surface.always_day = true
+  clear_test_area(surface, area)
+
+  return setup_scaling_test{
+    case_name = "cleanup_exhausted_miner_removes_orphan_steel_chain",
+    builder_position = builder_position,
+    surface_name = surface.name,
+    suppress_player_autospawn = true,
+    disable_nearby_machine_output_collection = true,
+    mutate_builder_state = function(builder_state, test_surface)
+      local steel_site = place_test_runtime_steel_smelting_site(test_surface, builder_state, "north", anchor_position)
+      if not (steel_site and steel_site.miner and steel_site.miner.valid) then
+        error("enemy-builder test: failed to create runtime steel smelting site for cleanup case")
+      end
+
+      destroy_resources_in_mining_area(test_surface, steel_site.miner)
+
+      builder_state.task_state = {
+        phase = "scaling-waiting",
+        wait_reason = "test-idle",
+        next_attempt_tick = game.tick + 3600
+      }
+      builder_state.next_exhausted_miner_cleanup_tick = game.tick
+      builder_state.next_machine_refuel_tick = game.tick + 3600
+      builder_state.next_machine_output_collection_tick = game.tick + 3600
+      builder_state.next_machine_input_supply_tick = game.tick + 3600
+    end,
+    assertion = {
+      case_name = "cleanup_exhausted_miner_removes_orphan_steel_chain",
+      surface_name = surface.name,
+      area = area,
+      deadline_offset_ticks = 30,
+      skip_output_assertion = true,
+      maximum_counts = {
+        ["burner-mining-drill"] = 0,
+        ["burner-inserter"] = 0,
+        ["stone-furnace"] = 0
+      },
+      minimum_builder_inventory_items = {
+        {name = "burner-mining-drill", count = 1},
+        {name = "burner-inserter", count = 1},
+        {name = "stone-furnace", count = 2}
       }
     }
   }
@@ -6427,6 +6555,10 @@ local test_remote_interface = {
     setup_wait_patrol_recovers_coal_when_producers_are_out_of_fuel_test_case,
   setup_machine_refuel_respects_minimum_batch_test_case = setup_machine_refuel_respects_minimum_batch_test_case,
   setup_cleanup_nearby_exhausted_miners_test_case = setup_cleanup_nearby_exhausted_miners_test_case,
+  setup_cleanup_exhausted_miner_removes_orphan_furnace_test_case =
+    setup_cleanup_exhausted_miner_removes_orphan_furnace_test_case,
+  setup_cleanup_exhausted_miner_removes_orphan_steel_chain_test_case =
+    setup_cleanup_exhausted_miner_removes_orphan_steel_chain_test_case,
   setup_steel_output_retries_blocked_anchors_test_case = setup_steel_output_retries_blocked_anchors_test_case,
   setup_copper_smelting_large_patch_open_half_test_case = setup_copper_smelting_large_patch_open_half_test_case,
   setup_iron_plate_belt_export_large_patch_sparse_near_edge_test_case =
@@ -6982,7 +7114,9 @@ layout_snapshot_context = {
 
 maintenance_pass_context = {
   builder_data = builder_data,
+  cleanup_resource_sites = cleanup_resource_sites,
   debug_log = debug_log,
+  ensure_production_sites = ensure_production_sites,
   format_position = format_position,
   get_container_inventory = get_container_inventory,
   get_item_count = get_item_count,
