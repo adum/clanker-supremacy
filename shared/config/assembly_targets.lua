@@ -2,6 +2,7 @@ return {
   solar_panel_factory = {
     display_name = "solar panel factory",
     target_item_name = "solar-panel",
+    defer_power_poles_until_end = true,
     anchor_mode = "source-cluster",
     source_cluster = {
       site_type = "smelting-output-belt",

@@ -157,6 +157,32 @@ local function can_place_entity_with_ground_item_clearance(surface, force, entit
   return false
 end
 
+local direction_invariant_placement_cache = {}
+
+local function entity_has_direction_invariant_placement(entity_name)
+  if not entity_name then
+    return false
+  end
+
+  local cached = direction_invariant_placement_cache[entity_name]
+  if cached ~= nil then
+    return cached
+  end
+
+  local prototype = prototypes and prototypes.entity and prototypes.entity[entity_name] or nil
+  local collision_box = prototype and (prototype.collision_box or prototype.selection_box) or nil
+  if not collision_box then
+    direction_invariant_placement_cache[entity_name] = false
+    return false
+  end
+
+  local width = math.abs(collision_box.right_bottom.x - collision_box.left_top.x)
+  local height = math.abs(collision_box.right_bottom.y - collision_box.left_top.y)
+  local is_direction_invariant = math.abs(width - height) < 0.001
+  direction_invariant_placement_cache[entity_name] = is_direction_invariant
+  return is_direction_invariant
+end
+
 local function find_downstream_machine_placement(surface, force, task, drop_position, ctx)
   local downstream_machine = task.downstream_machine
   local stats = {
@@ -1011,6 +1037,7 @@ end
 local function find_first_miner_placement(surface, force, task, resource, patch, ctx)
   local site_selection = task.site_selection or {}
   local valid_candidate_limit = site_selection.max_valid_candidates or math.max(site_selection.random_candidate_pool or 1, 4)
+  local direction_invariant_placement = entity_has_direction_invariant_placement(task.miner_name)
   local stats = {
     positions_checked = 0,
     placeable_positions = 0,
@@ -1042,11 +1069,18 @@ local function find_first_miner_placement(surface, force, task, resource, patch,
   local stop_search = false
 
   for _, position in ipairs(ctx.build_search_positions(resource.position, task.placement_search_radius, task.placement_step)) do
+    local placeable_for_position = nil
+
     for _, direction_name in ipairs(task.placement_directions) do
       local direction = ctx.direction_by_name[direction_name]
       stats.positions_checked = stats.positions_checked + 1
 
-      if can_place_entity_with_ground_item_clearance(surface, force, task.miner_name, position, direction, task, stats) then
+      if placeable_for_position == nil or not direction_invariant_placement then
+        placeable_for_position =
+          can_place_entity_with_ground_item_clearance(surface, force, task.miner_name, position, direction, task, stats)
+      end
+
+      if placeable_for_position then
         stats.placeable_positions = stats.placeable_positions + 1
         local test_miner = surface.create_entity{
           name = task.miner_name,
@@ -1107,6 +1141,8 @@ local function find_first_miner_placement(surface, force, task, resource, patch,
 
           test_miner.destroy()
         end
+      elseif direction_invariant_placement then
+        break
       end
 
       if stop_search then
@@ -1573,6 +1609,7 @@ end
 local function find_miner_placement(surface, force, task, resource_position, patch, ctx)
   local site_selection = task.site_selection or {}
   local valid_candidate_limit = site_selection.max_valid_candidates or math.max(site_selection.random_candidate_pool or 1, 4)
+  local direction_invariant_placement = entity_has_direction_invariant_placement(task.miner_name)
   local stats = {
     positions_checked = 0,
     placeable_positions = 0,
@@ -1606,11 +1643,18 @@ local function find_miner_placement(surface, force, task, resource_position, pat
   local minimum_resource_amount = task.minimum_resource_amount or 0
 
   for _, position in ipairs(ctx.build_search_positions(resource_position, task.placement_search_radius, task.placement_step)) do
+    local placeable_for_position = nil
+
     for _, direction_name in ipairs(task.placement_directions) do
       local direction = ctx.direction_by_name[direction_name]
       stats.positions_checked = stats.positions_checked + 1
 
-      if can_place_entity_with_ground_item_clearance(surface, force, task.miner_name, position, direction, task, stats) then
+      if placeable_for_position == nil or not direction_invariant_placement then
+        placeable_for_position =
+          can_place_entity_with_ground_item_clearance(surface, force, task.miner_name, position, direction, task, stats)
+      end
+
+      if placeable_for_position then
         stats.placeable_positions = stats.placeable_positions + 1
         local test_miner = surface.create_entity{
           name = task.miner_name,
@@ -1711,6 +1755,8 @@ local function find_miner_placement(surface, force, task, resource_position, pat
             end
           end
         end
+      elseif direction_invariant_placement then
+        break
       end
     end
 
@@ -2041,7 +2087,13 @@ local function find_edge_resource_site(surface, force, origin, task, ctx)
       }, summary
     end
 
+    local fallback_limit = task.max_resource_fallback_candidates_per_radius
+    if fallback_limit == nil then
+      fallback_limit = task.max_resource_candidates_per_radius
+    end
+
     if task.max_resource_candidates_per_radius and
+      fallback_limit ~= 0 and
       #site_candidates == 0 and
       #edge_resource_candidates > considered_this_radius
     then
@@ -2056,7 +2108,7 @@ local function find_edge_resource_site(surface, force, origin, task, ctx)
         seen_resources,
         edge_resource_candidates,
         ctx,
-        nil
+        fallback_limit
       )
 
       selected_candidate, pool_size = select_preferred_resource_site_candidate(
@@ -4364,6 +4416,24 @@ local function build_assembly_block_candidate(surface, force, build_position, or
       summary.failed_power_network = (summary.failed_power_network or 0) + 1
       destroy_probes()
       return nil
+    end
+  end
+
+  if assembly_target.defer_power_poles_until_end then
+    local non_power_pole_placements = {}
+    local power_pole_placements = {}
+
+    for _, placement in ipairs(placements) do
+      if placement.site_role == "power-pole" then
+        power_pole_placements[#power_pole_placements + 1] = placement
+      else
+        non_power_pole_placements[#non_power_pole_placements + 1] = placement
+      end
+    end
+
+    placements = non_power_pole_placements
+    for _, placement in ipairs(power_pole_placements) do
+      placements[#placements + 1] = placement
     end
   end
 

@@ -19,6 +19,7 @@ local function make_fresh_output_belt_task(pattern_name, resource_name, output_i
     minimum_resource_amount = 200,
     search_radii = {64, 128, 256, 512},
     max_resource_candidates_per_radius = 4,
+    max_resource_fallback_candidates_per_radius = 4,
     search_retry_ticks = 5 * 60,
     placement_search_radius = 4,
     placement_step = 0.5,
