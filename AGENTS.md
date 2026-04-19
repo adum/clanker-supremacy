@@ -14,3 +14,15 @@ Code and architecture wise:
 - This is going to get pretty complicated, so it's important to have good, clean architecture and test cases.
 - We also need great debugging tools and visualizations and ways to see what the builder is doing.
 - The key is to code SIMPLE and fast algorithms. It's okay for them to not be precise. For example, the builder might start making a project that combines a bunch of assemblers and inserters for a final project. Then before it gets to the end, he runs out of room due to a cliff. That's fine. He can just abandon that effort and try again later. This is much better than trying to calculate the needed space up front and worrying about the cliffs.
+- Don't add extra code to support old save files if we update something. It's totally fine to not be backwards compatible. It's much better to have simpler code that only works going forward. 
+
+Anti-pattern:
+- A bad approach to a component would be when trying to build a new construction: planning everything out super carefully, doing a bunch of ray casts to figure the optimal distances, etc. 
+
+Top level goal plan:
+1. Bootstrap some production. We try to build where we have the core resources of all types. We kept building miners and furnaces and repeat until we have lots of materials and we're covering these basic ore patches. 
+2. Build some basic defenses. We'll have little outposts with turrets fed by an assembler that makes ammo. Power everything with solar power for simplicity. 
+3. Build some more construction stuff, some assemblers to make more things we need. too tedious to craft everything by hand. 
+4. Establish some science. We're going to have our own science chain and tech tree so let's build some labs and feed them with some assemblers. 
+5. Grab more resources from ore deposits further away. We'll set up some miners there and then have the ore all going along a conveyor belt back to our base and process it with furnaces there. 
+6. Start to go on the attack. We're going to research some custom artillery, which has much less range than the normal artillery but more than turrets. Then we're going to start building those units and we're going to set up some assemblers to build shells for it. Then what we're going to start doing is spreading out from our base with conveyor belts to carry those artillery. When we get near anything placed by the player, we set out a range and we put down the artillery and defend with a couple of turrets. Then we connect it to the belt and we start shelling the player. Maybe we search with pollution or just directly or randomly. The key is we do have to go on the offensive because if we don't then a player can just ultimately ignore us and play their own game, which is not exciting. 

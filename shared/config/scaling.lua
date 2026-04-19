@@ -215,7 +215,7 @@ return {
       display_name = "Connect solar factory steel input",
       pursue_proactively = true,
       unlock = {
-        required_completed_milestones = {"solar-panel-factory-copper-solar-input"}
+        required_completed_milestones = {"solar-panel-factory-copper-cable-input"}
       },
       required_items = {
         {name = "transport-belt", count = 96},

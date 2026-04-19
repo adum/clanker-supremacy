@@ -264,7 +264,7 @@ function production.register_output_belt_site(task, output_machine, output_inser
   return production_sites[#production_sites]
 end
 
-function production.register_assembly_block_site(task, anchor_entity, root_assembler, placed_layout_entities, ctx)
+function production.register_assembly_block_site(task, anchor_entity, root_assembler, placed_layout_entities, route_input_placement_specs_by_id, ctx)
   if not (task and anchor_entity and anchor_entity.valid and root_assembler and root_assembler.valid) then
     return nil
   end
@@ -312,6 +312,7 @@ function production.register_assembly_block_site(task, anchor_entity, root_assem
       site.belt_entities = belts
       site.route_local_belts_by_id = route_local_belts_by_id
       site.route_input_inserters_by_id = route_input_inserters_by_id
+      site.route_input_placement_specs_by_id = route_input_placement_specs_by_id or {}
       site.route_connections_by_id = site.route_connections_by_id or {}
       site.source_route_belts_by_id = site.source_route_belts_by_id or {}
       site.route_specs_by_id = {}
@@ -334,6 +335,7 @@ function production.register_assembly_block_site(task, anchor_entity, root_assem
     belt_entities = belts,
     route_local_belts_by_id = route_local_belts_by_id,
     route_input_inserters_by_id = route_input_inserters_by_id,
+    route_input_placement_specs_by_id = route_input_placement_specs_by_id or {},
     route_connections_by_id = {},
     source_route_belts_by_id = {},
     route_specs_by_id = {}
@@ -343,11 +345,13 @@ function production.register_assembly_block_site(task, anchor_entity, root_assem
     production_sites[#production_sites].route_specs_by_id[route_spec.id] = route_spec
   end
 
-  ctx.debug_log(
-    "task " .. (task.id or "assembly-block") ..
-    ": registered assembly block at " .. ctx.format_position(root_assembler.position) ..
-    " anchored to " .. anchor_entity.name .. " at " .. ctx.format_position(anchor_entity.position)
-  )
+  if ctx and ctx.debug_log and ctx.format_position then
+    ctx.debug_log(
+      "task " .. (task.id or "assembly-block") ..
+      ": registered assembly block at " .. ctx.format_position(root_assembler.position) ..
+      " anchored to " .. anchor_entity.name .. " at " .. ctx.format_position(anchor_entity.position)
+    )
+  end
 
   return production_sites[#production_sites]
 end

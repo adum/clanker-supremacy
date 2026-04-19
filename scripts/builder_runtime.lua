@@ -2707,7 +2707,8 @@ local function setup_manual_test(spec)
     suppress_player_autospawn = spec.suppress_player_autospawn ~= false,
     forbid_direct_turret_ammo_transfer = spec.forbid_direct_turret_ammo_transfer == true,
     disable_nearby_machine_output_collection = spec.disable_nearby_machine_output_collection == true,
-    disable_nearby_machine_input_supply = spec.disable_nearby_machine_input_supply == true
+    disable_nearby_machine_input_supply = spec.disable_nearby_machine_input_supply == true,
+    pause_builder_on_manual_goal_complete = spec.pause_builder_on_manual_goal_complete == true
   }
 
   if spec.assertion then
@@ -4454,6 +4455,7 @@ local function setup_solar_panel_factory_test_case()
     surface_name = surface.name,
     suppress_player_autospawn = true,
     disable_nearby_machine_output_collection = true,
+    pause_builder_on_manual_goal_complete = true,
     inventory = {
       {name = "assembling-machine-1", count = 3},
       {name = "burner-inserter", count = 6},
@@ -4468,6 +4470,7 @@ local function setup_solar_panel_factory_test_case()
       area = area,
       deadline_offset_ticks = 28800,
       primary_entity_name = "assembling-machine-1",
+      debug_all_transport_belts = true,
       expected_counts = {
         ["assembling-machine-1"] = 3,
         ["burner-inserter"] = 10,
@@ -6255,8 +6258,39 @@ local function steel_chain_geometry_passed(assertion)
   return true
 end
 
-local function get_test_entity_debug_details(surface, force, area)
+local function get_test_entity_debug_details(surface, force, area, assertion)
   local details = {}
+
+  local function format_entity_debug_ref(entity)
+    if not (entity and entity.valid) then
+      return "nil"
+    end
+
+    return entity.name .. "@" .. format_position(entity.position)
+  end
+
+  local function get_entity_belt_neighbor_details(entity)
+    local ok, belt_neighbours = pcall(function()
+      return entity.belt_neighbours
+    end)
+    if not ok or type(belt_neighbours) ~= "table" then
+      return "inputs=[] outputs=[]"
+    end
+
+    local function format_neighbour_list(neighbours)
+      local refs = {}
+      for _, neighbour in ipairs(neighbours or {}) do
+        refs[#refs + 1] = format_entity_debug_ref(neighbour)
+      end
+      return "[" .. table.concat(refs, ",") .. "]"
+    end
+
+    return string.format(
+      "inputs=%s outputs=%s",
+      format_neighbour_list(belt_neighbours.inputs),
+      format_neighbour_list(belt_neighbours.outputs)
+    )
+  end
 
   for _, assembler in ipairs(surface.find_entities_filtered{
     area = area,
@@ -6294,7 +6328,17 @@ local function get_test_entity_debug_details(surface, force, area)
     local iron_count = (line1_contents["iron-plate"] or 0) + (line2_contents["iron-plate"] or 0)
     local copper_count = (line1_contents["copper-plate"] or 0) + (line2_contents["copper-plate"] or 0)
     local steel_count = (line1_contents["steel-plate"] or 0) + (line2_contents["steel-plate"] or 0)
-    if iron_count > 0 or copper_count > 0 or steel_count > 0 then
+    if assertion and assertion.debug_all_transport_belts then
+      details[#details + 1] = string.format(
+        "belt(pos=%s dir=%s iron=%d copper=%d steel=%d %s)",
+        format_position(belt.position),
+        tostring(belt.direction),
+        iron_count,
+        copper_count,
+        steel_count,
+        get_entity_belt_neighbor_details(belt)
+      )
+    elseif iron_count > 0 or copper_count > 0 or steel_count > 0 then
       details[#details + 1] = string.format(
         "belt(pos=%s dir=%s iron=%d copper=%d steel=%d)",
         format_position(belt.position),
@@ -6304,6 +6348,36 @@ local function get_test_entity_debug_details(surface, force, area)
         steel_count
       )
     end
+  end
+
+  for _, splitter in ipairs(surface.find_entities_filtered{
+    area = area,
+    force = force,
+    name = "splitter"
+  }) do
+    local total_iron = 0
+    local total_copper = 0
+    local total_steel = 0
+    local max_line_index = splitter.get_max_transport_line_index and splitter.get_max_transport_line_index() or 0
+    for line_index = 1, max_line_index do
+      local line = splitter.get_transport_line and splitter.get_transport_line(line_index) or nil
+      if line and line.get_contents then
+        local contents = line.get_contents()
+        total_iron = total_iron + (contents["iron-plate"] or 0)
+        total_copper = total_copper + (contents["copper-plate"] or 0)
+        total_steel = total_steel + (contents["steel-plate"] or 0)
+      end
+    end
+
+    details[#details + 1] = string.format(
+      "splitter(pos=%s dir=%s iron=%d copper=%d steel=%d %s)",
+      format_position(splitter.position),
+      tostring(splitter.direction),
+      total_iron,
+      total_copper,
+      total_steel,
+      get_entity_belt_neighbor_details(splitter)
+    )
   end
 
   for _, inserter in ipairs(surface.find_entities_filtered{
@@ -6561,7 +6635,7 @@ local function format_test_failure_summary(surface, force, assertion)
     parts[#parts + 1] = "steel-chain-geometry=" .. tostring(steel_chain_geometry_passed(assertion))
   end
 
-  for _, detail in ipairs(get_test_entity_debug_details(surface, force, area)) do
+  for _, detail in ipairs(get_test_entity_debug_details(surface, force, area, assertion)) do
     parts[#parts + 1] = detail
   end
 
@@ -6977,6 +7051,10 @@ local function complete_current_task(builder_state, task, completion_message)
     else
       debug_log("manual goal " .. (request.display_name or request.component_name or "request") .. ": complete")
       builder_state.manual_goal_request = nil
+      local active_test_state = get_test_state()
+      if active_test_state and active_test_state.pause_builder_on_manual_goal_complete then
+        builder_runtime.pause_builder(builder_state, tick, "test-manual-goal-complete")
+      end
     end
     return
   end
@@ -7106,13 +7184,21 @@ find_output_belt_line_site = function(builder_state, task)
   return world_model.find_output_belt_line_site(builder_state, task, world_model_context)
 end
 
-register_assembly_block_site = function(task, anchor_entity, root_assembler, placed_layout_entities)
+register_assembly_block_site = function(
+  task,
+  anchor_entity,
+  root_assembler,
+  placed_layout_entities,
+  route_input_placement_specs_by_id,
+  ctx_override
+)
   return world_model.register_assembly_block_site(
     task,
     anchor_entity,
     root_assembler,
     placed_layout_entities,
-    world_model_context
+    route_input_placement_specs_by_id,
+    ctx_override or world_model_context
   )
 end
 

@@ -377,6 +377,25 @@ local function can_place_entity_with_ground_item_clearance(surface, force, entit
   return false
 end
 
+local function find_reusable_layout_entity(surface, force, placement)
+  if not (surface and force and placement and placement.entity_name and placement.build_position) then
+    return nil
+  end
+
+  for _, entity in ipairs(surface.find_entities_filtered{
+    position = placement.build_position,
+    radius = 0.15,
+    name = placement.entity_name,
+    force = force
+  }) do
+    if entity and entity.valid and (placement.build_direction == nil or entity.direction == placement.build_direction) then
+      return entity
+    end
+  end
+
+  return nil
+end
+
 local function reserve_placement_item(builder_entity, task, item_name, position, ctx)
   if not (task and task.consume_items_on_place) then
     return true, 0
@@ -692,7 +711,14 @@ function action_build.finish_place_layout_near_machine_task(builder_state, task,
       return
     end
 
-    ctx.register_assembly_block_site(task, anchor_entity, root_assembler, valid_entities)
+    ctx.register_assembly_block_site(
+      task,
+      anchor_entity,
+      root_assembler,
+      valid_entities,
+      task_state.route_input_placement_specs_by_id,
+      ctx
+    )
 
     ctx.complete_current_task(
       builder_state,
@@ -1645,6 +1671,35 @@ function action_build.place_layout_near_machine(builder_state, task, tick, ctx, 
   local placement = task_state.layout_placements and task_state.layout_placements[task_state.layout_index]
   if not placement then
     task_state.phase = "build-complete"
+    return
+  end
+
+  local reusable_entity = find_reusable_layout_entity(surface, entity.force, placement)
+  if reusable_entity then
+    ctx.insert_entity_fuel(reusable_entity, placement.fuel)
+
+    task_state.placed_layout_entities[#task_state.placed_layout_entities + 1] = {
+      id = placement.id,
+      site_role = placement.site_role,
+      route_id = placement.route_id,
+      entity = reusable_entity
+    }
+
+    ctx.debug_log(
+      "task " .. task.id .. ": reused existing " .. placement.entity_name ..
+      " at " .. ctx.format_position(reusable_entity.position) ..
+      (placement.site_role and " as " .. placement.site_role or "")
+    )
+
+    task_state.layout_index = task_state.layout_index + 1
+    begin_post_place_pause(
+      builder_state,
+      task,
+      tick,
+      task_state.layout_index > #(task_state.layout_placements or {}) and "build-complete" or "building",
+      reusable_entity,
+      ctx
+    )
     return
   end
 

@@ -2862,6 +2862,89 @@ local function get_position_key(position)
   return string.format("%.2f:%.2f", position.x, position.y)
 end
 
+local function get_splitter_lane_positions(position, direction, ctx)
+  if not (position and direction and ctx and ctx.direction_by_name) then
+    return {}
+  end
+
+  if direction == ctx.direction_by_name.east or direction == ctx.direction_by_name.west then
+    return {
+      {x = position.x, y = position.y - 0.5},
+      {x = position.x, y = position.y + 0.5}
+    }
+  end
+
+  if direction == ctx.direction_by_name.north or direction == ctx.direction_by_name.south then
+    return {
+      {x = position.x - 0.5, y = position.y},
+      {x = position.x + 0.5, y = position.y}
+    }
+  end
+
+  return {}
+end
+
+local function reserve_route_positions_for_placement(reserved_position_keys, placement, ctx)
+  if not (reserved_position_keys and placement and placement.build_position) then
+    return
+  end
+
+  reserved_position_keys[get_position_key(placement.build_position)] = true
+
+  if placement.entity_name == "splitter" then
+    for _, lane_position in ipairs(get_splitter_lane_positions(placement.build_position, placement.build_direction, ctx)) do
+      reserved_position_keys[get_position_key(lane_position)] = true
+    end
+  end
+end
+
+local function find_matching_entity_at_position(surface, force, entity_name, position, direction)
+  local entity = entity_refs.find_entity_at_position(surface, force, entity_name, position, 0.15)
+  if entity and entity.valid and (direction == nil or entity.direction == direction) then
+    return entity
+  end
+
+  return nil
+end
+
+local function can_place_or_reuse_existing_entity(surface, force, entity_name, position, direction)
+  local placement = {
+    name = entity_name,
+    position = position,
+    force = force
+  }
+
+  if direction ~= nil then
+    placement.direction = direction
+  end
+
+  if surface.can_place_entity(placement) then
+    return true
+  end
+
+  return find_matching_entity_at_position(surface, force, entity_name, position, direction) ~= nil
+end
+
+local function collect_reusable_belt_entities_by_key(surface, force, belt_entity_name, first_position, terminal_position, search_margin)
+  local margin = search_margin or 10
+  local reusable_belts_by_key = {}
+
+  for _, belt_entity in ipairs(surface.find_entities_filtered{
+    area = {
+      {math.min(first_position.x, terminal_position.x) - margin, math.min(first_position.y, terminal_position.y) - margin},
+      {math.max(first_position.x, terminal_position.x) + margin, math.max(first_position.y, terminal_position.y) + margin}
+    },
+    force = force,
+    name = belt_entity_name
+  }) do
+    if belt_entity and belt_entity.valid then
+      reusable_belts_by_key[get_position_key(belt_entity.position)] = belt_entity
+    end
+  end
+
+  return reusable_belts_by_key
+end
+
 local function get_direction_vector_from_direction(direction, ctx)
   if direction == ctx.direction_by_name.north then
     return {x = 0, y = -1}
@@ -3205,12 +3288,14 @@ local function build_source_route_entry_options(surface, force, terminal_belt, r
         y = terminal_belt.position.y + start_direction_vector.y + (lateral_vector.y * splitter_offset_sign)
       }
 
-      if surface.can_place_entity{
-        name = splitter_spec.entity_name,
-        position = splitter_position,
-        direction = terminal_belt.direction,
-        force = force
-      } then
+      if can_place_or_reuse_existing_entity(
+          surface,
+          force,
+          splitter_spec.entity_name,
+          splitter_position,
+          terminal_belt.direction
+        )
+      then
         local splitter_overlaps_resources = task.forbid_resource_overlap and
           candidate_entity_overlaps_resources(surface, force, splitter_spec.entity_name, splitter_position, terminal_belt.direction)
 
@@ -3218,33 +3303,62 @@ local function build_source_route_entry_options(surface, force, terminal_belt, r
           summary.resource_overlap_rejections = (summary.resource_overlap_rejections or 0) + 1
         else
           local belt_offset_sign = -splitter_offset_sign
+          local connector_belt_position = {
+            x = splitter_position.x + start_direction_vector.x + (lateral_vector.x * belt_offset_sign),
+            y = splitter_position.y + start_direction_vector.y + (lateral_vector.y * belt_offset_sign)
+          }
           local path_start_position = {
-            x = splitter_position.x + (start_direction_vector.x * 2) + (lateral_vector.x * belt_offset_sign),
-            y = splitter_position.y + (start_direction_vector.y * 2) + (lateral_vector.y * belt_offset_sign)
+            x = connector_belt_position.x + start_direction_vector.x,
+            y = connector_belt_position.y + start_direction_vector.y
           }
           local entry_key = string.format(
-            "%.2f:%.2f",
+            "%.2f:%.2f:%.2f:%.2f",
+            connector_belt_position.x,
+            connector_belt_position.y,
             path_start_position.x,
             path_start_position.y
           )
 
           if not seen_splitter_entries[entry_key] and
-            surface.can_place_entity{
-              name = task.belt_entity_name,
-              position = path_start_position,
-              direction = terminal_belt.direction,
-              force = force
-            }
+            can_place_or_reuse_existing_entity(
+              surface,
+              force,
+              task.belt_entity_name,
+              connector_belt_position,
+              terminal_belt.direction
+            ) and
+            can_place_or_reuse_existing_entity(
+              surface,
+              force,
+              task.belt_entity_name,
+              path_start_position,
+              terminal_belt.direction
+            )
           then
-            local belt_overlaps_resources = task.forbid_resource_overlap and
-              candidate_entity_overlaps_resources(surface, force, task.belt_entity_name, path_start_position, terminal_belt.direction)
+            local connector_belt_overlaps_resources = task.forbid_resource_overlap and
+              candidate_entity_overlaps_resources(
+                surface,
+                force,
+                task.belt_entity_name,
+                connector_belt_position,
+                terminal_belt.direction
+              )
+            local path_start_overlaps_resources = task.forbid_resource_overlap and
+              candidate_entity_overlaps_resources(
+                surface,
+                force,
+                task.belt_entity_name,
+                path_start_position,
+                terminal_belt.direction
+              )
 
-            if belt_overlaps_resources then
+            if connector_belt_overlaps_resources or path_start_overlaps_resources then
               summary.resource_overlap_rejections = (summary.resource_overlap_rejections or 0) + 1
             else
               seen_splitter_entries[entry_key] = true
               splitter_candidates[#splitter_candidates + 1] = {
                 splitter_position = splitter_position,
+                connector_belt_position = connector_belt_position,
                 path_start_position = path_start_position
               }
             end
@@ -3266,12 +3380,19 @@ local function build_source_route_entry_options(surface, force, terminal_belt, r
     for _, candidate in ipairs(splitter_candidates) do
       options[#options + 1] = {
         path_start_position = ctx.clone_position(candidate.path_start_position),
+        forward_direction_vector = ctx.clone_position(start_direction_vector),
         prefix_placements = {{
           entity_name = splitter_spec.entity_name,
           item_name = splitter_spec.item_name or splitter_spec.entity_name,
           build_position = ctx.clone_position(candidate.splitter_position),
           build_direction = terminal_belt.direction,
           site_role = "assembly-source-splitter"
+        }, {
+          entity_name = task.belt_entity_name,
+          item_name = task.belt_item_name or task.belt_entity_name,
+          build_position = ctx.clone_position(candidate.connector_belt_position),
+          build_direction = terminal_belt.direction,
+          site_role = "assembly-source-belt"
         }}
       }
     end
@@ -3287,6 +3408,7 @@ local function build_source_route_entry_options(surface, force, terminal_belt, r
           x = terminal_belt.position.x + (start_direction_vector.x * 2),
           y = terminal_belt.position.y + (start_direction_vector.y * 2)
         },
+        forward_direction_vector = ctx.clone_position(start_direction_vector),
         prefix_placements = {{
           entity_name = task.belt_entity_name,
           item_name = task.belt_item_name or task.belt_entity_name,
@@ -3330,17 +3452,22 @@ local function build_source_route_entry_options(surface, force, terminal_belt, r
     local pickup_direction_name = get_direction_name_from_delta(-step.x, -step.y)
     local pickup_direction = pickup_direction_name and ctx.direction_by_name[pickup_direction_name] or nil
 
-    if pickup_direction and surface.can_place_entity{
-      name = extractor_spec.entity_name,
-      position = inserter_position,
-      direction = pickup_direction,
-      force = force
-    } and surface.can_place_entity{
-      name = task.belt_entity_name,
-      position = drop_belt_position,
-      direction = ctx.direction_by_name.east,
-      force = force
-    } then
+    if pickup_direction and
+      can_place_or_reuse_existing_entity(
+        surface,
+        force,
+        extractor_spec.entity_name,
+        inserter_position,
+        pickup_direction
+      ) and
+      can_place_or_reuse_existing_entity(
+        surface,
+        force,
+        task.belt_entity_name,
+        drop_belt_position,
+        ctx.direction_by_name.east
+      )
+    then
       local resource_overlap = false
       if task.forbid_resource_overlap then
         resource_overlap =
@@ -3351,7 +3478,21 @@ local function build_source_route_entry_options(surface, force, terminal_belt, r
       if resource_overlap then
         summary.resource_overlap_rejections = (summary.resource_overlap_rejections or 0) + 1
       else
-        local probe_belt = surface.create_entity{
+        local reusable_probe_belt = find_matching_entity_at_position(
+          surface,
+          force,
+          task.belt_entity_name,
+          drop_belt_position,
+          ctx.direction_by_name.east
+        )
+        local reusable_probe_inserter = find_matching_entity_at_position(
+          surface,
+          force,
+          extractor_spec.entity_name,
+          inserter_position,
+          pickup_direction
+        )
+        local probe_belt = reusable_probe_belt or surface.create_entity{
           name = task.belt_entity_name,
           position = drop_belt_position,
           direction = ctx.direction_by_name.east,
@@ -3359,14 +3500,14 @@ local function build_source_route_entry_options(surface, force, terminal_belt, r
           create_build_effect_smoke = false,
           raise_built = false
         }
-        local probe_inserter = probe_belt and surface.create_entity{
+        local probe_inserter = probe_belt and (reusable_probe_inserter or surface.create_entity{
           name = extractor_spec.entity_name,
           position = inserter_position,
           direction = pickup_direction,
           force = force,
           create_build_effect_smoke = false,
           raise_built = false
-        } or nil
+        }) or nil
 
         local geometry_ok =
           probe_belt and probe_belt.valid and
@@ -3374,16 +3515,17 @@ local function build_source_route_entry_options(surface, force, terminal_belt, r
           entity_contains_point(terminal_belt, probe_inserter.pickup_position, ctx) and
           entity_contains_point(probe_belt, probe_inserter.drop_position, ctx)
 
-        if probe_inserter and probe_inserter.valid then
+        if probe_inserter and probe_inserter.valid and probe_inserter ~= reusable_probe_inserter then
           probe_inserter.destroy()
         end
-        if probe_belt and probe_belt.valid then
+        if probe_belt and probe_belt.valid and probe_belt ~= reusable_probe_belt then
           probe_belt.destroy()
         end
 
         if geometry_ok then
           options[#options + 1] = {
             path_start_position = ctx.clone_position(drop_belt_position),
+            forward_direction_vector = ctx.clone_position(step),
             suffix_placements = {{
               entity_name = extractor_spec.entity_name,
               item_name = extractor_spec.item_name or extractor_spec.entity_name,
@@ -3405,10 +3547,48 @@ local function build_source_route_entry_options(surface, force, terminal_belt, r
   return options
 end
 
-local function build_belt_path_placements_between_positions(surface, force, first_position, terminal_position, task, summary, reusable_belt_entities_by_key, ctx)
-  local function is_walkable_position(position)
+local function build_belt_path_placements_between_positions(surface, force, first_position, terminal_position, task, summary, reusable_belt_entities_by_key, reserved_position_keys, forward_direction_vector, ctx)
+  local function get_reusable_belt_at_position(position)
     local position_key = get_position_key(position)
-    local reusable_belt = reusable_belt_entities_by_key and reusable_belt_entities_by_key[position_key] or nil
+    return reusable_belt_entities_by_key and reusable_belt_entities_by_key[position_key] or nil
+  end
+
+  local function position_is_reserved(position)
+    local position_key = get_position_key(position)
+    return reserved_position_keys and reserved_position_keys[position_key] == true
+  end
+
+  local function can_expand_along_step(current_position, next_position, next_is_goal)
+    local direction_name = get_direction_name_from_delta(
+      next_position.x - current_position.x,
+      next_position.y - current_position.y
+    )
+    local direction = direction_name and ctx.direction_by_name[direction_name] or nil
+    if not direction then
+      return false
+    end
+
+    local current_reusable_belt = get_reusable_belt_at_position(current_position)
+    if current_reusable_belt and current_reusable_belt.valid and current_reusable_belt.direction ~= direction then
+      return false
+    end
+
+    if next_is_goal then
+      local next_reusable_belt = get_reusable_belt_at_position(next_position)
+      if next_reusable_belt and next_reusable_belt.valid and next_reusable_belt.direction ~= direction then
+        return false
+      end
+    end
+
+    return true
+  end
+
+  local function is_walkable_position(position)
+    if position_is_reserved(position) then
+      return false
+    end
+
+    local reusable_belt = get_reusable_belt_at_position(position)
     if reusable_belt and reusable_belt.valid then
       return true
     end
@@ -3469,10 +3649,30 @@ local function build_belt_path_placements_between_positions(surface, force, firs
       end
       seen_positions[position_key] = true
 
-      local reusable_belt = reusable_belt_entities_by_key and reusable_belt_entities_by_key[position_key] or nil
+      if reserved_position_keys and reserved_position_keys[position_key] then
+        if (summary.failed_source_routes or 0) < 5 then
+          ctx.debug_log(
+            "assembly route reserved tile at " .. ctx.format_position(position) ..
+            " for path " .. ctx.format_position(first_position) .. " -> " .. ctx.format_position(terminal_position) ..
+            " via " .. axis_label
+          )
+        end
+        return nil
+      end
+
+      local reusable_belt = get_reusable_belt_at_position(position)
       if reusable_belt and reusable_belt.valid then
-        if position_key ~= get_position_key(terminal_position) and reusable_belt.direction == direction then
+        if reusable_belt.direction == direction then
           goto continue_position
+        end
+        if (summary.failed_source_routes or 0) < 5 then
+          ctx.debug_log(
+            "assembly route reusable belt mismatch at " .. ctx.format_position(position) ..
+            " existing=" .. tostring(reusable_belt.direction) ..
+            " needed=" .. tostring(direction) ..
+            " for path " .. ctx.format_position(first_position) .. " -> " .. ctx.format_position(terminal_position) ..
+            " via " .. axis_label
+          )
         end
         return nil
       end
@@ -3594,11 +3794,16 @@ local function build_belt_path_placements_between_positions(surface, force, firs
         y = current.y + step.y
       }
       local next_key = get_position_key(next_position)
+      local next_is_goal = next_key == goal_key
 
       if not visited[next_key] and in_bounds(next_position) then
+        if not can_expand_along_step(current, next_position, next_is_goal) then
+          goto continue_step
+        end
+
         visited[next_key] = true
 
-        if next_key == goal_key then
+        if next_is_goal then
           parents[next_key] = get_position_key(current)
           queue[#queue + 1] = next_position
         else
@@ -3608,6 +3813,8 @@ local function build_belt_path_placements_between_positions(surface, force, firs
           end
         end
       end
+
+      ::continue_step::
     end
   end
 
@@ -3906,6 +4113,8 @@ local function build_assembly_block_candidate(surface, force, build_position, or
   local probe_entities = {}
   local probe_entities_by_id = {}
   local route_belt_entities = {}
+  local deferred_route_input_placements_by_id = {}
+  local route_input_probe_entities_by_id = {}
   local local_pole_by_id = {}
 
   local function destroy_probes()
@@ -4016,10 +4225,16 @@ local function build_assembly_block_candidate(surface, force, build_position, or
         route_id = route_spec.id
       }
 
-      if not add_probe(placement) then
+      local probe_entity = try_probe_layout_entity(surface, force, placement, task, summary, ctx)
+      if not probe_entity then
         destroy_probes()
         return nil
       end
+
+      probe_entities[#probe_entities + 1] = probe_entity
+      route_input_probe_entities_by_id[inserter_spec.id] = probe_entity
+      deferred_route_input_placements_by_id[route_spec.id] = deferred_route_input_placements_by_id[route_spec.id] or {}
+      deferred_route_input_placements_by_id[route_spec.id][#deferred_route_input_placements_by_id[route_spec.id] + 1] = placement
     end
   end
 
@@ -4074,7 +4289,7 @@ local function build_assembly_block_candidate(surface, force, build_position, or
 
   for _, route_spec in ipairs(assembly_target.raw_input_routes or {}) do
     for _, inserter_spec in ipairs(route_spec.input_inserters or {}) do
-      local probe_inserter = probe_entities_by_id[inserter_spec.id]
+      local probe_inserter = route_input_probe_entities_by_id[inserter_spec.id]
       local target_node = probe_entities_by_id[inserter_spec.target_node_id]
       local source_belts = route_belt_entities[route_spec.id]
       if not (probe_inserter and target_node) or
@@ -4157,7 +4372,9 @@ local function build_assembly_block_candidate(surface, force, build_position, or
     anchor_entity = anchor_entity,
     power_anchor_pole = power_anchor_pole,
     build_position = ctx.clone_position(build_position),
-    placements = placements
+    orientation = orientation,
+    placements = placements,
+    route_input_placement_specs_by_id = deferred_route_input_placements_by_id
   }
 end
 
@@ -4260,21 +4477,24 @@ function queries.find_assembly_input_route_site(builder_state, task, ctx)
             for _, source_site in ipairs(production_sites) do
               if source_site.site_type == "smelting-output-belt" and get_site_output_item_name(source_site) == route_spec.item_name then
                 local source_site_key = get_production_site_identity_key(source_site)
-                if not used_source_site_keys[source_site_key] then
-                  for _, route_start in ipairs(get_output_belt_connection_positions(source_site, ctx)) do
-                    source_candidates[#source_candidates + 1] = {
-                      site = source_site,
-                      source_site_key = source_site_key,
-                      route_start_position = route_start.position,
-                      source_terminal_belt = route_start.terminal_belt,
-                      distance = ctx.square_distance(route_start.position, route_target_position)
-                    }
-                  end
+                for _, route_start in ipairs(get_output_belt_connection_positions(source_site, ctx)) do
+                  source_candidates[#source_candidates + 1] = {
+                    site = source_site,
+                    source_site_key = source_site_key,
+                    route_start_position = route_start.position,
+                    source_terminal_belt = route_start.terminal_belt,
+                    distance = ctx.square_distance(route_start.position, route_target_position),
+                    already_used_for_route = used_source_site_keys[source_site_key] == true
+                  }
                 end
               end
             end
 
             table.sort(source_candidates, function(left, right)
+              if left.already_used_for_route ~= right.already_used_for_route then
+                return not left.already_used_for_route
+              end
+
               return left.distance < right.distance
             end)
 
@@ -4291,7 +4511,19 @@ function queries.find_assembly_input_route_site(builder_state, task, ctx)
                 ctx
               )
 
-              for _, source_entry in ipairs(source_entry_options) do
+            for _, source_entry in ipairs(source_entry_options) do
+                local reserved_route_position_keys = {}
+                for _, reserved_input_placements in pairs(assembly_site.route_input_placement_specs_by_id or {}) do
+                  for _, reserved_input_placement in ipairs(reserved_input_placements or {}) do
+                    reserve_route_positions_for_placement(reserved_route_position_keys, reserved_input_placement, ctx)
+                  end
+                end
+                for _, reserved_prefix_placement in ipairs(source_entry.prefix_placements or {}) do
+                  reserve_route_positions_for_placement(reserved_route_position_keys, reserved_prefix_placement, ctx)
+                end
+                for _, reserved_suffix_placement in ipairs(source_entry.suffix_placements or {}) do
+                  reserve_route_positions_for_placement(reserved_route_position_keys, reserved_suffix_placement, ctx)
+                end
                 local route_placements = build_belt_path_placements_between_positions(
                   builder.surface,
                   builder.force,
@@ -4300,45 +4532,95 @@ function queries.find_assembly_input_route_site(builder_state, task, ctx)
                   task,
                   summary,
                   nil,
+                  reserved_route_position_keys,
+                  source_entry.forward_direction_vector,
                   ctx
                 )
 
-                if route_placements and #route_placements > 0 then
-                  for _, prefix_placement in ipairs(source_entry.prefix_placements or {}) do
-                    table.insert(route_placements, 1, prefix_placement)
+                if route_placements then
+                  for prefix_index = #(source_entry.prefix_placements or {}), 1, -1 do
+                    table.insert(route_placements, 1, source_entry.prefix_placements[prefix_index])
                   end
                   for _, suffix_placement in ipairs(source_entry.suffix_placements or {}) do
                     route_placements[#route_placements + 1] = suffix_placement
                   end
 
-                  local last_route_placement = route_placements[#route_placements]
-                  if last_route_placement.site_role == "assembly-source-inserter" and #route_placements > 1 then
-                    last_route_placement = route_placements[#route_placements - 1]
-                  end
-                  local direction_name = get_direction_name_from_delta(
-                    local_connection_entity.position.x - last_route_placement.build_position.x,
-                    local_connection_entity.position.y - last_route_placement.build_position.y
-                  )
-                  if direction_name then
-                    last_route_placement.build_direction = ctx.direction_by_name[direction_name]
+                  for _, deferred_input_placement in ipairs(
+                    (assembly_site.route_input_placement_specs_by_id and
+                      assembly_site.route_input_placement_specs_by_id[task.route_id]) or {}
+                  ) do
+                    route_placements[#route_placements + 1] = {
+                      id = deferred_input_placement.id,
+                      site_role = deferred_input_placement.site_role,
+                      entity_name = deferred_input_placement.entity_name,
+                      item_name = deferred_input_placement.item_name,
+                      build_position = ctx.clone_position(deferred_input_placement.build_position),
+                      build_direction = deferred_input_placement.build_direction,
+                      fuel = deferred_input_placement.fuel,
+                      target_node_id = deferred_input_placement.target_node_id,
+                      route_id = deferred_input_placement.route_id
+                    }
                   end
 
-                  for placement_index, route_placement in ipairs(route_placements) do
-                    route_placement.id = task.route_id .. "-source-belt-" .. tostring(placement_index)
-                    route_placement.route_id = task.route_id
-                    route_placement.site_role = route_placement.site_role or "assembly-source-belt"
+                  local last_route_placement = nil
+                  for placement_index = #route_placements, 1, -1 do
+                    if route_placements[placement_index].entity_name == task.belt_entity_name then
+                      last_route_placement = route_placements[placement_index]
+                      break
+                    end
                   end
 
-                  return {
-                    assembly_site = assembly_site,
-                    anchor_entity = anchor_entity,
-                    build_position = ctx.clone_position(route_placements[1].build_position),
-                    placements = route_placements,
-                    route_id = task.route_id,
-                    route_spec = route_spec,
-                    source_site = candidate.site,
-                    summary = summary
-                  }, summary
+                  if #route_placements > 0 and last_route_placement then
+                    local direction_name = get_direction_name_from_delta(
+                      local_connection_entity.position.x - last_route_placement.build_position.x,
+                      local_connection_entity.position.y - last_route_placement.build_position.y
+                    )
+                    if direction_name then
+                      last_route_placement.build_direction = ctx.direction_by_name[direction_name]
+                    end
+                  end
+
+                  if #route_placements > 0 then
+                    local seen_route_position_keys = {}
+                    local has_duplicate_route_position = false
+
+                    for placement_index, route_placement in ipairs(route_placements) do
+                      local route_position_key = route_placement.build_position and
+                        get_position_key(route_placement.build_position) or nil
+                      if route_position_key then
+                        if seen_route_position_keys[route_position_key] then
+                          has_duplicate_route_position = true
+                          if (summary.failed_source_routes or 0) < 5 then
+                            ctx.debug_log(
+                              "assembly route duplicate combined placement at " ..
+                              ctx.format_position(route_placement.build_position) ..
+                              " for " .. tostring(task.route_id) ..
+                              " item=" .. tostring(route_spec.item_name)
+                            )
+                          end
+                          break
+                        end
+                        seen_route_position_keys[route_position_key] = true
+                      end
+
+                      route_placement.id = route_placement.id or (task.route_id .. "-source-belt-" .. tostring(placement_index))
+                      route_placement.route_id = task.route_id
+                      route_placement.site_role = route_placement.site_role or "assembly-source-belt"
+                    end
+
+                    if not has_duplicate_route_position then
+                      return {
+                        assembly_site = assembly_site,
+                        anchor_entity = anchor_entity,
+                        build_position = ctx.clone_position(route_placements[1].build_position),
+                        placements = route_placements,
+                        route_id = task.route_id,
+                        route_spec = route_spec,
+                        source_site = candidate.site,
+                        summary = summary
+                      }, summary
+                    end
+                  end
                 end
               end
             end
