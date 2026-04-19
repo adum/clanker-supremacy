@@ -290,6 +290,7 @@ run_case "steel_output_belt_counts_as_export_site" "setup_steel_output_belt_coun
 run_case "output_belt_abort_preserves_transport_belts" "setup_output_belt_abort_preserves_transport_belts_test_case" "34228"
 run_case "solar_panel_factory_physical_feed" "setup_solar_panel_factory_test_case" "34206" "" "600"
 run_case "solar_panel_factory_missing_sources_reports_blocker" "setup_solar_panel_factory_missing_sources_reports_blocker_test_case" "34215"
+run_case "solar_panel_factory_block_marks_scaling_milestone" "setup_solar_panel_factory_block_marks_scaling_milestone_test_case" "34238"
 run_case "scaling_collect_switches_site" "setup_scaling_collect_switches_site_test_case" "34205"
 run_case "scaling_stays_in_starter_core_until_solar_block" "setup_scaling_stays_in_starter_core_until_solar_block_test_case" "34236"
 run_case "assembler_output_collection_limits" "setup_assembler_output_collection_limits_test_case" "34209"

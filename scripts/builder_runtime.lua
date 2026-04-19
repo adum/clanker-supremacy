@@ -4534,6 +4534,66 @@ local function setup_solar_panel_factory_missing_sources_reports_blocker_test_ca
   }
 end
 
+local function setup_solar_panel_factory_block_marks_scaling_milestone_test_case()
+  local surface = game.surfaces["nauvis"] or game.surfaces[1]
+  if not surface then
+    error("enemy-builder test: nauvis surface is unavailable")
+  end
+
+  local anchor_position = {x = 0, y = 0}
+  local builder_position = {x = 0, y = -6}
+  local factory_center = {x = 18, y = 0}
+  local area = make_test_area(factory_center, 64, 56)
+
+  surface.always_day = true
+  clear_test_area(surface, area)
+
+  local result = setup_manual_test{
+    case_name = "solar_panel_factory_block_marks_scaling_milestone",
+    builder_position = builder_position,
+    component_name = "solar_panel_factory",
+    game_speed = 4,
+    surface_name = surface.name,
+    suppress_player_autospawn = true,
+    disable_nearby_machine_output_collection = true,
+    inventory = {
+      {name = "assembling-machine-1", count = 3},
+      {name = "burner-inserter", count = 6},
+      {name = "small-electric-pole", count = 8},
+      {name = "splitter", count = 4},
+      {name = "transport-belt", count = 128},
+      {name = "coal", count = 200}
+    },
+    mutate_request = function(request)
+      local block_task = request.tasks and request.tasks[1] or nil
+      if not block_task then
+        error("enemy-builder test: expected solar manual request to include a block task")
+      end
+
+      block_task.completed_scaling_milestone_name = "solar-panel-factory-block"
+    end,
+    assertion = {
+      case_name = "solar_panel_factory_block_marks_scaling_milestone",
+      surface_name = surface.name,
+      area = area,
+      deadline_offset_ticks = 14400,
+      skip_output_assertion = true,
+      minimum_counts = {
+        ["assembling-machine-1"] = 3
+      },
+      required_completed_scaling_milestones = {"solar-panel-factory-block"}
+    }
+  }
+
+  place_test_powered_firearm_anchor(surface, anchor_position)
+  place_test_plate_belt_source(surface, "iron-plate", {x = 8, y = -12})
+  place_test_plate_belt_source(surface, "copper-plate", {x = 8, y = -2})
+  place_test_plate_belt_source(surface, "copper-plate", {x = 8, y = 6})
+  place_test_plate_belt_source(surface, "steel-plate", {x = 8, y = 12})
+
+  return result
+end
+
 local function setup_scaling_collect_switches_site_test_case()
   local surface = game.surfaces["nauvis"] or game.surfaces[1]
   if not surface then
@@ -6497,6 +6557,12 @@ local function format_test_failure_summary(surface, force, assertion)
       "site-" .. pattern_name .. "=" .. tostring(resource_site_counts[pattern_name] or 0) .. "/" .. tostring(minimum_count)
   end
 
+  for _, milestone_name in ipairs(assertion.required_completed_scaling_milestones or {}) do
+    parts[#parts + 1] =
+      "milestone-" .. milestone_name .. "=" ..
+      tostring(builder_state and builder_state.completed_scaling_milestones and builder_state.completed_scaling_milestones[milestone_name] == true)
+  end
+
   if assertion.output_item_name and assertion.output_entity_names then
     parts[#parts + 1] =
       "output-" .. assertion.output_item_name .. "=" ..
@@ -6667,6 +6733,12 @@ local function test_assertion_passed(surface, force, assertion)
 
   for pattern_name, minimum_count in pairs(assertion.minimum_resource_site_counts or {}) do
     if (resource_site_counts[pattern_name] or 0) < minimum_count then
+      return false
+    end
+  end
+
+  for _, milestone_name in ipairs(assertion.required_completed_scaling_milestones or {}) do
+    if not (builder_state and builder_state.completed_scaling_milestones and builder_state.completed_scaling_milestones[milestone_name]) then
       return false
     end
   end
@@ -6983,6 +7055,8 @@ local test_remote_interface = {
     setup_output_belt_abort_preserves_transport_belts_test_case,
   setup_solar_panel_factory_test_case = setup_solar_panel_factory_test_case,
   setup_solar_panel_factory_missing_sources_reports_blocker_test_case = setup_solar_panel_factory_missing_sources_reports_blocker_test_case,
+  setup_solar_panel_factory_block_marks_scaling_milestone_test_case =
+    setup_solar_panel_factory_block_marks_scaling_milestone_test_case,
   setup_scaling_collect_switches_site_test_case = setup_scaling_collect_switches_site_test_case,
   setup_scaling_stays_in_starter_core_until_solar_block_test_case =
     setup_scaling_stays_in_starter_core_until_solar_block_test_case,

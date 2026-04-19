@@ -443,6 +443,7 @@ $allCases = @(
   [pscustomobject]@{ Name = "output_belt_abort_preserves_transport_belts"; RemoteSetupName = "setup_output_belt_abort_preserves_transport_belts_test_case"; ServerPort = 34228; RemoteSetupArg = $null },
   [pscustomobject]@{ Name = "solar_panel_factory_physical_feed"; RemoteSetupName = "setup_solar_panel_factory_test_case"; ServerPort = 34206; RemoteSetupArg = $null; TimeoutSecs = 600 },
   [pscustomobject]@{ Name = "solar_panel_factory_missing_sources_reports_blocker"; RemoteSetupName = "setup_solar_panel_factory_missing_sources_reports_blocker_test_case"; ServerPort = 34215; RemoteSetupArg = $null },
+  [pscustomobject]@{ Name = "solar_panel_factory_block_marks_scaling_milestone"; RemoteSetupName = "setup_solar_panel_factory_block_marks_scaling_milestone_test_case"; ServerPort = 34238; RemoteSetupArg = $null },
   [pscustomobject]@{ Name = "scaling_collect_switches_site"; RemoteSetupName = "setup_scaling_collect_switches_site_test_case"; ServerPort = 34205; RemoteSetupArg = $null },
   [pscustomobject]@{ Name = "scaling_stays_in_starter_core_until_solar_block"; RemoteSetupName = "setup_scaling_stays_in_starter_core_until_solar_block_test_case"; ServerPort = 34236; RemoteSetupArg = $null },
   [pscustomobject]@{ Name = "assembler_output_collection_limits"; RemoteSetupName = "setup_assembler_output_collection_limits_test_case"; ServerPort = 34209; RemoteSetupArg = $null },
