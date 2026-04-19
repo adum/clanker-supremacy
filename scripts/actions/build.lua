@@ -754,6 +754,11 @@ function action_build.finish_place_layout_near_machine_task(builder_state, task,
 
     ctx.register_assembly_input_route(task, assembly_site, task_state.route_id or task.route_id, belt_entities, task_state.source_site)
 
+    if task.completed_scaling_milestone_name then
+      ctx.builder_runtime.ensure_builder_state_fields(builder_state)
+      builder_state.completed_scaling_milestones[task.completed_scaling_milestone_name] = true
+    end
+
     ctx.complete_current_task(
       builder_state,
       task,

@@ -2564,8 +2564,30 @@ local function place_test_runtime_coal_outpost_site(surface, origin_position)
   }
 end
 
-local function place_test_plate_belt_source(surface, item_name, machine_position)
+local function place_test_plate_belt_source(surface, item_name, machine_position, options)
+  options = options or {}
   local force = ensure_builder_force()
+  local belt_direction_name = options.belt_direction_name or "east"
+  local belt_count = options.belt_count or 4
+  local direction_offsets = {
+    north = {x = 0, y = -1},
+    east = {x = 1, y = 0},
+    south = {x = 0, y = 1},
+    west = {x = -1, y = 0}
+  }
+  local opposite_direction_names = {
+    north = "south",
+    east = "west",
+    south = "north",
+    west = "east"
+  }
+  local belt_offset = direction_offsets[belt_direction_name]
+  local inserter_direction_name = opposite_direction_names[belt_direction_name]
+
+  if not (belt_offset and inserter_direction_name and direction_by_name[belt_direction_name] and direction_by_name[inserter_direction_name]) then
+    error("enemy-builder test: unsupported plate belt source direction '" .. tostring(belt_direction_name) .. "'")
+  end
+
   local furnace = surface.create_entity{
     name = "stone-furnace",
     position = machine_position,
@@ -2579,8 +2601,11 @@ local function place_test_plate_belt_source(surface, item_name, machine_position
 
   local inserter = surface.create_entity{
     name = "burner-inserter",
-    position = {x = machine_position.x + 1, y = machine_position.y},
-    direction = direction_by_name.west,
+    position = {
+      x = machine_position.x + belt_offset.x,
+      y = machine_position.y + belt_offset.y
+    },
+    direction = direction_by_name[inserter_direction_name],
     force = force,
     create_build_effect_smoke = false
   }
@@ -2591,11 +2616,14 @@ local function place_test_plate_belt_source(surface, item_name, machine_position
   end
 
   local belts = {}
-  for offset = 2, 5 do
+  for offset = 2, belt_count + 1 do
     local belt = surface.create_entity{
       name = "transport-belt",
-      position = {x = machine_position.x + offset, y = machine_position.y},
-      direction = direction_by_name.east,
+      position = {
+        x = machine_position.x + (belt_offset.x * offset),
+        y = machine_position.y + (belt_offset.y * offset)
+      },
+      direction = direction_by_name[belt_direction_name],
       force = force,
       create_build_effect_smoke = false
     }
@@ -2618,7 +2646,7 @@ local function place_test_plate_belt_source(surface, item_name, machine_position
   output_inventory.insert{name = item_name, count = 120}
   register_output_belt_site(
     {
-      id = "test-" .. item_name .. "-export",
+      id = options.site_id or ("test-" .. item_name .. "-export"),
       output_item_name = item_name
     },
     furnace,
@@ -2632,6 +2660,60 @@ local function place_test_plate_belt_source(surface, item_name, machine_position
     inserter = inserter,
     belts = belts
   }
+end
+
+function build_default_solar_test_sources()
+  return {
+    {
+      item_name = "iron-plate",
+      machine_position = {x = 8, y = -12}
+    },
+    {
+      item_name = "copper-plate",
+      machine_position = {x = 8, y = -2}
+    },
+    {
+      item_name = "copper-plate",
+      machine_position = {x = 8, y = 6}
+    },
+    {
+      item_name = "steel-plate",
+      machine_position = {x = 8, y = 12}
+    }
+  }
+end
+
+function build_cardinal_solar_test_sources()
+  return {
+    {
+      item_name = "iron-plate",
+      machine_position = {x = 6, y = 0},
+      options = {belt_direction_name = "east"}
+    },
+    {
+      item_name = "copper-plate",
+      machine_position = {x = 18, y = -14},
+      options = {belt_direction_name = "south"}
+    },
+    {
+      item_name = "copper-plate",
+      machine_position = {x = 30, y = 0},
+      options = {belt_direction_name = "west"}
+    },
+    {
+      item_name = "steel-plate",
+      machine_position = {x = 18, y = 14},
+      options = {belt_direction_name = "north"}
+    }
+  }
+end
+
+function place_test_plate_belt_sources(surface, sources)
+  for index, source in ipairs(sources or {}) do
+    local options = deep_copy(source.options or {})
+    options.site_id = options.site_id or ("test-" .. tostring(source.item_name) .. "-export-" .. tostring(index))
+    place_test_plate_belt_source(surface, source.item_name, source.machine_position, options)
+  end
 end
 
 local function place_test_powered_firearm_anchor(surface, anchor_position)
@@ -4433,29 +4515,69 @@ function setup_output_belt_abort_preserves_transport_belts_test_case()
   }
 end
 
-local function setup_solar_panel_factory_test_case()
+function setup_solar_panel_factory_variant_test_case(spec)
+  spec = spec or {}
+
   local surface = game.surfaces["nauvis"] or game.surfaces[1]
   if not surface then
     error("enemy-builder test: nauvis surface is unavailable")
   end
 
-  local anchor_position = {x = 0, y = 0}
-  local builder_position = {x = 0, y = -6}
-  local factory_center = {x = 18, y = 0}
-  local area = make_test_area(factory_center, 64, 56)
+  local anchor_position = clone_position(spec.anchor_position or {x = 0, y = 0})
+  local builder_position = clone_position(spec.builder_position or {x = 0, y = -6})
+  local factory_center = clone_position(spec.factory_center or {x = 18, y = 0})
+  local area = make_test_area(factory_center, spec.area_width or 64, spec.area_height or 56)
 
   surface.always_day = true
   clear_test_area(surface, area)
 
+  local assertion = {
+    case_name = spec.case_name or "solar_panel_factory_physical_feed",
+    surface_name = surface.name,
+    area = area,
+    deadline_offset_ticks = spec.deadline_offset_ticks or 28800,
+    primary_entity_name = "assembling-machine-1",
+    debug_all_transport_belts = true,
+    expected_counts = {
+      ["assembling-machine-1"] = 3,
+      ["burner-inserter"] = 10,
+      ["small-electric-pole"] = 4,
+      ["splitter"] = 4
+    },
+    output_entity_names = {"assembling-machine-1"},
+    output_item_name = "solar-panel",
+    minimum_output_item_count = 1
+  }
+
+  for key, value in pairs(spec.assertion_overrides or {}) do
+    assertion[key] = deep_copy(value)
+  end
+
+  if spec.clear_expected_counts then
+    assertion.expected_counts = {}
+  end
+
+  if spec.clear_output_item_assertion then
+    assertion.output_entity_names = nil
+    assertion.output_item_name = nil
+    assertion.minimum_output_item_count = nil
+  end
+
+  if spec.clear_primary_entity_assertion then
+    assertion.primary_entity_name = nil
+    assertion.required_recipe_name = nil
+  end
+
   local result = setup_manual_test{
-    case_name = "solar_panel_factory_physical_feed",
+    case_name = spec.case_name or "solar_panel_factory_physical_feed",
     component_name = "solar_panel_factory",
     builder_position = builder_position,
-    game_speed = 4,
+    game_speed = spec.game_speed or 4,
     surface_name = surface.name,
     suppress_player_autospawn = true,
     disable_nearby_machine_output_collection = true,
-    pause_builder_on_manual_goal_complete = true,
+    disable_nearby_machine_input_supply = spec.disable_nearby_machine_input_supply ~= false,
+    pause_builder_on_manual_goal_complete = spec.pause_builder_on_manual_goal_complete ~= false,
     inventory = {
       {name = "assembling-machine-1", count = 3},
       {name = "burner-inserter", count = 6},
@@ -4464,32 +4586,145 @@ local function setup_solar_panel_factory_test_case()
       {name = "transport-belt", count = 256},
       {name = "coal", count = 200}
     },
-    assertion = {
-      case_name = "solar_panel_factory_physical_feed",
-      surface_name = surface.name,
-      area = area,
-      deadline_offset_ticks = 28800,
-      primary_entity_name = "assembling-machine-1",
-      debug_all_transport_belts = true,
-      expected_counts = {
-        ["assembling-machine-1"] = 3,
-        ["burner-inserter"] = 10,
-        ["small-electric-pole"] = 4,
-        ["splitter"] = 4
-      },
-      output_entity_names = {"assembling-machine-1"},
-      output_item_name = "solar-panel",
-      minimum_output_item_count = 1
-    }
+    mutate_request = function(request)
+      if spec.layout_orientation or spec.manual_target_position then
+        local block_task = request.tasks and request.tasks[1] or nil
+        if not block_task then
+          error("enemy-builder test: expected solar manual request to include a block task")
+        end
+
+        if spec.layout_orientation then
+          block_task.layout_orientations = {spec.layout_orientation}
+        end
+
+        if spec.manual_target_position then
+          block_task.manual_target_position = clone_position(spec.manual_target_position)
+          block_task.manual_target_search_radius = spec.manual_target_search_radius or 4
+          block_task.manual_target_search_step = spec.manual_target_search_step or 1
+        end
+      end
+
+      if spec.mutate_request then
+        spec.mutate_request(request)
+      end
+    end,
+    assertion = assertion
   }
 
   place_test_powered_firearm_anchor(surface, anchor_position)
-  place_test_plate_belt_source(surface, "iron-plate", {x = 8, y = -12})
-  place_test_plate_belt_source(surface, "copper-plate", {x = 8, y = -2})
-  place_test_plate_belt_source(surface, "copper-plate", {x = 8, y = 6})
-  place_test_plate_belt_source(surface, "steel-plate", {x = 8, y = 12})
+  place_test_plate_belt_sources(surface, spec.sources or build_default_solar_test_sources())
 
   return result
+end
+
+local function setup_solar_panel_factory_test_case()
+  return setup_solar_panel_factory_variant_test_case{
+    case_name = "solar_panel_factory_physical_feed"
+  }
+end
+
+function setup_solar_panel_factory_orientation_reports_blocker_test_case(layout_orientation, case_name)
+  return setup_solar_panel_factory_variant_test_case{
+    case_name = case_name,
+    anchor_position = {x = 18, y = 18},
+    factory_center = {x = 18, y = 0},
+    layout_orientation = layout_orientation,
+    manual_target_position = {x = 18, y = 0},
+    area_width = 80,
+    area_height = 80,
+    deadline_offset_ticks = 600,
+    clear_expected_counts = true,
+    clear_output_item_assertion = true,
+    clear_primary_entity_assertion = true,
+    assertion_overrides = {
+      skip_output_assertion = true,
+      required_wait_reason = "no-assembly-site"
+    },
+    sources = build_cardinal_solar_test_sources()
+  }
+end
+
+function setup_solar_panel_factory_test_case_east()
+  return setup_solar_panel_factory_orientation_reports_blocker_test_case(
+    "east",
+    "solar_panel_factory_east_orientation_reports_blocker"
+  )
+end
+
+function setup_solar_panel_factory_test_case_south()
+  return setup_solar_panel_factory_orientation_reports_blocker_test_case(
+    "south",
+    "solar_panel_factory_south_orientation_reports_blocker"
+  )
+end
+
+function setup_solar_panel_factory_test_case_west()
+  return setup_solar_panel_factory_orientation_reports_blocker_test_case(
+    "west",
+    "solar_panel_factory_west_orientation_reports_blocker"
+  )
+end
+
+function setup_solar_panel_factory_opposed_sources_test_case()
+  return setup_solar_panel_factory_variant_test_case{
+    case_name = "solar_panel_factory_opposed_sources_reports_blocker",
+    anchor_position = {x = 18, y = 18},
+    factory_center = {x = 18, y = 0},
+    manual_target_position = {x = 18, y = 0},
+    area_width = 80,
+    area_height = 80,
+    deadline_offset_ticks = 600,
+    clear_expected_counts = true,
+    clear_output_item_assertion = true,
+    clear_primary_entity_assertion = true,
+    assertion_overrides = {
+      skip_output_assertion = true,
+      required_wait_reason = "no-assembly-site"
+    },
+    sources = build_cardinal_solar_test_sources()
+  }
+end
+
+function setup_solar_panel_factory_cross_pressure_test_case()
+  return setup_solar_panel_factory_variant_test_case{
+    case_name = "solar_panel_factory_cross_pressure_anchor_blocker",
+    anchor_position = {x = 20, y = 18},
+    factory_center = {x = 20, y = 0},
+    manual_target_position = {x = 20, y = 0},
+    area_width = 88,
+    area_height = 80,
+    deadline_offset_ticks = 600,
+    clear_expected_counts = true,
+    clear_output_item_assertion = true,
+    clear_primary_entity_assertion = true,
+    assertion_overrides = {
+      skip_output_assertion = true,
+      required_wait_reason = "no-assembly-site",
+      required_wait_detail_contains = "no powered source cluster anchor found"
+    },
+    sources = {
+      {
+        item_name = "iron-plate",
+        machine_position = {x = 8, y = -8},
+        options = {belt_direction_name = "east"}
+      },
+      {
+        item_name = "copper-plate",
+        machine_position = {x = 30, y = -14},
+        options = {belt_direction_name = "west"}
+      },
+      {
+        item_name = "copper-plate",
+        machine_position = {x = 10, y = 12},
+        options = {belt_direction_name = "east"}
+      },
+      {
+        item_name = "steel-plate",
+        machine_position = {x = 32, y = 8},
+        options = {belt_direction_name = "west"}
+      }
+    }
+  }
 end
 
 local function setup_solar_panel_factory_missing_sources_reports_blocker_test_case()
@@ -4582,6 +4817,68 @@ local function setup_solar_panel_factory_block_marks_scaling_milestone_test_case
         ["assembling-machine-1"] = 3
       },
       required_completed_scaling_milestones = {"solar-panel-factory-block"}
+    }
+  }
+
+  place_test_powered_firearm_anchor(surface, anchor_position)
+  place_test_plate_belt_source(surface, "iron-plate", {x = 8, y = -12})
+  place_test_plate_belt_source(surface, "copper-plate", {x = 8, y = -2})
+  place_test_plate_belt_source(surface, "copper-plate", {x = 8, y = 6})
+  place_test_plate_belt_source(surface, "steel-plate", {x = 8, y = 12})
+
+  return result
+end
+
+local function setup_solar_panel_factory_iron_input_marks_scaling_milestone_test_case()
+  local surface = game.surfaces["nauvis"] or game.surfaces[1]
+  if not surface then
+    error("enemy-builder test: nauvis surface is unavailable")
+  end
+
+  local anchor_position = {x = 0, y = 0}
+  local builder_position = {x = 0, y = -6}
+  local factory_center = {x = 18, y = 0}
+  local area = make_test_area(factory_center, 96, 64)
+
+  surface.always_day = true
+  clear_test_area(surface, area)
+
+  local result = setup_manual_test{
+    case_name = "solar_panel_factory_iron_input_marks_scaling_milestone",
+    builder_position = builder_position,
+    component_name = "solar_panel_factory",
+    game_speed = 4,
+    surface_name = surface.name,
+    suppress_player_autospawn = true,
+    disable_nearby_machine_output_collection = true,
+    inventory = {
+      {name = "assembling-machine-1", count = 3},
+      {name = "burner-inserter", count = 6},
+      {name = "small-electric-pole", count = 8},
+      {name = "splitter", count = 4},
+      {name = "transport-belt", count = 256},
+      {name = "coal", count = 200}
+    },
+    mutate_request = function(request)
+      local block_task = request.tasks and request.tasks[1] or nil
+      local iron_input_task = request.tasks and request.tasks[2] or nil
+      if not block_task or not iron_input_task then
+        error("enemy-builder test: expected solar manual request to include block and iron-input tasks")
+      end
+
+      block_task.completed_scaling_milestone_name = "solar-panel-factory-block"
+      iron_input_task.completed_scaling_milestone_name = "solar-panel-factory-iron-input"
+    end,
+    assertion = {
+      case_name = "solar_panel_factory_iron_input_marks_scaling_milestone",
+      surface_name = surface.name,
+      area = area,
+      deadline_offset_ticks = 14400,
+      skip_output_assertion = true,
+      minimum_counts = {
+        ["assembling-machine-1"] = 3
+      },
+      required_completed_scaling_milestones = {"solar-panel-factory-iron-input"}
     }
   }
 
@@ -7054,9 +7351,16 @@ local test_remote_interface = {
   setup_output_belt_abort_preserves_transport_belts_test_case =
     setup_output_belt_abort_preserves_transport_belts_test_case,
   setup_solar_panel_factory_test_case = setup_solar_panel_factory_test_case,
+  setup_solar_panel_factory_test_case_east = setup_solar_panel_factory_test_case_east,
+  setup_solar_panel_factory_test_case_south = setup_solar_panel_factory_test_case_south,
+  setup_solar_panel_factory_test_case_west = setup_solar_panel_factory_test_case_west,
+  setup_solar_panel_factory_opposed_sources_test_case = setup_solar_panel_factory_opposed_sources_test_case,
+  setup_solar_panel_factory_cross_pressure_test_case = setup_solar_panel_factory_cross_pressure_test_case,
   setup_solar_panel_factory_missing_sources_reports_blocker_test_case = setup_solar_panel_factory_missing_sources_reports_blocker_test_case,
   setup_solar_panel_factory_block_marks_scaling_milestone_test_case =
     setup_solar_panel_factory_block_marks_scaling_milestone_test_case,
+  setup_solar_panel_factory_iron_input_marks_scaling_milestone_test_case =
+    setup_solar_panel_factory_iron_input_marks_scaling_milestone_test_case,
   setup_scaling_collect_switches_site_test_case = setup_scaling_collect_switches_site_test_case,
   setup_scaling_stays_in_starter_core_until_solar_block_test_case =
     setup_scaling_stays_in_starter_core_until_solar_block_test_case,
