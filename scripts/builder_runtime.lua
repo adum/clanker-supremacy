@@ -4790,6 +4790,7 @@ local function setup_solar_panel_factory_missing_sources_reports_blocker_test_ca
     error("enemy-builder test: nauvis surface is unavailable")
   end
 
+  local anchor_position = {x = 0, y = 0}
   local factory_center = {x = 18, y = 0}
   local builder_position = {x = 0, y = -6}
   local area = make_test_area(factory_center, 64, 56)
@@ -4797,7 +4798,7 @@ local function setup_solar_panel_factory_missing_sources_reports_blocker_test_ca
   surface.always_day = true
   clear_test_area(surface, area)
 
-  return setup_manual_test{
+  local result = setup_manual_test{
     case_name = "solar_panel_factory_missing_sources_reports_blocker",
     component_name = "solar_panel_factory",
     builder_position = builder_position,
@@ -4839,6 +4840,10 @@ local function setup_solar_panel_factory_missing_sources_reports_blocker_test_ca
       }
     }
   }
+
+  place_test_powered_firearm_anchor(surface, anchor_position)
+
+  return result
 end
 
 local function setup_solar_panel_factory_block_marks_scaling_milestone_test_case()

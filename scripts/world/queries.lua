@@ -3296,8 +3296,6 @@ local function build_base_infra_anchor_candidates(builder_state, task, summary, 
     end
   end
 
-  add_candidate(builder, builder.position)
-
   table.sort(anchor_candidates, function(left, right)
     return left.score < right.score
   end)
