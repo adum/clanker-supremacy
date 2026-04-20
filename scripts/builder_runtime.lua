@@ -968,26 +968,25 @@ function builder_runtime.handle_task_retry_exhausted(builder_state, task, tick, 
   end
 
   if task and task.manual_goal_id and builder_state.manual_goal_request and builder_state.manual_goal_request.id == task.manual_goal_id then
-    if task.type == "place-assembly-input-route" and failed_anchor_entity and failed_anchor_entity.valid then
-      local blocked = mark_layout_anchor_blocked(builder_state, task, failed_anchor_entity)
-      builder_state.task_state = nil
-      if builder_state.goal_engine then
-        builder_state.goal_engine.scaling_display_task = nil
-      end
-      builder_state.manual_goal_request.current_task_index = 1
-      set_idle(builder_state.entity)
+    if task.type == "place-assembly-input-route" then
       builder_runtime.clear_task_retry_state(builder_state, task)
+      builder_state.task_state = {
+        phase = "waiting-for-resource",
+        wait_reason = "retry-exhausted",
+        wait_detail = message,
+        next_attempt_tick = tick + builder_runtime.get_retry_cooldown_ticks()
+      }
+      set_idle(builder_state.entity)
       builder_runtime.record_recovery(
         builder_state,
-        "abandoned assembly block at " .. format_position(failed_anchor_entity.position) ..
-          "; " .. (blocked and "blocked" or "could not block") ..
-          " anchor and restarted manual goal"
+        "cooling down manual route " .. tostring(task.route_id or task.id or task.type) ..
+          " until tick " .. builder_state.task_state.next_attempt_tick ..
+          " after repeated failures"
       )
       debug_log(
         "task " .. task_name .. ": " .. message ..
-        "; " .. (blocked and "blocked" or "could not block") ..
-        " assembly block at " .. format_position(failed_anchor_entity.position) ..
-        " and restarting manual goal"
+        "; preserving manual assembly block and retrying route after cooldown at tick " ..
+        builder_state.task_state.next_attempt_tick
       )
       return
     end
@@ -1080,8 +1079,7 @@ function task_prefers_build_standoff(task)
     task.type == "place-machine-near-site" or
     task.type == "place-layout-near-machine" or
     task.type == "place-output-belt-line" or
-    task.type == "place-assembly-block" or
-    task.type == "place-assembly-input-route"
+    task.type == "place-assembly-block"
 end
 
 function get_build_standoff_distance(task, arrival_distance)
@@ -2708,6 +2706,48 @@ function build_cardinal_solar_test_sources()
   }
 end
 
+function build_oriented_solar_test_sources(factory_center, layout_orientation)
+  local oriented_sources = {}
+  local base_sources = {
+    {
+      item_name = "iron-plate",
+      relative_position = {x = -12, y = 0},
+      belt_direction_name = "east"
+    },
+    {
+      item_name = "copper-plate",
+      relative_position = {x = 0, y = -14},
+      belt_direction_name = "south"
+    },
+    {
+      item_name = "copper-plate",
+      relative_position = {x = 12, y = 0},
+      belt_direction_name = "west"
+    },
+    {
+      item_name = "steel-plate",
+      relative_position = {x = 0, y = 14},
+      belt_direction_name = "north"
+    }
+  }
+
+  for _, source in ipairs(base_sources) do
+    local rotated_offset = rotate_offset(source.relative_position, layout_orientation)
+    oriented_sources[#oriented_sources + 1] = {
+      item_name = source.item_name,
+      machine_position = {
+        x = factory_center.x + rotated_offset.x,
+        y = factory_center.y + rotated_offset.y
+      },
+      options = {
+        belt_direction_name = rotate_direction_name(source.belt_direction_name, layout_orientation)
+      }
+    }
+  end
+
+  return oriented_sources
+end
+
 function place_test_plate_belt_sources(surface, sources)
   for index, source in ipairs(sources or {}) do
     local options = deep_copy(source.options or {})
@@ -2767,9 +2807,24 @@ local function place_test_powered_firearm_anchor(surface, anchor_position)
     end
   end
 
+  local hidden_power_sources = {}
+  for _, pole_position in ipairs(pole_positions) do
+    local hidden_power_source = surface.create_entity{
+      name = "hidden-electric-energy-interface",
+      position = pole_position,
+      force = force,
+      create_build_effect_smoke = false
+    }
+    if not (hidden_power_source and hidden_power_source.valid) then
+      error("enemy-builder test: failed to create hidden power source for powered firearm anchor")
+    end
+    hidden_power_sources[#hidden_power_sources + 1] = hidden_power_source
+  end
+
   return {
     assembler = assembler,
-    poles = poles
+    poles = poles,
+    hidden_power_sources = hidden_power_sources
   }
 end
 
@@ -2784,13 +2839,19 @@ local function setup_manual_test(spec)
   ensure_builder_map_markers()
   ensure_builder_force()
 
+  if spec.debug_enabled ~= nil then
+    storage.debug_enabled = spec.debug_enabled == true
+  end
+
   storage.enemy_builder_test = {
     case_name = spec.case_name or "manual-test",
     suppress_player_autospawn = spec.suppress_player_autospawn ~= false,
     forbid_direct_turret_ammo_transfer = spec.forbid_direct_turret_ammo_transfer == true,
     disable_nearby_machine_output_collection = spec.disable_nearby_machine_output_collection == true,
     disable_nearby_machine_input_supply = spec.disable_nearby_machine_input_supply == true,
-    pause_builder_on_manual_goal_complete = spec.pause_builder_on_manual_goal_complete == true
+    pause_builder_on_manual_goal_complete = spec.pause_builder_on_manual_goal_complete == true,
+    progress_log_interval_ticks = spec.progress_log_interval_ticks,
+    trace_stage_logs = spec.trace_stage_logs == true
   }
 
   if spec.assertion then
@@ -2894,12 +2955,18 @@ local function setup_scaling_test(spec)
   ensure_builder_map_markers()
   ensure_builder_force()
 
+  if spec.debug_enabled ~= nil then
+    storage.debug_enabled = spec.debug_enabled == true
+  end
+
   storage.enemy_builder_test = {
     case_name = spec.case_name or "scaling-test",
     suppress_player_autospawn = spec.suppress_player_autospawn ~= false,
     forbid_direct_turret_ammo_transfer = spec.forbid_direct_turret_ammo_transfer == true,
     disable_nearby_machine_output_collection = spec.disable_nearby_machine_output_collection == true,
-    disable_nearby_machine_input_supply = spec.disable_nearby_machine_input_supply == true
+    disable_nearby_machine_input_supply = spec.disable_nearby_machine_input_supply == true,
+    progress_log_interval_ticks = spec.progress_log_interval_ticks,
+    trace_stage_logs = spec.trace_stage_logs == true
   }
 
   if spec.assertion then
@@ -4526,6 +4593,7 @@ function setup_solar_panel_factory_variant_test_case(spec)
   local anchor_position = clone_position(spec.anchor_position or {x = 0, y = 0})
   local builder_position = clone_position(spec.builder_position or {x = 0, y = -6})
   local factory_center = clone_position(spec.factory_center or {x = 18, y = 0})
+  local manual_target_position = clone_position(spec.manual_target_position or factory_center)
   local area = make_test_area(factory_center, spec.area_width or 64, spec.area_height or 56)
 
   surface.always_day = true
@@ -4541,8 +4609,7 @@ function setup_solar_panel_factory_variant_test_case(spec)
     expected_counts = {
       ["assembling-machine-1"] = 3,
       ["burner-inserter"] = 10,
-      ["small-electric-pole"] = 4,
-      ["splitter"] = 4
+      ["small-electric-pole"] = 4
     },
     output_entity_names = {"assembling-machine-1"},
     output_item_name = "solar-panel",
@@ -4573,35 +4640,40 @@ function setup_solar_panel_factory_variant_test_case(spec)
     component_name = "solar_panel_factory",
     builder_position = builder_position,
     game_speed = spec.game_speed or 4,
+    debug_enabled = spec.debug_enabled == true,
+    progress_log_interval_ticks = spec.progress_log_interval_ticks or 60,
+    trace_stage_logs = spec.trace_stage_logs == true,
     surface_name = surface.name,
     suppress_player_autospawn = true,
     disable_nearby_machine_output_collection = true,
     disable_nearby_machine_input_supply = spec.disable_nearby_machine_input_supply ~= false,
-    pause_builder_on_manual_goal_complete = spec.pause_builder_on_manual_goal_complete ~= false,
+    pause_builder_on_manual_goal_complete = spec.pause_builder_on_manual_goal_complete == true,
     inventory = {
       {name = "assembling-machine-1", count = 3},
-      {name = "burner-inserter", count = 6},
-      {name = "small-electric-pole", count = 8},
+      {name = "burner-inserter", count = 10},
+      {name = "small-electric-pole", count = 12},
       {name = "splitter", count = 4},
       {name = "transport-belt", count = 256},
       {name = "coal", count = 200}
     },
     mutate_request = function(request)
-      if spec.layout_orientation or spec.manual_target_position then
-        local block_task = request.tasks and request.tasks[1] or nil
-        if not block_task then
-          error("enemy-builder test: expected solar manual request to include a block task")
-        end
+      local block_task = request.tasks and request.tasks[1] or nil
+      if not block_task then
+        error("enemy-builder test: expected solar manual request to include a block task")
+      end
 
-        if spec.layout_orientation then
-          block_task.layout_orientations = {spec.layout_orientation}
+      for _, request_task in ipairs(request.tasks or {}) do
+        if request_task.post_place_pause_ticks == nil then
+          request_task.post_place_pause_ticks = spec.post_place_pause_ticks or 0
         end
+      end
 
-        if spec.manual_target_position then
-          block_task.manual_target_position = clone_position(spec.manual_target_position)
-          block_task.manual_target_search_radius = spec.manual_target_search_radius or 4
-          block_task.manual_target_search_step = spec.manual_target_search_step or 1
-        end
+      block_task.manual_target_position = clone_position(manual_target_position)
+      block_task.manual_target_search_radius = spec.manual_target_search_radius or 12
+      block_task.manual_target_search_step = spec.manual_target_search_step or 1
+
+      if spec.layout_orientation then
+        block_task.layout_orientations = {spec.layout_orientation}
       end
 
       if spec.mutate_request then
@@ -4623,85 +4695,65 @@ local function setup_solar_panel_factory_test_case()
   }
 end
 
-function setup_solar_panel_factory_orientation_reports_blocker_test_case(layout_orientation, case_name)
-  return setup_solar_panel_factory_variant_test_case{
-    case_name = case_name,
-    anchor_position = {x = 18, y = 18},
-    factory_center = {x = 18, y = 0},
-    layout_orientation = layout_orientation,
-    manual_target_position = {x = 18, y = 0},
-    area_width = 80,
-    area_height = 80,
-    deadline_offset_ticks = 600,
-    clear_expected_counts = true,
-    clear_output_item_assertion = true,
-    clear_primary_entity_assertion = true,
-    assertion_overrides = {
-      skip_output_assertion = true,
-      required_wait_reason = "no-assembly-site"
-    },
-    sources = build_cardinal_solar_test_sources()
-  }
-end
-
 function setup_solar_panel_factory_test_case_east()
-  return setup_solar_panel_factory_orientation_reports_blocker_test_case(
+  return setup_solar_panel_factory_orientation_physical_feed_test_case(
     "east",
-    "solar_panel_factory_east_orientation_reports_blocker"
+    "solar_panel_factory_east_orientation_physical_feed"
   )
 end
 
 function setup_solar_panel_factory_test_case_south()
-  return setup_solar_panel_factory_orientation_reports_blocker_test_case(
+  return setup_solar_panel_factory_orientation_physical_feed_test_case(
     "south",
-    "solar_panel_factory_south_orientation_reports_blocker"
+    "solar_panel_factory_south_orientation_physical_feed"
   )
 end
 
 function setup_solar_panel_factory_test_case_west()
-  return setup_solar_panel_factory_orientation_reports_blocker_test_case(
+  return setup_solar_panel_factory_orientation_physical_feed_test_case(
     "west",
-    "solar_panel_factory_west_orientation_reports_blocker"
+    "solar_panel_factory_west_orientation_physical_feed"
   )
+end
+
+function setup_solar_panel_factory_orientation_physical_feed_test_case(layout_orientation, case_name, debug_enabled_override)
+  local factory_center = {x = 18, y = 0}
+  return setup_solar_panel_factory_variant_test_case{
+    case_name = case_name,
+    debug_enabled = debug_enabled_override,
+    anchor_position = {x = 18, y = 18},
+    factory_center = factory_center,
+    layout_orientation = layout_orientation,
+    manual_target_position = clone_position(factory_center),
+    area_width = 80,
+    area_height = 80,
+    deadline_offset_ticks = 28800,
+    sources = build_oriented_solar_test_sources(factory_center, layout_orientation)
+  }
 end
 
 function setup_solar_panel_factory_opposed_sources_test_case()
   return setup_solar_panel_factory_variant_test_case{
-    case_name = "solar_panel_factory_opposed_sources_reports_blocker",
+    case_name = "solar_panel_factory_opposed_sources_physical_feed",
     anchor_position = {x = 18, y = 18},
     factory_center = {x = 18, y = 0},
     manual_target_position = {x = 18, y = 0},
     area_width = 80,
     area_height = 80,
-    deadline_offset_ticks = 600,
-    clear_expected_counts = true,
-    clear_output_item_assertion = true,
-    clear_primary_entity_assertion = true,
-    assertion_overrides = {
-      skip_output_assertion = true,
-      required_wait_reason = "no-assembly-site"
-    },
+    deadline_offset_ticks = 28800,
     sources = build_cardinal_solar_test_sources()
   }
 end
 
 function setup_solar_panel_factory_cross_pressure_test_case()
   return setup_solar_panel_factory_variant_test_case{
-    case_name = "solar_panel_factory_cross_pressure_anchor_blocker",
+    case_name = "solar_panel_factory_cross_pressure_physical_feed",
     anchor_position = {x = 20, y = 18},
     factory_center = {x = 20, y = 0},
     manual_target_position = {x = 20, y = 0},
     area_width = 88,
     area_height = 80,
-    deadline_offset_ticks = 600,
-    clear_expected_counts = true,
-    clear_output_item_assertion = true,
-    clear_primary_entity_assertion = true,
-    assertion_overrides = {
-      skip_output_assertion = true,
-      required_wait_reason = "no-assembly-site",
-      required_wait_detail_contains = "no powered source cluster anchor found"
-    },
+    deadline_offset_ticks = 28800,
     sources = {
       {
         item_name = "iron-plate",
@@ -4752,19 +4804,31 @@ local function setup_solar_panel_factory_missing_sources_reports_blocker_test_ca
     inventory = {
       {name = "assembling-machine-1", count = 3},
       {name = "burner-inserter", count = 6},
-      {name = "small-electric-pole", count = 8},
+      {name = "small-electric-pole", count = 12},
       {name = "splitter", count = 4},
       {name = "transport-belt", count = 256},
       {name = "coal", count = 200}
     },
+    mutate_request = function(request)
+      local block_task = request.tasks and request.tasks[1] or nil
+      if not block_task then
+        error("enemy-builder test: expected solar manual request to include a block task")
+      end
+
+      block_task.manual_target_position = clone_position(factory_center)
+      block_task.manual_target_search_radius = 4
+      block_task.manual_target_search_step = 1
+    end,
     assertion = {
       case_name = "solar_panel_factory_missing_sources_reports_blocker",
       surface_name = surface.name,
       area = area,
-      deadline_offset_ticks = 600,
+      deadline_offset_ticks = 2400,
       skip_output_assertion = true,
-      required_wait_reason = "no-assembly-site",
-      required_wait_detail_contains = "missing source belt sites"
+      required_wait_reason = "no-assembly-input-route",
+      minimum_counts = {
+        ["assembling-machine-1"] = 3
+      }
     }
   }
 end
@@ -4791,10 +4855,11 @@ local function setup_solar_panel_factory_block_marks_scaling_milestone_test_case
     surface_name = surface.name,
     suppress_player_autospawn = true,
     disable_nearby_machine_output_collection = true,
+    pause_builder_on_manual_goal_complete = true,
     inventory = {
       {name = "assembling-machine-1", count = 3},
       {name = "burner-inserter", count = 6},
-      {name = "small-electric-pole", count = 8},
+      {name = "small-electric-pole", count = 12},
       {name = "splitter", count = 4},
       {name = "transport-belt", count = 128},
       {name = "coal", count = 200}
@@ -4805,6 +4870,9 @@ local function setup_solar_panel_factory_block_marks_scaling_milestone_test_case
         error("enemy-builder test: expected solar manual request to include a block task")
       end
 
+      block_task.manual_target_position = clone_position(factory_center)
+      block_task.manual_target_search_radius = 4
+      block_task.manual_target_search_step = 1
       block_task.completed_scaling_milestone_name = "solar-panel-factory-block"
     end,
     assertion = {
@@ -4851,10 +4919,11 @@ local function setup_solar_panel_factory_iron_input_marks_scaling_milestone_test
     surface_name = surface.name,
     suppress_player_autospawn = true,
     disable_nearby_machine_output_collection = true,
+    pause_builder_on_manual_goal_complete = true,
     inventory = {
       {name = "assembling-machine-1", count = 3},
       {name = "burner-inserter", count = 6},
-      {name = "small-electric-pole", count = 8},
+      {name = "small-electric-pole", count = 12},
       {name = "splitter", count = 4},
       {name = "transport-belt", count = 256},
       {name = "coal", count = 200}
@@ -4866,6 +4935,9 @@ local function setup_solar_panel_factory_iron_input_marks_scaling_milestone_test
         error("enemy-builder test: expected solar manual request to include block and iron-input tasks")
       end
 
+      block_task.manual_target_position = clone_position(factory_center)
+      block_task.manual_target_search_radius = 4
+      block_task.manual_target_search_step = 1
       block_task.completed_scaling_milestone_name = "solar-panel-factory-block"
       iron_input_task.completed_scaling_milestone_name = "solar-panel-factory-iron-input"
     end,
@@ -4879,6 +4951,81 @@ local function setup_solar_panel_factory_iron_input_marks_scaling_milestone_test
         ["assembling-machine-1"] = 3
       },
       required_completed_scaling_milestones = {"solar-panel-factory-iron-input"}
+    }
+  }
+
+  place_test_powered_firearm_anchor(surface, anchor_position)
+  place_test_plate_belt_source(surface, "iron-plate", {x = 8, y = -12})
+  place_test_plate_belt_source(surface, "copper-plate", {x = 8, y = -2})
+  place_test_plate_belt_source(surface, "copper-plate", {x = 8, y = 6})
+  place_test_plate_belt_source(surface, "steel-plate", {x = 8, y = 12})
+
+  return result
+end
+
+function setup_solar_panel_factory_power_marks_scaling_milestone_test_case()
+  local surface = game.surfaces["nauvis"] or game.surfaces[1]
+  if not surface then
+    error("enemy-builder test: nauvis surface is unavailable")
+  end
+
+  local anchor_position = {x = 0, y = 0}
+  local builder_position = {x = 0, y = -6}
+  local factory_center = {x = 18, y = 0}
+  local area = make_test_area(factory_center, 96, 72)
+
+  surface.always_day = true
+  clear_test_area(surface, area)
+
+  local result = setup_manual_test{
+    case_name = "solar_panel_factory_power_marks_scaling_milestone",
+    builder_position = builder_position,
+    component_name = "solar_panel_factory",
+    game_speed = 4,
+    surface_name = surface.name,
+    suppress_player_autospawn = true,
+    disable_nearby_machine_output_collection = true,
+    pause_builder_on_manual_goal_complete = true,
+    inventory = {
+      {name = "assembling-machine-1", count = 3},
+      {name = "burner-inserter", count = 6},
+      {name = "small-electric-pole", count = 12},
+      {name = "splitter", count = 4},
+      {name = "transport-belt", count = 256},
+      {name = "coal", count = 200}
+    },
+    mutate_request = function(request)
+      local block_task = request.tasks and request.tasks[1] or nil
+      local iron_input_task = request.tasks and request.tasks[2] or nil
+      local copper_cable_input_task = request.tasks and request.tasks[3] or nil
+      local copper_solar_input_task = request.tasks and request.tasks[4] or nil
+      local steel_input_task = request.tasks and request.tasks[5] or nil
+      local power_task = request.tasks and request.tasks[6] or nil
+
+      if not block_task or not iron_input_task or not copper_cable_input_task or not copper_solar_input_task or not steel_input_task or not power_task then
+        error("enemy-builder test: expected solar manual request to include block, routes, and power tasks")
+      end
+
+      block_task.manual_target_position = clone_position(factory_center)
+      block_task.manual_target_search_radius = 4
+      block_task.manual_target_search_step = 1
+      block_task.completed_scaling_milestone_name = "solar-panel-factory-block"
+      iron_input_task.completed_scaling_milestone_name = "solar-panel-factory-iron-input"
+      copper_cable_input_task.completed_scaling_milestone_name = "solar-panel-factory-copper-cable-input"
+      copper_solar_input_task.completed_scaling_milestone_name = "solar-panel-factory-copper-solar-input"
+      steel_input_task.completed_scaling_milestone_name = "solar-panel-factory-steel-input"
+      power_task.completed_scaling_milestone_name = "solar-panel-factory-power"
+    end,
+    assertion = {
+      case_name = "solar_panel_factory_power_marks_scaling_milestone",
+      surface_name = surface.name,
+      area = area,
+      deadline_offset_ticks = 18000,
+      skip_output_assertion = true,
+      minimum_counts = {
+        ["assembling-machine-1"] = 3
+      },
+      required_completed_scaling_milestones = {"solar-panel-factory-power"}
     }
   }
 
@@ -7207,6 +7354,26 @@ local function run_active_test_assertion(tick)
     return
   end
 
+  if test_state and test_state.progress_log_interval_ticks and test_state.progress_log_interval_ticks > 0 then
+    local last_progress_log_tick = test_state.last_progress_log_tick or 0
+    if tick == 0 or tick - last_progress_log_tick >= test_state.progress_log_interval_ticks then
+      test_state.last_progress_log_tick = tick
+      local builder_state = get_builder_state and get_builder_state() or nil
+      local task = builder_state and get_active_task and get_active_task(builder_state) or nil
+      local task_state = builder_state and builder_state.task_state or nil
+      local builder_position = builder_state and builder_state.entity and builder_state.entity.valid and
+        format_position(builder_state.entity.position) or "nil"
+      log(
+        debug_prefix .. "test-progress case=" .. tostring(assertion.case_name or test_state.case_name or "manual-test") ..
+        " tick=" .. tostring(tick) ..
+        " builder=" .. builder_position ..
+        " task=" .. tostring(task and task.id or "nil") ..
+        " phase=" .. tostring(task_state and task_state.phase or "nil") ..
+        " wait=" .. tostring(task_state and task_state.wait_reason or "nil")
+      )
+    end
+  end
+
   local surface = get_test_surface(assertion)
   local force = game.forces[builder_data.force_name]
   if not (surface and force) then
@@ -7329,6 +7496,23 @@ local function run_active_test_assertion(tick)
   end
 end
 
+function builder_runtime.trace_test_stage(tick, stage_name, builder_state)
+  local test_state = get_test_state()
+  if not (test_state and test_state.trace_stage_logs) then
+    return
+  end
+
+  local task = builder_state and get_active_task and get_active_task(builder_state) or nil
+  local task_state = builder_state and builder_state.task_state or nil
+  log(
+    debug_prefix .. "test-stage case=" .. tostring(test_state.case_name or "manual-test") ..
+    " tick=" .. tostring(tick) ..
+    " stage=" .. tostring(stage_name) ..
+    " task=" .. tostring(task and task.id or "nil") ..
+    " phase=" .. tostring(task_state and task_state.phase or "nil")
+  )
+end
+
 local test_remote_interface = {
   setup_manual_test = setup_manual_test,
   setup_firearm_outpost_test_case = setup_firearm_outpost_test_case,
@@ -7361,6 +7545,8 @@ local test_remote_interface = {
     setup_solar_panel_factory_block_marks_scaling_milestone_test_case,
   setup_solar_panel_factory_iron_input_marks_scaling_milestone_test_case =
     setup_solar_panel_factory_iron_input_marks_scaling_milestone_test_case,
+  setup_solar_panel_factory_power_marks_scaling_milestone_test_case =
+    setup_solar_panel_factory_power_marks_scaling_milestone_test_case,
   setup_scaling_collect_switches_site_test_case = setup_scaling_collect_switches_site_test_case,
   setup_scaling_stays_in_starter_core_until_solar_block_test_case =
     setup_scaling_stays_in_starter_core_until_solar_block_test_case,
@@ -7568,6 +7754,9 @@ register_assembly_block_site = function(
   root_assembler,
   placed_layout_entities,
   route_input_placement_specs_by_id,
+  deferred_power_placement_specs,
+  layout_build_position,
+  layout_orientation,
   ctx_override
 )
   return world_model.register_assembly_block_site(
@@ -7576,6 +7765,9 @@ register_assembly_block_site = function(
     root_assembler,
     placed_layout_entities,
     route_input_placement_specs_by_id,
+    deferred_power_placement_specs,
+    layout_build_position,
+    layout_orientation,
     ctx_override or world_model_context
   )
 end
@@ -7690,6 +7882,9 @@ local task_executor_context = {
   find_clearable_build_obstacle = find_clearable_build_obstacle,
   find_assembly_block_site = find_assembly_block_site,
   find_assembly_input_route_site = find_assembly_input_route_site,
+  find_assembly_power_site = function(builder_state, task)
+    return world_model.find_assembly_power_site(builder_state, task, world_model_context)
+  end,
   destroy_entity_if_valid = destroy_entity_if_valid,
   direction_from_delta = direction_from_delta,
   find_gather_site = find_gather_site,
@@ -8065,11 +8260,16 @@ function on_tick(event)
   end
 
   if builder_state then
+    builder_runtime.trace_test_stage(event.tick, "before-advance-builder", builder_state)
     advance_builder(builder_state, event.tick)
+    builder_runtime.trace_test_stage(event.tick, "after-advance-builder", builder_state)
     builder_runtime.update_goal_model(builder_state, event.tick)
+    builder_runtime.trace_test_stage(event.tick, "after-update-goal-model", builder_state)
   end
 
+  builder_runtime.trace_test_stage(event.tick, "before-assertion", builder_state)
   run_active_test_assertion(event.tick)
+  builder_runtime.trace_test_stage(event.tick, "after-assertion", builder_state)
   layout_snapshot.run_active_snapshot_run(event.tick, layout_snapshot_context)
   builder_state = get_builder_state()
 

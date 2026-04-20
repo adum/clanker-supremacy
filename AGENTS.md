@@ -29,7 +29,7 @@ Top level goal plan:
 
 For step 3, the building (eg a set of assemblers that produces solar panels), this is a good algorithm:
 1. Make sure the builder has all required items in inventory: assemblers, inserters, a few power poles, a few conveyor belts, etc. Anything they don't have, craft or fetch ingredients if necessary.
-2. Find a spot on the ground to place the basic rectangle of assemblers and connectors, with just a couple squares padding for space for belts to come in. So just a free rectangle of space (could possibly clear trees or rocks here)
+2. Find a spot on the ground to place the basic rectangle of assemblers and connectors, with just a couple squares padding for space for belts to come in. So just a free rectangle of space (could possibly clear trees or rocks here). This should be near our existing base/infra. (For solar we can look for a 16 x 12 rectangle.)
 3. Place all this stuff down in the spot
 4. Do conveyor belt link up: find the belt types we need eg copper plates, hopefully nearby, add a splitter, then route over to the input we need here. This may involve turning corners, doing underground belts to go around things, etc.
 5. Put down power poles. Try to link them to some existing power poles that are connected to solar power.

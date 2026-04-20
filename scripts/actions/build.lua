@@ -4,6 +4,72 @@ local function entity_contains_point(entity, point, ctx)
   return entity and entity.valid and point and ctx.point_in_area(point, entity.selection_box)
 end
 
+local function any_entity_contains_point(entities, point, ctx)
+  for _, entity in ipairs(entities or {}) do
+    if entity_contains_point(entity, point, ctx) then
+      return true
+    end
+  end
+
+  return false
+end
+
+local function get_valid_route_input_inserters(valid_entities, route_id)
+  local inserters = {}
+
+  for _, placement in ipairs(valid_entities or {}) do
+    if placement.entity and placement.entity.valid and
+      placement.entity.type == "inserter" and
+      placement.route_id == route_id and
+      placement.site_role == "input-inserter"
+    then
+      inserters[#inserters + 1] = placement.entity
+    end
+  end
+
+  return inserters
+end
+
+local function assembly_route_input_inserters_are_valid(assembly_site, route_id, route_input_inserters, ctx)
+  local local_route_belts = assembly_site and assembly_site.route_local_belts_by_id and
+    assembly_site.route_local_belts_by_id[route_id] or {}
+  local assemblers = assembly_site and assembly_site.assemblers or {}
+
+  for _, inserter in ipairs(route_input_inserters or {}) do
+    if not inserter.valid or
+      not any_entity_contains_point(local_route_belts, inserter.pickup_position, ctx) or
+      not any_entity_contains_point(assemblers, inserter.drop_position, ctx)
+    then
+      return false
+    end
+  end
+
+  return true
+end
+
+local function assembly_block_has_live_power(assembly_site, power_anchor_pole)
+  if not (assembly_site and assembly_site.root_assembler and assembly_site.root_assembler.valid) then
+    return false
+  end
+
+  local anchor_network_id = power_anchor_pole and power_anchor_pole.valid and power_anchor_pole.electric_network_id or 0
+  for _, assembler in ipairs(assembly_site.assemblers or {}) do
+    if not (assembler and assembler.valid and assembler.electric_network_id and assembler.electric_network_id ~= 0) then
+      return false
+    end
+
+    if anchor_network_id ~= 0 and assembler.electric_network_id ~= anchor_network_id then
+      return false
+    end
+
+    if (assembler.energy or 0) <= 0 then
+      return false
+    end
+  end
+
+  return true
+end
+
 local function try_set_entity_recipe(entity, recipe_name)
   if not (entity and entity.valid and recipe_name and entity.set_recipe) then
     return false, "entity-or-recipe-missing"
@@ -711,12 +777,22 @@ function action_build.finish_place_layout_near_machine_task(builder_state, task,
       return
     end
 
+    local registered_anchor_entity = anchor_entity
+    if task.store_root_assembler_as_anchor_entity or
+      (task.assembly_target and task.assembly_target.store_root_assembler_as_anchor_entity)
+    then
+      registered_anchor_entity = root_assembler
+    end
+
     ctx.register_assembly_block_site(
       task,
-      anchor_entity,
+      registered_anchor_entity,
       root_assembler,
       valid_entities,
       task_state.route_input_placement_specs_by_id,
+      task_state.deferred_power_placement_specs,
+      task_state.layout_build_position,
+      task_state.layout_orientation,
       ctx
     )
 
@@ -730,7 +806,7 @@ function action_build.finish_place_layout_near_machine_task(builder_state, task,
       task,
       "built " .. (task.target_item_name or "assembly block") ..
       " at " .. ctx.format_position(root_assembler.position) ..
-      " near " .. anchor_entity.name .. " at " .. ctx.format_position(anchor_entity.position)
+      " near " .. registered_anchor_entity.name .. " at " .. ctx.format_position(registered_anchor_entity.position)
     )
     return
   end
@@ -738,6 +814,7 @@ function action_build.finish_place_layout_near_machine_task(builder_state, task,
   if task.type == "place-assembly-input-route" then
     local assembly_site = task_state.assembly_site
     local anchor_entity = task_state.anchor_entity
+    local route_id = task_state.route_id or task.route_id
     local belt_entities = {}
 
     for _, placement in ipairs(valid_entities) do
@@ -752,7 +829,27 @@ function action_build.finish_place_layout_near_machine_task(builder_state, task,
       return
     end
 
-    ctx.register_assembly_input_route(task, assembly_site, task_state.route_id or task.route_id, belt_entities, task_state.source_site)
+    local expected_route_input_placements = assembly_site.route_input_placement_specs_by_id and
+      assembly_site.route_input_placement_specs_by_id[route_id] or {}
+    local route_input_inserters = get_valid_route_input_inserters(valid_entities, route_id)
+    if #route_input_inserters < #expected_route_input_placements then
+      ctx.debug_log(
+        "task " .. task.id .. ": assembly input route completed without all route inserters (" ..
+        tostring(#route_input_inserters) .. "/" .. tostring(#expected_route_input_placements) .. "); refreshing task"
+      )
+      refresh_task(builder_state, task, tick, ctx)
+      return
+    end
+
+    if not assembly_route_input_inserters_are_valid(assembly_site, route_id, route_input_inserters, ctx) then
+      ctx.debug_log("task " .. task.id .. ": assembly input route inserter geometry invalid after build; refreshing task")
+      refresh_task(builder_state, task, tick, ctx)
+      return
+    end
+
+    assembly_site.route_input_inserters_by_id = assembly_site.route_input_inserters_by_id or {}
+    assembly_site.route_input_inserters_by_id[route_id] = route_input_inserters
+    ctx.register_assembly_input_route(task, assembly_site, route_id, belt_entities, task_state.source_site)
 
     if task.completed_scaling_milestone_name then
       ctx.builder_runtime.ensure_builder_state_fields(builder_state)
@@ -765,6 +862,63 @@ function action_build.finish_place_layout_near_machine_task(builder_state, task,
       "connected " .. tostring(task_state.route_id or task.route_id or "assembly route") ..
       " into block at " .. ctx.format_position(anchor_entity.position) ..
       " with " .. tostring(#belt_entities) .. " belts"
+    )
+    return
+  end
+
+  if task.type == "connect-assembly-power" then
+    local assembly_site = task_state.assembly_site
+    local power_anchor_pole = task_state.power_anchor_pole
+    local built_poles = {}
+
+    for _, placement in ipairs(valid_entities) do
+      if placement.entity and placement.entity.valid and placement.entity.type == "electric-pole" then
+        built_poles[#built_poles + 1] = {
+          entity = placement.entity,
+          id = placement.id
+        }
+      end
+    end
+
+    if not (assembly_site and assembly_site.root_assembler and assembly_site.root_assembler.valid) then
+      ctx.debug_log("task " .. task.id .. ": assembly power hookup completed without a valid block; refreshing task")
+      refresh_task(builder_state, task, tick, ctx)
+      return
+    end
+
+    assembly_site.power_poles = assembly_site.power_poles or {}
+    assembly_site.power_poles_by_id = assembly_site.power_poles_by_id or {}
+    for _, pole_info in ipairs(built_poles) do
+      assembly_site.power_poles[#assembly_site.power_poles + 1] = pole_info.entity
+      if pole_info.id then
+        assembly_site.power_poles_by_id[pole_info.id] = pole_info.entity
+      end
+    end
+    assembly_site.power_entry_pole = assembly_site.power_poles_by_id["power-pole-entry"] or assembly_site.power_entry_pole
+    assembly_site.power_anchor_pole = power_anchor_pole
+
+    if not assembly_block_has_live_power(assembly_site, power_anchor_pole) then
+      task_state.power_validation_wait_until_tick = task_state.power_validation_wait_until_tick or (tick + 30)
+      if tick < task_state.power_validation_wait_until_tick then
+        ctx.debug_log("task " .. task.id .. ": waiting for assembly power network to settle")
+        return
+      end
+
+      ctx.debug_log("task " .. task.id .. ": assembly block still lacks live power after bridge build; refreshing task")
+      refresh_task(builder_state, task, tick, ctx)
+      return
+    end
+
+    if task.completed_scaling_milestone_name then
+      ctx.builder_runtime.ensure_builder_state_fields(builder_state)
+      builder_state.completed_scaling_milestones[task.completed_scaling_milestone_name] = true
+    end
+
+    ctx.complete_current_task(
+      builder_state,
+      task,
+      "connected power into block at " .. ctx.format_position(assembly_site.root_assembler.position) ..
+      " with " .. tostring(#built_poles) .. " power poles"
     )
     return
   end

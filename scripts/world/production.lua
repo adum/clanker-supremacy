@@ -264,7 +264,7 @@ function production.register_output_belt_site(task, output_machine, output_inser
   return production_sites[#production_sites]
 end
 
-function production.register_assembly_block_site(task, anchor_entity, root_assembler, placed_layout_entities, route_input_placement_specs_by_id, ctx)
+function production.register_assembly_block_site(task, anchor_entity, root_assembler, placed_layout_entities, route_input_placement_specs_by_id, deferred_power_placement_specs, layout_build_position, layout_orientation, ctx)
   if not (task and anchor_entity and anchor_entity.valid and root_assembler and root_assembler.valid) then
     return nil
   end
@@ -275,6 +275,8 @@ function production.register_assembly_block_site(task, anchor_entity, root_assem
   local belts = {}
   local route_local_belts_by_id = {}
   local route_input_inserters_by_id = {}
+  local power_poles_by_id = {}
+  local power_entry_pole = nil
 
   for _, placement in ipairs(placed_layout_entities or {}) do
     local placed_entity = placement.entity
@@ -289,6 +291,12 @@ function production.register_assembly_block_site(task, anchor_entity, root_assem
         end
       elseif placed_entity.type == "electric-pole" then
         poles[#poles + 1] = placed_entity
+        if placement.id then
+          power_poles_by_id[placement.id] = placed_entity
+        end
+        if placement.id == "power-pole-entry" then
+          power_entry_pole = placed_entity
+        end
       elseif placed_entity.type == "transport-belt" then
         belts[#belts + 1] = placed_entity
         if placement.route_id then
@@ -309,10 +317,15 @@ function production.register_assembly_block_site(task, anchor_entity, root_assem
       site.assemblers = assemblers
       site.inserters = inserters
       site.power_poles = poles
+      site.power_poles_by_id = power_poles_by_id
+      site.power_entry_pole = power_entry_pole
       site.belt_entities = belts
       site.route_local_belts_by_id = route_local_belts_by_id
       site.route_input_inserters_by_id = route_input_inserters_by_id
       site.route_input_placement_specs_by_id = route_input_placement_specs_by_id or {}
+      site.deferred_power_placement_specs = deferred_power_placement_specs or {}
+      site.layout_build_position = layout_build_position and {x = layout_build_position.x, y = layout_build_position.y} or site.layout_build_position
+      site.layout_orientation = layout_orientation or site.layout_orientation
       site.route_connections_by_id = site.route_connections_by_id or {}
       site.source_route_belts_by_id = site.source_route_belts_by_id or {}
       site.route_specs_by_id = {}
@@ -332,10 +345,15 @@ function production.register_assembly_block_site(task, anchor_entity, root_assem
     assemblers = assemblers,
     inserters = inserters,
     power_poles = poles,
+    power_poles_by_id = power_poles_by_id,
+    power_entry_pole = power_entry_pole,
     belt_entities = belts,
     route_local_belts_by_id = route_local_belts_by_id,
     route_input_inserters_by_id = route_input_inserters_by_id,
     route_input_placement_specs_by_id = route_input_placement_specs_by_id or {},
+    deferred_power_placement_specs = deferred_power_placement_specs or {},
+    layout_build_position = layout_build_position and {x = layout_build_position.x, y = layout_build_position.y} or nil,
+    layout_orientation = layout_orientation,
     route_connections_by_id = {},
     source_route_belts_by_id = {},
     route_specs_by_id = {}
@@ -380,11 +398,13 @@ function production.register_assembly_input_route(task, assembly_site, route_id,
   assembly_site.source_route_belts_by_id = assembly_site.source_route_belts_by_id or {}
   assembly_site.source_route_belts_by_id[route_id] = valid_belts
 
+  local source_site_key = get_site_identity_key(source_site)
   assembly_site.route_connections_by_id = assembly_site.route_connections_by_id or {}
   assembly_site.route_connections_by_id[route_id] = {
     route_id = route_id,
-    source_site_key = get_site_identity_key(source_site),
-    source_site = source_site,
+    source_site_key = source_site_key,
+    source_site_type = source_site and source_site.site_type or nil,
+    source_pattern_name = source_site and source_site.pattern_name or nil,
     belt_entities = valid_belts
   }
 
@@ -470,6 +490,7 @@ function production.process_production_sites(tick, ctx)
       local valid_assemblers = {}
       local valid_inserters = {}
       local valid_poles = {}
+      local valid_poles_by_id = {}
       local valid_belts = {}
 
       for _, placed_entity in ipairs(site.assemblers or {}) do
@@ -490,6 +511,12 @@ function production.process_production_sites(tick, ctx)
         end
       end
 
+      for pole_id, placed_entity in pairs(site.power_poles_by_id or {}) do
+        if placed_entity and placed_entity.valid then
+          valid_poles_by_id[pole_id] = placed_entity
+        end
+      end
+
       for _, placed_entity in ipairs(site.belt_entities or {}) do
         if placed_entity and placed_entity.valid then
           valid_belts[#valid_belts + 1] = placed_entity
@@ -499,6 +526,8 @@ function production.process_production_sites(tick, ctx)
       site.assemblers = valid_assemblers
       site.inserters = valid_inserters
       site.power_poles = valid_poles
+      site.power_poles_by_id = valid_poles_by_id
+      site.power_entry_pole = valid_poles_by_id["power-pole-entry"]
       site.belt_entities = valid_belts
       local valid_route_connections_by_id = {}
       local valid_source_route_belts_by_id = {}
@@ -511,6 +540,7 @@ function production.process_production_sites(tick, ctx)
         end
 
         if #route_belts > 0 then
+          connection.source_site = nil
           connection.belt_entities = route_belts
           valid_route_connections_by_id[route_id] = connection
           valid_source_route_belts_by_id[route_id] = route_belts

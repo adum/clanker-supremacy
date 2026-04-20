@@ -119,15 +119,16 @@ return {
     display_name = "solar panel factory",
     tasks = {
       build_tasks.solar_panel_factory,
-      build_tasks.solar_panel_factory_iron_input,
       build_tasks.solar_panel_factory_copper_cable_input,
+      build_tasks.solar_panel_factory_iron_input,
       build_tasks.solar_panel_factory_copper_solar_input,
-      build_tasks.solar_panel_factory_steel_input
+      build_tasks.solar_panel_factory_steel_input,
+      build_tasks.solar_panel_factory_power
     },
     required_items = {
       {name = "assembling-machine-1", count = 3},
       {name = "burner-inserter", count = 6},
-      {name = "small-electric-pole", count = 8},
+      {name = "small-electric-pole", count = 12},
       {name = "splitter", count = 4},
       {name = "transport-belt", count = 256}
     },

@@ -3,21 +3,34 @@ return {
     display_name = "solar panel factory",
     target_item_name = "solar-panel",
     defer_power_poles_until_end = true,
-    anchor_mode = "source-cluster",
-    source_cluster = {
-      site_type = "smelting-output-belt",
-      max_sites_per_item = 6,
-      minimum_build_distance = 10,
-      maximum_build_distance = 16,
-      origin_search_radius = 8,
-      heading_count = 16,
-      heading_attempts = 16,
-      local_search_step = 1
+    place_local_poles_with_power_task = true,
+    anchor_mode = "base-infra-free-space",
+    store_root_assembler_as_anchor_entity = true,
+    skip_initial_power_validation = true,
+    base_infra_search = {
+      max_origins = 10,
+      pole_search_radius = 96,
+      use_registered_sites = true,
+      include_power_poles = true
+    },
+    free_rectangle = {
+      min_x = -1,
+      max_x = 14,
+      min_y = -8,
+      max_y = 3
     },
     power_anchor_entity_name = "small-electric-pole",
     source_route_splitter = {
       entity_name = "splitter",
       item_name = "splitter"
+    },
+    source_route_extractor = {
+      entity_name = "burner-inserter",
+      item_name = "burner-inserter",
+      fuel = {
+        name = "coal",
+        count = 4
+      }
     },
     local_poles = {
       {

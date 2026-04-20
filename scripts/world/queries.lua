@@ -2941,6 +2941,18 @@ local function reserve_route_positions_for_placement(reserved_position_keys, pla
     return
   end
 
+  local placement_area = build_entity_placement_area(placement.entity_name, placement.build_position)
+  local min_x = math.floor(placement_area.left_top.x) + 0.5
+  local max_x = math.ceil(placement_area.right_bottom.x) - 0.5
+  local min_y = math.floor(placement_area.left_top.y) + 0.5
+  local max_y = math.ceil(placement_area.right_bottom.y) - 0.5
+
+  for x = min_x, max_x, 1 do
+    for y = min_y, max_y, 1 do
+      reserved_position_keys[get_position_key({x = x, y = y})] = true
+    end
+  end
+
   reserved_position_keys[get_position_key(placement.build_position)] = true
 
   if placement.entity_name == "splitter" then
@@ -2977,7 +2989,15 @@ local function can_place_or_reuse_existing_entity(surface, force, entity_name, p
   return find_matching_entity_at_position(surface, force, entity_name, position, direction) ~= nil
 end
 
-local function collect_reusable_belt_entities_by_key(surface, force, belt_entity_name, first_position, terminal_position, search_margin)
+local function collect_reusable_belt_entities_by_key(
+  surface,
+  force,
+  belt_entity_name,
+  first_position,
+  terminal_position,
+  search_margin,
+  excluded_position_keys
+)
   local margin = search_margin or 10
   local reusable_belts_by_key = {}
 
@@ -2990,7 +3010,10 @@ local function collect_reusable_belt_entities_by_key(surface, force, belt_entity
     name = belt_entity_name
   }) do
     if belt_entity and belt_entity.valid then
-      reusable_belts_by_key[get_position_key(belt_entity.position)] = belt_entity
+      local position_key = get_position_key(belt_entity.position)
+      if not (excluded_position_keys and excluded_position_keys[position_key]) then
+        reusable_belts_by_key[position_key] = belt_entity
+      end
     end
   end
 
@@ -3217,6 +3240,77 @@ local function build_source_cluster_anchor_candidates(builder_state, task, summa
   return candidates
 end
 
+local function build_base_infra_anchor_candidates(builder_state, task, summary, ctx)
+  local builder = builder_state.entity
+  local assembly_target = task.assembly_target or {}
+  local search_config = assembly_target.base_infra_search or task.base_infra_search or {}
+  local anchor_candidates = {}
+  local seen_position_keys = {}
+
+  local function add_candidate(anchor_entity, center_position)
+    if not center_position then
+      return
+    end
+
+    local snapped_center = snap_position_to_tile_center(center_position)
+    local position_key = get_position_key(snapped_center)
+    if seen_position_keys[position_key] then
+      return
+    end
+
+    seen_position_keys[position_key] = true
+    anchor_candidates[#anchor_candidates + 1] = {
+      anchor_entity = anchor_entity,
+      search_center = snapped_center,
+      score = ctx.square_distance(builder.position, snapped_center)
+    }
+  end
+
+  if search_config.use_registered_sites ~= false then
+    for _, site in ipairs(storage_helpers.ensure_production_sites()) do
+      local entity =
+        site.root_assembler or
+        site.output_machine or
+        site.assembler or
+        site.anchor_machine or
+        site.anchor_entity or
+        site.downstream_machine or
+        site.miner
+
+      if entity and entity.valid and entity.force == builder.force then
+        add_candidate(entity, entity.position)
+      end
+    end
+  end
+
+  if search_config.include_power_poles ~= false then
+    for _, pole in ipairs(builder.surface.find_entities_filtered{
+      position = builder.position,
+      radius = search_config.pole_search_radius or 96,
+      force = builder.force,
+      name = assembly_target.power_anchor_entity_name or task.power_anchor_entity_name or "small-electric-pole"
+    }) do
+      if pole and pole.valid then
+        add_candidate(pole, pole.position)
+      end
+    end
+  end
+
+  add_candidate(builder, builder.position)
+
+  table.sort(anchor_candidates, function(left, right)
+    return left.score < right.score
+  end)
+
+  local max_origins = math.max(search_config.max_origins or #anchor_candidates, 1)
+  while #anchor_candidates > max_origins do
+    table.remove(anchor_candidates)
+  end
+
+  summary.clearance_origins_found = math.max(summary.clearance_origins_found or 0, #anchor_candidates)
+  return anchor_candidates
+end
+
 local function build_source_cluster_search_origins(cluster_center, cluster_config, task, preferred_direction_vector, ctx)
   local maximum_build_distance = math.max(
     cluster_config.maximum_build_distance or cluster_config.local_search_radius or task.placement_search_radius or 0,
@@ -3316,6 +3410,18 @@ local function get_output_belt_connection_positions(site, ctx)
     },
     terminal_belt = terminal_belt
   }}
+end
+
+local function get_terminal_belt_connection_position(terminal_belt, ctx)
+  if not (terminal_belt and terminal_belt.valid) then
+    return nil
+  end
+
+  local direction_vector = get_direction_vector_from_direction(terminal_belt.direction, ctx)
+  return {
+    x = terminal_belt.position.x + direction_vector.x,
+    y = terminal_belt.position.y + direction_vector.y
+  }
 end
 
 local function build_source_route_entry_options(surface, force, terminal_belt, route_target_position, task, summary, ctx)
@@ -3418,6 +3524,13 @@ local function build_source_route_entry_options(surface, force, terminal_belt, r
         end
       else
         summary.failed_source_extractors = (summary.failed_source_extractors or 0) + 1
+        if (summary.failed_source_extractors or 0) <= 5 then
+          ctx.debug_log(
+            "assembly source splitter blocked for " .. tostring(task.route_id) ..
+            " at " .. ctx.format_position(splitter_position) ..
+            " from terminal " .. ctx.format_position(terminal_belt.position)
+          )
+        end
       end
     end
 
@@ -3448,11 +3561,13 @@ local function build_source_route_entry_options(surface, force, terminal_belt, r
         }}
       }
     end
-
-    return options
   end
 
   local extractor_spec = task.assembly_target and task.assembly_target.source_route_extractor or nil
+  if #options > 0 then
+    return options
+  end
+
   if not extractor_spec then
     if start_direction_vector then
       options[#options + 1] = {
@@ -3589,10 +3704,26 @@ local function build_source_route_entry_options(surface, force, terminal_belt, r
           }
         else
           summary.failed_source_extractors = (summary.failed_source_extractors or 0) + 1
+          if (summary.failed_source_extractors or 0) <= 5 then
+            ctx.debug_log(
+              "assembly source extractor geometry failed for " .. tostring(task.route_id) ..
+              " inserter=" .. ctx.format_position(inserter_position) ..
+              " drop-belt=" .. ctx.format_position(drop_belt_position) ..
+              " from terminal " .. ctx.format_position(terminal_belt.position)
+            )
+          end
         end
       end
     else
       summary.failed_source_extractors = (summary.failed_source_extractors or 0) + 1
+      if (summary.failed_source_extractors or 0) <= 5 then
+        ctx.debug_log(
+          "assembly source extractor blocked for " .. tostring(task.route_id) ..
+          " inserter=" .. ctx.format_position(inserter_position) ..
+          " drop-belt=" .. ctx.format_position(drop_belt_position) ..
+          " from terminal " .. ctx.format_position(terminal_belt.position)
+        )
+      end
     end
   end
 
@@ -3953,6 +4084,26 @@ local function transform_offset_positions(origin_position, offsets, orientation,
   return positions
 end
 
+local function build_rectangle_positions(origin_position, rectangle, orientation, ctx)
+  local positions = {}
+
+  if not (origin_position and rectangle) then
+    return positions
+  end
+
+  for offset_x = rectangle.min_x, rectangle.max_x do
+    for offset_y = rectangle.min_y, rectangle.max_y do
+      local rotated_offset = ctx.rotate_offset({x = offset_x, y = offset_y}, orientation)
+      positions[#positions + 1] = {
+        x = origin_position.x + rotated_offset.x,
+        y = origin_position.y + rotated_offset.y
+      }
+    end
+  end
+
+  return positions
+end
+
 local function build_power_bridge_positions(surface, force, source_position, target_position, pole_name, ctx)
   local max_link_distance = 5.5
   local max_link_distance_squared = max_link_distance * max_link_distance
@@ -3997,14 +4148,22 @@ local function build_power_bridge_positions(surface, force, source_position, tar
   local queue = {source}
   local head = 1
   local parents = {}
+  local source_key = position_key(source)
   local visited = {
-    [position_key(source)] = true
+    [source_key] = true
   }
   local goal_key = nil
 
   while head <= #queue do
     local current = queue[head]
     head = head + 1
+
+    if get_position_key(current) ~= source_key and
+      ctx.square_distance(current, target) <= max_link_distance_squared
+    then
+      goal_key = position_key(current)
+      break
+    end
 
     for _, step in ipairs(steps) do
       local next_position = snap_position_to_tile_center{
@@ -4015,13 +4174,6 @@ local function build_power_bridge_positions(surface, force, source_position, tar
 
       if not visited[next_key] and in_bounds(next_position) then
         visited[next_key] = true
-
-        if ctx.square_distance(next_position, target) <= max_link_distance_squared then
-          parents[next_key] = position_key(current)
-          goal_key = next_key
-          head = #queue + 1
-          break
-        end
 
         if surface.can_place_entity{
           name = pole_name,
@@ -4048,11 +4200,9 @@ local function build_power_bridge_positions(surface, force, source_position, tar
     end
 
     local current_position = parse_position_key(current_key)
-    if ctx.square_distance(current_position, target) > max_link_distance_squared then
-      positions[#positions + 1] = current_position
-    end
+    positions[#positions + 1] = current_position
 
-    if parent_key == position_key(source) then
+    if parent_key == source_key then
       break
     end
     current_key = parent_key
@@ -4159,6 +4309,40 @@ local function try_probe_layout_entity(surface, force, placement, task, summary,
   return probe_entity
 end
 
+local function rectangle_is_clear_for_assembly(surface, force, build_position, orientation, task, summary, ctx)
+  local assembly_target = task.assembly_target or {}
+  local free_rectangle = assembly_target.free_rectangle or task.free_rectangle
+  if not free_rectangle then
+    return true
+  end
+
+  local belt_name = task.belt_entity_name or "transport-belt"
+  for offset_x = free_rectangle.min_x, free_rectangle.max_x do
+    for offset_y = free_rectangle.min_y, free_rectangle.max_y do
+      local rotated_offset = ctx.rotate_offset({x = offset_x, y = offset_y}, orientation)
+      local candidate_position = {
+        x = build_position.x + rotated_offset.x,
+        y = build_position.y + rotated_offset.y
+      }
+
+      summary.positions_checked = summary.positions_checked + 1
+      if not surface.can_place_entity{
+        name = belt_name,
+        position = candidate_position,
+        direction = ctx.direction_by_name.east,
+        force = force
+      } then
+        summary.failed_rectangle_clearance = (summary.failed_rectangle_clearance or 0) + 1
+        return false
+      end
+
+      summary.placeable_positions = summary.placeable_positions + 1
+    end
+  end
+
+  return true
+end
+
 local function build_assembly_block_candidate(surface, force, build_position, orientation, anchor_entity, power_anchor_pole, source_sites_by_item, task, summary, ctx)
   local assembly_target = task.assembly_target
   local placements = {}
@@ -4166,8 +4350,10 @@ local function build_assembly_block_candidate(surface, force, build_position, or
   local probe_entities_by_id = {}
   local route_belt_entities = {}
   local deferred_route_input_placements_by_id = {}
+  local deferred_power_placement_specs = {}
   local route_input_probe_entities_by_id = {}
   local local_pole_by_id = {}
+  local place_local_poles_with_power_task = assembly_target.place_local_poles_with_power_task == true
 
   local function destroy_probes()
     entity_refs.destroy_entities(probe_entities)
@@ -4192,6 +4378,10 @@ local function build_assembly_block_candidate(surface, force, build_position, or
     return true
   end
 
+  if not rectangle_is_clear_for_assembly(surface, force, build_position, orientation, task, summary, ctx) then
+    return nil
+  end
+
   for _, pole_spec in ipairs(assembly_target.local_poles or {}) do
     local rotated_offset = ctx.rotate_offset(pole_spec.offset, orientation)
     local placement = {
@@ -4199,19 +4389,24 @@ local function build_assembly_block_candidate(surface, force, build_position, or
       site_role = pole_spec.site_role,
       entity_name = pole_spec.entity_name,
       item_name = pole_spec.item_name or pole_spec.entity_name,
-      build_position = {
+      build_position = snap_position_to_tile_center{
         x = build_position.x + rotated_offset.x,
         y = build_position.y + rotated_offset.y
-      }
+      },
+      is_power_entry = pole_spec.is_power_entry == true
     }
 
-    if not add_probe(placement) then
-      destroy_probes()
-      return nil
-    end
+    if place_local_poles_with_power_task then
+      deferred_power_placement_specs[#deferred_power_placement_specs + 1] = placement
+    else
+      if not add_probe(placement) then
+        destroy_probes()
+        return nil
+      end
 
-    if pole_spec.is_power_entry then
-      local_pole_by_id.power_entry = probe_entities_by_id[pole_spec.id]
+      if pole_spec.is_power_entry then
+        local_pole_by_id.power_entry = probe_entities_by_id[pole_spec.id]
+      end
     end
   end
 
@@ -4267,7 +4462,7 @@ local function build_assembly_block_candidate(surface, force, build_position, or
         site_role = inserter_spec.site_role,
         entity_name = inserter_spec.entity_name,
         item_name = inserter_spec.item_name or inserter_spec.entity_name,
-        build_position = {
+        build_position = snap_position_to_tile_center{
           x = build_position.x + rotated_offset.x,
           y = build_position.y + rotated_offset.y
         },
@@ -4366,56 +4561,58 @@ local function build_assembly_block_candidate(surface, force, build_position, or
     end
   end
 
-  local entry_pole = local_pole_by_id.power_entry
-  if not (entry_pole and entry_pole.valid) then
-    destroy_probes()
-    return nil
-  end
+  if not assembly_target.skip_initial_power_validation then
+    local entry_pole = local_pole_by_id.power_entry
+    if not (entry_pole and entry_pole.valid and power_anchor_pole and power_anchor_pole.valid) then
+      destroy_probes()
+      return nil
+    end
 
-  local bridge_positions = build_power_bridge_positions(
-    surface,
-    force,
-    power_anchor_pole.position,
-    entry_pole.position,
-    assembly_target.power_anchor_entity_name,
-    ctx
-  )
+    local bridge_positions = build_power_bridge_positions(
+      surface,
+      force,
+      power_anchor_pole.position,
+      entry_pole.position,
+      assembly_target.power_anchor_entity_name,
+      ctx
+    )
 
-  if bridge_positions == nil then
-    summary.failed_power_bridge = (summary.failed_power_bridge or 0) + 1
-    destroy_probes()
-    return nil
-  end
-
-  for bridge_index, bridge_position in ipairs(bridge_positions) do
-    local placement = {
-      id = "power-bridge-" .. tostring(bridge_index),
-      site_role = "power-pole",
-      entity_name = assembly_target.power_anchor_entity_name,
-      item_name = assembly_target.power_anchor_entity_name,
-      build_position = bridge_position
-    }
-
-    if not add_probe(placement) then
+    if bridge_positions == nil then
       summary.failed_power_bridge = (summary.failed_power_bridge or 0) + 1
       destroy_probes()
       return nil
     end
-  end
 
-  local source_network_id = power_anchor_pole.electric_network_id or 0
-  for _, node_spec in ipairs(assembly_target.assembler_nodes or {}) do
-    local probe_assembler = probe_entities_by_id[node_spec.id]
-    if not (probe_assembler and probe_assembler.valid and probe_assembler.electric_network_id and probe_assembler.electric_network_id ~= 0) then
-      summary.failed_power_network = (summary.failed_power_network or 0) + 1
-      destroy_probes()
-      return nil
+    for bridge_index, bridge_position in ipairs(bridge_positions) do
+      local placement = {
+        id = "power-bridge-" .. tostring(bridge_index),
+        site_role = "power-pole",
+        entity_name = assembly_target.power_anchor_entity_name,
+        item_name = assembly_target.power_anchor_entity_name,
+        build_position = bridge_position
+      }
+
+      if not add_probe(placement) then
+        summary.failed_power_bridge = (summary.failed_power_bridge or 0) + 1
+        destroy_probes()
+        return nil
+      end
     end
 
-    if source_network_id ~= 0 and probe_assembler.electric_network_id ~= source_network_id then
-      summary.failed_power_network = (summary.failed_power_network or 0) + 1
-      destroy_probes()
-      return nil
+    local source_network_id = power_anchor_pole.electric_network_id or 0
+    for _, node_spec in ipairs(assembly_target.assembler_nodes or {}) do
+      local probe_assembler = probe_entities_by_id[node_spec.id]
+      if not (probe_assembler and probe_assembler.valid and probe_assembler.electric_network_id and probe_assembler.electric_network_id ~= 0) then
+        summary.failed_power_network = (summary.failed_power_network or 0) + 1
+        destroy_probes()
+        return nil
+      end
+
+      if source_network_id ~= 0 and probe_assembler.electric_network_id ~= source_network_id then
+        summary.failed_power_network = (summary.failed_power_network or 0) + 1
+        destroy_probes()
+        return nil
+      end
     end
   end
 
@@ -4444,7 +4641,8 @@ local function build_assembly_block_candidate(surface, force, build_position, or
     build_position = ctx.clone_position(build_position),
     orientation = orientation,
     placements = placements,
-    route_input_placement_specs_by_id = deferred_route_input_placements_by_id
+    route_input_placement_specs_by_id = deferred_route_input_placements_by_id,
+    deferred_power_placement_specs = deferred_power_placement_specs
   }
 end
 
@@ -4478,6 +4676,41 @@ local function get_assembly_route_target_position(local_connection_entity, ctx)
   }
 end
 
+local function get_assembly_route_approach_position(local_connection_entity, ctx)
+  local route_target_position = get_assembly_route_target_position(local_connection_entity, ctx)
+  if not route_target_position then
+    return nil
+  end
+
+  local direction_vector = get_direction_vector_from_direction(local_connection_entity.direction, ctx)
+  return {
+    x = route_target_position.x - direction_vector.x,
+    y = route_target_position.y - direction_vector.y
+  }
+end
+
+local function assembly_site_has_live_power(assembly_site, network_id)
+  if not (assembly_site and assembly_site.root_assembler and assembly_site.root_assembler.valid) then
+    return false
+  end
+
+  for _, assembler in ipairs(assembly_site.assemblers or {}) do
+    if not (assembler and assembler.valid and assembler.electric_network_id and assembler.electric_network_id ~= 0) then
+      return false
+    end
+
+    if network_id ~= 0 and assembler.electric_network_id ~= network_id then
+      return false
+    end
+
+    if (assembler.energy or 0) <= 0 then
+      return false
+    end
+  end
+
+  return true
+end
+
 function queries.find_assembly_input_route_site(builder_state, task, ctx)
   local builder = builder_state.entity
   local anchor_origin = task.manual_anchor_position or builder.position
@@ -4495,7 +4728,16 @@ function queries.find_assembly_input_route_site(builder_state, task, ctx)
   }
 
   local production_sites = storage_helpers.ensure_production_sites()
+  local registered_belt_position_keys = {}
   local assembly_sites = {}
+
+  for _, site in ipairs(production_sites) do
+    for _, belt_entity in ipairs(site.belt_entities or {}) do
+      if belt_entity and belt_entity.valid then
+        registered_belt_position_keys[get_position_key(belt_entity.position)] = true
+      end
+    end
+  end
 
   for _, site in ipairs(production_sites) do
     if site.site_type == "assembly-block" and site.root_assembler and site.root_assembler.valid then
@@ -4560,6 +4802,41 @@ function queries.find_assembly_input_route_site(builder_state, task, ctx)
               end
             end
 
+            if task.allow_assembly_route_sources == true or
+              (task.assembly_target and task.assembly_target.allow_assembly_route_sources == true)
+            then
+              for _, route_source_site in ipairs(production_sites) do
+                if route_source_site.site_type == "assembly-block" then
+                  for connected_route_id, connection in pairs(route_source_site.route_connections_by_id or {}) do
+                    if connected_route_id ~= task.route_id then
+                      local connected_route_spec = route_source_site.route_specs_by_id and
+                        route_source_site.route_specs_by_id[connected_route_id] or nil
+                      local connected_terminal_belt = connection and connection.belt_entities and
+                        connection.belt_entities[#connection.belt_entities] or nil
+                      local route_start_position = get_terminal_belt_connection_position(connected_terminal_belt, ctx)
+
+                      if connected_route_spec and
+                        connected_route_spec.item_name == route_spec.item_name and
+                        connected_terminal_belt and connected_terminal_belt.valid and
+                        route_start_position
+                      then
+                        local source_site_key = tostring(get_production_site_identity_key(route_source_site) or "assembly-block") ..
+                          ":route:" .. tostring(connected_route_id)
+                        source_candidates[#source_candidates + 1] = {
+                          site = route_source_site,
+                          source_site_key = source_site_key,
+                          route_start_position = route_start_position,
+                          source_terminal_belt = connected_terminal_belt,
+                          distance = ctx.square_distance(route_start_position, route_target_position),
+                          already_used_for_route = false
+                        }
+                      end
+                    end
+                  end
+                end
+              end
+            end
+
             table.sort(source_candidates, function(left, right)
               if left.already_used_for_route ~= right.already_used_for_route then
                 return not left.already_used_for_route
@@ -4581,12 +4858,49 @@ function queries.find_assembly_input_route_site(builder_state, task, ctx)
                 ctx
               )
 
-            for _, source_entry in ipairs(source_entry_options) do
+              for _, source_entry in ipairs(source_entry_options) do
                 local reserved_route_position_keys = {}
-                for _, reserved_input_placements in pairs(assembly_site.route_input_placement_specs_by_id or {}) do
-                  for _, reserved_input_placement in ipairs(reserved_input_placements or {}) do
-                    reserve_route_positions_for_placement(reserved_route_position_keys, reserved_input_placement, ctx)
+
+                local route_input_placement_specs_by_id = assembly_site.route_input_placement_specs_by_id or {}
+                local route_connections_by_id = assembly_site.route_connections_by_id or {}
+                local route_local_belts_by_id = assembly_site.route_local_belts_by_id or {}
+
+                for reserved_route_id, reserved_input_placements in pairs(route_input_placement_specs_by_id) do
+                  if reserved_route_id == task.route_id or not route_connections_by_id[reserved_route_id] then
+                    for _, reserved_input_placement in ipairs(reserved_input_placements or {}) do
+                      reserve_route_positions_for_placement(
+                        reserved_route_position_keys,
+                        reserved_input_placement,
+                        ctx
+                      )
+                    end
                   end
+                end
+                for reserved_route_id, reserved_local_belts in pairs(route_local_belts_by_id) do
+                  if reserved_route_id ~= task.route_id and not route_connections_by_id[reserved_route_id] then
+                    local reserved_local_connection_entity = reserved_local_belts[1] or nil
+                    local reserved_route_target_position = get_assembly_route_target_position(
+                      reserved_local_connection_entity,
+                      ctx
+                    )
+                    if reserved_route_target_position then
+                      reserved_route_position_keys[get_position_key(reserved_route_target_position)] = true
+                    end
+                    local reserved_route_approach_position = get_assembly_route_approach_position(
+                      reserved_local_connection_entity,
+                      ctx
+                    )
+                    if reserved_route_approach_position then
+                      reserved_route_position_keys[get_position_key(reserved_route_approach_position)] = true
+                    end
+                  end
+                end
+                for _, deferred_power_placement in ipairs(assembly_site.deferred_power_placement_specs or {}) do
+                  reserve_route_positions_for_placement(
+                    reserved_route_position_keys,
+                    deferred_power_placement,
+                    ctx
+                  )
                 end
                 for _, reserved_prefix_placement in ipairs(source_entry.prefix_placements or {}) do
                   reserve_route_positions_for_placement(reserved_route_position_keys, reserved_prefix_placement, ctx)
@@ -4594,6 +4908,15 @@ function queries.find_assembly_input_route_site(builder_state, task, ctx)
                 for _, reserved_suffix_placement in ipairs(source_entry.suffix_placements or {}) do
                   reserve_route_positions_for_placement(reserved_route_position_keys, reserved_suffix_placement, ctx)
                 end
+                local reusable_belt_entities_by_key = collect_reusable_belt_entities_by_key(
+                  builder.surface,
+                  builder.force,
+                  task.belt_entity_name,
+                  source_entry.path_start_position,
+                  route_target_position,
+                  task.belt_route_search_margin,
+                  registered_belt_position_keys
+                )
                 local route_placements = build_belt_path_placements_between_positions(
                   builder.surface,
                   builder.force,
@@ -4601,7 +4924,7 @@ function queries.find_assembly_input_route_site(builder_state, task, ctx)
                   route_target_position,
                   task,
                   summary,
-                  nil,
+                  reusable_belt_entities_by_key,
                   reserved_route_position_keys,
                   source_entry.forward_direction_vector,
                   ctx
@@ -4717,6 +5040,204 @@ function queries.find_assembly_input_route_site(builder_state, task, ctx)
   return nil, summary
 end
 
+function queries.find_assembly_power_site(builder_state, task, ctx)
+  local builder = builder_state.entity
+  local anchor_origin = task.manual_anchor_position or builder.position
+  local summary = {
+    anchor_entities_considered = 0,
+    anchors_skipped_blocked = 0,
+    anchors_skipped_registered = 0,
+    anchors_missing_power = 0,
+    positions_checked = 0,
+    placeable_positions = 0,
+    resource_overlap_rejections = 0,
+    failed_power_bridge = 0,
+    failed_anchor_entity = nil
+  }
+
+  local assembly_sites = {}
+  for _, site in ipairs(storage_helpers.ensure_production_sites()) do
+    if site.site_type == "assembly-block" and site.root_assembler and site.root_assembler.valid then
+      assembly_sites[#assembly_sites + 1] = {
+        site = site,
+        anchor_entity = site.root_assembler,
+        distance = ctx.square_distance(anchor_origin, site.root_assembler.position)
+      }
+    end
+  end
+
+  table.sort(assembly_sites, function(left, right)
+    return left.distance < right.distance
+  end)
+
+  local max_anchor_entities = task.max_anchor_entities or #assembly_sites
+  for _, assembly_candidate in ipairs(assembly_sites) do
+    if summary.anchor_entities_considered >= max_anchor_entities then
+      break
+    end
+
+    local assembly_site = assembly_candidate.site
+    local anchor_entity = assembly_candidate.anchor_entity
+    local power_entry_pole = assembly_site.power_entry_pole
+    local deferred_power_placement_specs = assembly_site.deferred_power_placement_specs or {}
+    local power_entry_position = power_entry_pole and power_entry_pole.valid and power_entry_pole.position or nil
+
+    if not power_entry_position then
+      for _, placement in ipairs(deferred_power_placement_specs) do
+        if placement.id == "power-pole-entry" and placement.build_position then
+          power_entry_position = placement.build_position
+          break
+        end
+      end
+    end
+
+    if anchor_is_blocked_for_layout(builder_state, task, anchor_entity) then
+      summary.anchors_skipped_blocked = summary.anchors_skipped_blocked + 1
+    elseif not power_entry_position then
+      summary.failed_power_bridge = (summary.failed_power_bridge or 0) + 1
+    else
+      summary.anchor_entities_considered = summary.anchor_entities_considered + 1
+      summary.failed_anchor_entity = anchor_entity
+
+      local power_anchor_entities = builder.surface.find_entities_filtered{
+        position = power_entry_position,
+        radius = task.power_anchor_search_radius or 32,
+        force = builder.force,
+        name = (task.assembly_target and task.assembly_target.power_anchor_entity_name) or
+          task.power_anchor_entity_name or
+          "small-electric-pole"
+      }
+
+      table.sort(power_anchor_entities, function(left, right)
+        return ctx.square_distance(power_entry_position, left.position) <
+          ctx.square_distance(power_entry_position, right.position)
+      end)
+
+      local local_network_id = power_entry_pole and power_entry_pole.valid and power_entry_pole.electric_network_id or 0
+      local already_connected_to_external_power = false
+
+      for _, power_anchor_pole in ipairs(power_anchor_entities) do
+        if not power_anchor_pole.valid then
+          goto continue_power_anchor
+        end
+
+        if power_entry_pole and power_anchor_pole == power_entry_pole then
+          goto continue_power_anchor
+        end
+
+        local is_local_power_pole = false
+        for _, local_pole in ipairs(assembly_site.power_poles or {}) do
+          if local_pole == power_anchor_pole then
+            is_local_power_pole = true
+            break
+          end
+        end
+        if is_local_power_pole then
+          goto continue_power_anchor
+        end
+
+        local anchor_network_id = power_anchor_pole.electric_network_id or 0
+        local placements = {}
+        local seen_power_position_keys = {}
+        for _, placement in ipairs(deferred_power_placement_specs) do
+          local position_key = placement.build_position and get_position_key(placement.build_position) or nil
+          local existing_pole = find_matching_entity_at_position(
+            builder.surface,
+            builder.force,
+            placement.entity_name,
+            placement.build_position,
+            placement.build_direction
+          )
+
+          if position_key then
+            seen_power_position_keys[position_key] = true
+          end
+
+          if not (existing_pole and existing_pole.valid) then
+            placements[#placements + 1] = {
+              id = placement.id,
+              site_role = placement.site_role,
+              entity_name = placement.entity_name,
+              item_name = placement.item_name,
+              build_position = ctx.clone_position(placement.build_position),
+              build_direction = placement.build_direction,
+              fuel = placement.fuel
+            }
+          end
+        end
+
+        if anchor_network_id == 0 then
+          goto continue_power_anchor
+        end
+        if local_network_id ~= 0 and local_network_id == anchor_network_id then
+          if #placements > 0 and assembly_site_has_live_power(assembly_site, anchor_network_id) then
+            return {
+              assembly_site = assembly_site,
+              anchor_entity = anchor_entity,
+              power_anchor_pole = power_anchor_pole,
+              build_position = ctx.clone_position(placements[1].build_position),
+              placements = placements
+            }, summary
+          end
+
+          if assembly_site_has_live_power(assembly_site, anchor_network_id) then
+            already_connected_to_external_power = true
+            break
+          end
+
+          goto continue_power_anchor
+        end
+
+        local bridge_positions = build_power_bridge_positions(
+          builder.surface,
+          builder.force,
+          power_anchor_pole.position,
+          power_entry_position,
+          (task.assembly_target and task.assembly_target.power_anchor_entity_name) or task.power_anchor_entity_name,
+          ctx
+        )
+
+        if bridge_positions ~= nil then
+          for bridge_index, bridge_position in ipairs(bridge_positions) do
+            local position_key = get_position_key(bridge_position)
+            if not seen_power_position_keys[position_key] then
+              placements[#placements + 1] = {
+                id = "power-bridge-" .. tostring(bridge_index),
+                site_role = "power-pole",
+                entity_name = (task.assembly_target and task.assembly_target.power_anchor_entity_name) or
+                  task.power_anchor_entity_name,
+                item_name = (task.assembly_target and task.assembly_target.power_anchor_entity_name) or
+                  task.power_anchor_entity_name,
+                build_position = bridge_position
+              }
+            end
+          end
+
+          return {
+            assembly_site = assembly_site,
+            anchor_entity = anchor_entity,
+            power_anchor_pole = power_anchor_pole,
+            build_position = ctx.clone_position((placements[1] and placements[1].build_position) or power_entry_position),
+            placements = placements
+          }, summary
+        end
+
+        summary.failed_power_bridge = (summary.failed_power_bridge or 0) + 1
+
+        ::continue_power_anchor::
+      end
+
+      if already_connected_to_external_power then
+        summary.anchors_skipped_registered = summary.anchors_skipped_registered + 1
+      else
+        summary.anchors_missing_power = summary.anchors_missing_power + 1
+      end
+    end
+  end
+
+  return nil, summary
+end
+
 function queries.find_assembly_block_site(builder_state, task, ctx)
   local builder = builder_state.entity
   local assembly_target = task.assembly_target
@@ -4732,6 +5253,7 @@ function queries.find_assembly_block_site(builder_state, task, ctx)
     orientations_considered = 0,
     positions_checked = 0,
     placeable_positions = 0,
+    failed_rectangle_clearance = 0,
     resource_overlap_rejections = 0,
     failed_inserter_geometry = 0,
     failed_power_bridge = 0,
@@ -4749,6 +5271,8 @@ function queries.find_assembly_block_site(builder_state, task, ctx)
   local anchor_candidates = {}
   if assembly_target.anchor_mode == "source-cluster" then
     anchor_candidates = build_source_cluster_anchor_candidates(builder_state, task, summary, ctx)
+  elseif assembly_target.anchor_mode == "base-infra-free-space" then
+    anchor_candidates = build_base_infra_anchor_candidates(builder_state, task, summary, ctx)
   else
     for _, anchor_entity in ipairs(builder.surface.find_entities_filtered{
       force = builder.force,
@@ -4780,7 +5304,7 @@ function queries.find_assembly_block_site(builder_state, task, ctx)
           summary.anchors_skipped_registered = summary.anchors_skipped_registered + 1
         else
           local power_anchor_pole = anchor_candidate.power_anchor_pole
-          if not power_anchor_pole then
+          if not power_anchor_pole and not assembly_target.skip_initial_power_validation then
             local power_anchor_entities = builder.surface.find_entities_filtered{
               position = anchor_entity.position,
               radius = task.power_anchor_search_radius or 16,
@@ -4795,7 +5319,7 @@ function queries.find_assembly_block_site(builder_state, task, ctx)
             power_anchor_pole = power_anchor_entities[1]
           end
 
-          if not (power_anchor_pole and power_anchor_pole.valid) then
+          if not assembly_target.skip_initial_power_validation and not (power_anchor_pole and power_anchor_pole.valid) then
             summary.anchors_missing_power = summary.anchors_missing_power + 1
             goto continue
           end
@@ -4810,7 +5334,7 @@ function queries.find_assembly_block_site(builder_state, task, ctx)
               search_radius = task.manual_target_search_radius or task.placement_search_radius or 0,
               placement_step = task.manual_target_search_step or task.placement_step or 1
             }}
-          elseif anchor_candidate.search_center then
+          elseif assembly_target.anchor_mode == "source-cluster" and anchor_candidate.search_center then
             local source_cluster = assembly_target.source_cluster or task.source_cluster or {}
             search_origins = build_source_cluster_search_origins(
               anchor_candidate.search_center,
@@ -4819,6 +5343,12 @@ function queries.find_assembly_block_site(builder_state, task, ctx)
               anchor_candidate.preferred_direction_vector,
               ctx
             )
+          elseif anchor_candidate.search_center then
+            search_origins = {{
+              center = ctx.clone_position(anchor_candidate.search_center),
+              search_radius = task.placement_search_radius or 0,
+              placement_step = task.placement_step or 1
+            }}
           else
             search_origins = build_resource_clearance_search_origins(
               builder.surface,
@@ -4831,7 +5361,8 @@ function queries.find_assembly_block_site(builder_state, task, ctx)
           end
 
           local source_cluster = assembly_target.source_cluster or task.source_cluster or {}
-          local minimum_build_distance = source_cluster.minimum_build_distance or 0
+          local minimum_build_distance = assembly_target.anchor_mode == "source-cluster" and
+            (source_cluster.minimum_build_distance or 0) or 0
           local minimum_build_distance_squared = minimum_build_distance * minimum_build_distance
 
           for _, search_origin in ipairs(search_origins) do

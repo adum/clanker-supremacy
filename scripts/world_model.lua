@@ -37,6 +37,10 @@ function world_model.find_assembly_input_route_site(builder_state, task, ctx)
   return queries.find_assembly_input_route_site(builder_state, task, ctx)
 end
 
+function world_model.find_assembly_power_site(builder_state, task, ctx)
+  return queries.find_assembly_power_site(builder_state, task, ctx)
+end
+
 function world_model.register_smelting_site(task, miner, downstream_machine, output_container, ctx)
   return production.register_smelting_site(task, miner, downstream_machine, output_container, ctx)
 end
@@ -53,8 +57,18 @@ function world_model.register_output_belt_site(task, output_machine, output_inse
   return production.register_output_belt_site(task, output_machine, output_inserter, belt_entities, hub_position, ctx)
 end
 
-function world_model.register_assembly_block_site(task, anchor_entity, root_assembler, placed_layout_entities, ctx)
-  return production.register_assembly_block_site(task, anchor_entity, root_assembler, placed_layout_entities, ctx)
+function world_model.register_assembly_block_site(task, anchor_entity, root_assembler, placed_layout_entities, route_input_placement_specs_by_id, deferred_power_placement_specs, layout_build_position, layout_orientation, ctx)
+  return production.register_assembly_block_site(
+    task,
+    anchor_entity,
+    root_assembler,
+    placed_layout_entities,
+    route_input_placement_specs_by_id,
+    deferred_power_placement_specs,
+    layout_build_position,
+    layout_orientation,
+    ctx
+  )
 end
 
 function world_model.register_assembly_input_route(task, assembly_site, route_id, belt_entities, source_site, ctx)

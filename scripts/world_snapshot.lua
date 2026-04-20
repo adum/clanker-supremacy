@@ -11,14 +11,20 @@ local function clone_position(position)
   }
 end
 
-local function clone_table(input)
+local function clone_table(input, seen)
   if type(input) ~= "table" then
     return input
   end
 
+  seen = seen or {}
+  if seen[input] then
+    return seen[input]
+  end
+
   local copy = {}
+  seen[input] = copy
   for key, value in pairs(input) do
-    copy[key] = clone_table(value)
+    copy[clone_table(key, seen)] = clone_table(value, seen)
   end
   return copy
 end

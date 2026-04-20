@@ -18,6 +18,13 @@ local function describe_assembly_block_wait_detail(summary, task)
     return "missing source belt sites for " .. format_humanized_name_list(summary.missing_source_items)
   end
 
+  if (summary.failed_rectangle_clearance or 0) > 0 then
+    if task and task.manual_target_position then
+      return "no free factory rectangle fit near the requested position"
+    end
+    return "no free factory rectangle fit near base infrastructure"
+  end
+
   if (summary.anchors_missing_power or 0) > 0 and
     (summary.anchor_entities_considered or 0) == 0 and
     (summary.positions_checked or 0) == 0
@@ -31,6 +38,10 @@ local function describe_assembly_block_wait_detail(summary, task)
     {
       count = summary.failed_source_routes or 0,
       message = "source routes could not reach the block"
+    },
+    {
+      count = summary.failed_rectangle_clearance or 0,
+      message = "candidate factory rectangles were blocked"
     },
     {
       count = summary.failed_inserter_geometry or 0,
@@ -91,7 +102,25 @@ local function describe_assembly_block_wait_detail(summary, task)
   end
 
   if (summary.anchor_entities_considered or 0) == 0 then
-    return "no candidate source cluster anchors found"
+    return "no nearby base infrastructure search origins found"
+  end
+
+  return nil
+end
+
+local function describe_assembly_power_wait_detail(summary)
+  summary = summary or {}
+
+  if (summary.failed_power_bridge or 0) > 0 then
+    return "power poles could not bridge into the factory"
+  end
+
+  if (summary.anchors_missing_power or 0) > 0 then
+    return "no nearby powered pole network could reach the factory"
+  end
+
+  if (summary.anchor_entities_considered or 0) == 0 then
+    return "no unpowered solar factory blocks were available"
   end
 
   return nil
@@ -538,6 +567,7 @@ local function start_place_assembly_block_task(builder_state, task, tick, ctx)
       summary.orientations_considered .. " orientations, " ..
       summary.positions_checked .. " candidate positions, " ..
       summary.placeable_positions .. " placeable spots, " ..
+      (summary.failed_rectangle_clearance or 0) .. " blocked rectangles, " ..
       (summary.source_sites_considered or 0) .. " source belt sites, " ..
       (summary.failed_source_routes or 0) .. " failed source routes, " ..
       (summary.failed_inserter_geometry or 0) .. " inserter-geometry failures, " ..
@@ -558,9 +588,11 @@ local function start_place_assembly_block_task(builder_state, task, tick, ctx)
     approach_position = ctx.create_task_approach_position(task, site.build_position),
     anchor_position = ctx.clone_position(site.anchor_entity.position),
     anchor_entity = site.anchor_entity,
+    layout_build_position = ctx.clone_position(site.build_position),
     layout_orientation = site.orientation,
     layout_placements = site.placements,
     route_input_placement_specs_by_id = site.route_input_placement_specs_by_id,
+    deferred_power_placement_specs = site.deferred_power_placement_specs,
     layout_index = 1,
     placed_layout_entities = {},
     last_position = ctx.clone_position(entity.position),
@@ -572,6 +604,60 @@ local function start_place_assembly_block_task(builder_state, task, tick, ctx)
     "task " .. task.id .. ": found assembly block site for " ..
     (task.target_item_name or "target") .. " near " .. site.anchor_entity.name ..
     " at " .. ctx.format_position(site.anchor_entity.position) ..
+    "; moving toward " .. ctx.format_position(site.build_position)
+  )
+end
+
+local function start_connect_assembly_power_task(builder_state, task, tick, ctx)
+  local entity = builder_state.entity
+  ctx.debug_log(
+    "task " .. task.id .. ": scanning for assembly power hookup for " ..
+    (task.target_item_name or (task.assembly_target and task.assembly_target.target_item_name) or "target") ..
+    " from " .. ctx.format_position(entity.position)
+  )
+
+  local site, summary = ctx.find_assembly_power_site(builder_state, task)
+  if not site then
+    local wait_detail = describe_assembly_power_wait_detail(summary)
+    builder_state.task_state = {
+      phase = "waiting-for-resource",
+      wait_reason = "no-assembly-power",
+      wait_detail = wait_detail,
+      next_attempt_tick = tick + task.search_retry_ticks,
+      failed_layout_anchor_entity = summary.failed_anchor_entity
+    }
+    ctx.debug_log(
+      "task " .. task.id .. ": no assembly power hookup found; checked " ..
+      tostring(summary.anchor_entities_considered or 0) .. " assembly blocks, " ..
+      tostring(summary.anchors_skipped_blocked or 0) .. " anchors blocked, " ..
+      tostring(summary.anchors_skipped_registered or 0) .. " already powered, " ..
+      tostring(summary.anchors_missing_power or 0) .. " anchors without nearby power, " ..
+      tostring(summary.failed_power_bridge or 0) .. " failed power bridges" ..
+      (wait_detail and ("; primary blocker: " .. wait_detail) or "") ..
+      "; retry at tick " .. builder_state.task_state.next_attempt_tick
+    )
+    return
+  end
+
+  builder_state.task_state = {
+    phase = "moving",
+    build_position = ctx.clone_position(site.build_position),
+    approach_position = ctx.create_task_approach_position(task, site.build_position),
+    anchor_position = ctx.clone_position(site.anchor_entity.position),
+    anchor_entity = site.anchor_entity,
+    assembly_site = site.assembly_site,
+    power_anchor_pole = site.power_anchor_pole,
+    layout_placements = site.placements,
+    layout_index = 1,
+    placed_layout_entities = {},
+    last_position = ctx.clone_position(entity.position),
+    last_progress_tick = tick
+  }
+  ctx.builder_runtime.clear_task_retry_state(builder_state, task)
+
+  ctx.debug_log(
+    "task " .. task.id .. ": found assembly power hookup into block at " ..
+    ctx.format_position(site.anchor_entity.position) ..
     "; moving toward " .. ctx.format_position(site.build_position)
   )
 end
@@ -670,6 +756,11 @@ function action_start.start_task(builder_state, task, tick, ctx)
 
   if task.type == "place-assembly-input-route" then
     start_place_assembly_input_route_task(builder_state, task, tick, ctx)
+    return
+  end
+
+  if task.type == "connect-assembly-power" then
+    start_connect_assembly_power_task(builder_state, task, tick, ctx)
     return
   end
 
