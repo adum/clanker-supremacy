@@ -89,6 +89,15 @@ return {
         offset = {x = 10, y = -3}
       }
     },
+    output_containers = {
+      {
+        id = "solar-panel-output-chest",
+        site_role = "output-container",
+        entity_name = "wooden-chest",
+        item_name = "wooden-chest",
+        offset = {x = 13, y = -3}
+      }
+    },
     internal_inserters = {
       {
         id = "copper-cable-to-circuit",
@@ -112,6 +121,22 @@ return {
         entity_name = "burner-inserter",
         item_name = "burner-inserter",
         offset = {x = 8, y = -3},
+        direction_name = "west",
+        fuel = {
+          name = "coal",
+          count = 4
+        }
+      }
+    },
+    output_inserters = {
+      {
+        id = "solar-panel-output",
+        site_role = "output-inserter",
+        source_node_id = "solar-panel-assembler",
+        target_container_id = "solar-panel-output-chest",
+        entity_name = "burner-inserter",
+        item_name = "burner-inserter",
+        offset = {x = 12, y = -3},
         direction_name = "west",
         fuel = {
           name = "coal",

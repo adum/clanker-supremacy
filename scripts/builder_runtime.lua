@@ -2847,6 +2847,7 @@ local function setup_manual_test(spec)
     case_name = spec.case_name or "manual-test",
     suppress_player_autospawn = spec.suppress_player_autospawn ~= false,
     forbid_direct_turret_ammo_transfer = spec.forbid_direct_turret_ammo_transfer == true,
+    disable_nearby_container_collection = spec.disable_nearby_container_collection == true,
     disable_nearby_machine_output_collection = spec.disable_nearby_machine_output_collection == true,
     disable_nearby_machine_input_supply = spec.disable_nearby_machine_input_supply == true,
     pause_builder_on_manual_goal_complete = spec.pause_builder_on_manual_goal_complete == true,
@@ -2963,6 +2964,7 @@ local function setup_scaling_test(spec)
     case_name = spec.case_name or "scaling-test",
     suppress_player_autospawn = spec.suppress_player_autospawn ~= false,
     forbid_direct_turret_ammo_transfer = spec.forbid_direct_turret_ammo_transfer == true,
+    disable_nearby_container_collection = spec.disable_nearby_container_collection == true,
     disable_nearby_machine_output_collection = spec.disable_nearby_machine_output_collection == true,
     disable_nearby_machine_input_supply = spec.disable_nearby_machine_input_supply == true,
     progress_log_interval_ticks = spec.progress_log_interval_ticks,
@@ -4608,10 +4610,11 @@ function setup_solar_panel_factory_variant_test_case(spec)
     debug_all_transport_belts = true,
     expected_counts = {
       ["assembling-machine-1"] = 3,
-      ["burner-inserter"] = 10,
-      ["small-electric-pole"] = 4
+      ["burner-inserter"] = 11,
+      ["small-electric-pole"] = 4,
+      ["wooden-chest"] = 1
     },
-    output_entity_names = {"assembling-machine-1"},
+    output_entity_names = {"wooden-chest"},
     output_item_name = "solar-panel",
     minimum_output_item_count = 1
   }
@@ -4645,6 +4648,7 @@ function setup_solar_panel_factory_variant_test_case(spec)
     trace_stage_logs = spec.trace_stage_logs == true,
     surface_name = surface.name,
     suppress_player_autospawn = true,
+    disable_nearby_container_collection = true,
     disable_nearby_machine_output_collection = true,
     disable_nearby_machine_input_supply = spec.disable_nearby_machine_input_supply ~= false,
     pause_builder_on_manual_goal_complete = spec.pause_builder_on_manual_goal_complete == true,
@@ -4654,6 +4658,7 @@ function setup_solar_panel_factory_variant_test_case(spec)
       {name = "small-electric-pole", count = 12},
       {name = "splitter", count = 4},
       {name = "transport-belt", count = 256},
+      {name = "wooden-chest", count = 1},
       {name = "coal", count = 200}
     },
     mutate_request = function(request)
@@ -4799,14 +4804,16 @@ local function setup_solar_panel_factory_missing_sources_reports_blocker_test_ca
     game_speed = 4,
     surface_name = surface.name,
     suppress_player_autospawn = true,
+    disable_nearby_container_collection = true,
     disable_nearby_machine_output_collection = true,
     disable_nearby_machine_input_supply = true,
     inventory = {
       {name = "assembling-machine-1", count = 3},
-      {name = "burner-inserter", count = 6},
+      {name = "burner-inserter", count = 7},
       {name = "small-electric-pole", count = 12},
       {name = "splitter", count = 4},
       {name = "transport-belt", count = 256},
+      {name = "wooden-chest", count = 1},
       {name = "coal", count = 200}
     },
     mutate_request = function(request)
@@ -4827,7 +4834,8 @@ local function setup_solar_panel_factory_missing_sources_reports_blocker_test_ca
       skip_output_assertion = true,
       required_wait_reason = "no-assembly-input-route",
       minimum_counts = {
-        ["assembling-machine-1"] = 3
+        ["assembling-machine-1"] = 3,
+        ["wooden-chest"] = 1
       }
     }
   }
@@ -4854,14 +4862,16 @@ local function setup_solar_panel_factory_block_marks_scaling_milestone_test_case
     game_speed = 4,
     surface_name = surface.name,
     suppress_player_autospawn = true,
+    disable_nearby_container_collection = true,
     disable_nearby_machine_output_collection = true,
     pause_builder_on_manual_goal_complete = true,
     inventory = {
       {name = "assembling-machine-1", count = 3},
-      {name = "burner-inserter", count = 6},
+      {name = "burner-inserter", count = 7},
       {name = "small-electric-pole", count = 12},
       {name = "splitter", count = 4},
       {name = "transport-belt", count = 128},
+      {name = "wooden-chest", count = 1},
       {name = "coal", count = 200}
     },
     mutate_request = function(request)
@@ -4882,7 +4892,8 @@ local function setup_solar_panel_factory_block_marks_scaling_milestone_test_case
       deadline_offset_ticks = 14400,
       skip_output_assertion = true,
       minimum_counts = {
-        ["assembling-machine-1"] = 3
+        ["assembling-machine-1"] = 3,
+        ["wooden-chest"] = 1
       },
       required_completed_scaling_milestones = {"solar-panel-factory-block"}
     }
@@ -4918,14 +4929,16 @@ local function setup_solar_panel_factory_iron_input_marks_scaling_milestone_test
     game_speed = 4,
     surface_name = surface.name,
     suppress_player_autospawn = true,
+    disable_nearby_container_collection = true,
     disable_nearby_machine_output_collection = true,
     pause_builder_on_manual_goal_complete = true,
     inventory = {
       {name = "assembling-machine-1", count = 3},
-      {name = "burner-inserter", count = 6},
+      {name = "burner-inserter", count = 7},
       {name = "small-electric-pole", count = 12},
       {name = "splitter", count = 4},
       {name = "transport-belt", count = 256},
+      {name = "wooden-chest", count = 1},
       {name = "coal", count = 200}
     },
     mutate_request = function(request)
@@ -4948,7 +4961,8 @@ local function setup_solar_panel_factory_iron_input_marks_scaling_milestone_test
       deadline_offset_ticks = 14400,
       skip_output_assertion = true,
       minimum_counts = {
-        ["assembling-machine-1"] = 3
+        ["assembling-machine-1"] = 3,
+        ["wooden-chest"] = 1
       },
       required_completed_scaling_milestones = {"solar-panel-factory-iron-input"}
     }
@@ -4984,14 +4998,16 @@ function setup_solar_panel_factory_power_marks_scaling_milestone_test_case()
     game_speed = 4,
     surface_name = surface.name,
     suppress_player_autospawn = true,
+    disable_nearby_container_collection = true,
     disable_nearby_machine_output_collection = true,
     pause_builder_on_manual_goal_complete = true,
     inventory = {
       {name = "assembling-machine-1", count = 3},
-      {name = "burner-inserter", count = 6},
+      {name = "burner-inserter", count = 7},
       {name = "small-electric-pole", count = 12},
       {name = "splitter", count = 4},
       {name = "transport-belt", count = 256},
+      {name = "wooden-chest", count = 1},
       {name = "coal", count = 200}
     },
     mutate_request = function(request)
@@ -5023,7 +5039,8 @@ function setup_solar_panel_factory_power_marks_scaling_milestone_test_case()
       deadline_offset_ticks = 18000,
       skip_output_assertion = true,
       minimum_counts = {
-        ["assembling-machine-1"] = 3
+        ["assembling-machine-1"] = 3,
+        ["wooden-chest"] = 1
       },
       required_completed_scaling_milestones = {"solar-panel-factory-power"}
     }
@@ -6618,9 +6635,13 @@ local function get_test_output_item_count(surface, force, area, entity_names, it
     force = force,
     name = entity_names
   }) do
-    local output_inventory = entity.get_output_inventory and entity.get_output_inventory()
-    if output_inventory then
-      total_count = total_count + output_inventory.get_item_count(item_name)
+    local inventory = entity.get_output_inventory and entity.get_output_inventory() or nil
+    if not inventory and (entity.type == "container" or entity.type == "logistic-container") then
+      inventory = entity.get_inventory and entity.get_inventory(defines.inventory.chest) or nil
+    end
+
+    if inventory then
+      total_count = total_count + inventory.get_item_count(item_name)
     end
   end
 

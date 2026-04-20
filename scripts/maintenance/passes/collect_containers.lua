@@ -15,6 +15,11 @@ local function get_total_item_count(inventory)
 end
 
 function pass.run(builder_state, tick, ctx)
+  local test_state = storage.enemy_builder_test
+  if test_state and test_state.disable_nearby_container_collection == true then
+    return {}
+  end
+
   local collection_settings = ctx.builder_data.logistics and ctx.builder_data.logistics.nearby_container_collection
   if not collection_settings then
     return {}

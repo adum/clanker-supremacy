@@ -127,10 +127,11 @@ return {
     },
     required_items = {
       {name = "assembling-machine-1", count = 3},
-      {name = "burner-inserter", count = 6},
+      {name = "burner-inserter", count = 7},
       {name = "small-electric-pole", count = 12},
       {name = "splitter", count = 4},
-      {name = "transport-belt", count = 256}
+      {name = "transport-belt", count = 256},
+      {name = "wooden-chest", count = 1}
     },
     build_task = build_tasks.solar_panel_factory
   }

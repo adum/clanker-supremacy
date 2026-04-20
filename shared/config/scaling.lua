@@ -171,7 +171,8 @@ return {
         {name = "assembling-machine-1", count = 3},
         {name = "burner-inserter", count = 6},
         {name = "small-electric-pole", count = 8},
-        {name = "transport-belt", count = 96}
+        {name = "transport-belt", count = 96},
+        {name = "wooden-chest", count = 1}
       },
       task = solar_panel_factory_task
     },

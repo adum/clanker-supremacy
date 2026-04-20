@@ -4430,6 +4430,25 @@ local function build_assembly_block_candidate(surface, force, build_position, or
     end
   end
 
+  for _, container_spec in ipairs(assembly_target.output_containers or {}) do
+    local rotated_offset = ctx.rotate_offset(container_spec.offset, orientation)
+    local placement = {
+      id = container_spec.id,
+      site_role = container_spec.site_role,
+      entity_name = container_spec.entity_name,
+      item_name = container_spec.item_name or container_spec.entity_name,
+      build_position = {
+        x = build_position.x + rotated_offset.x,
+        y = build_position.y + rotated_offset.y
+      }
+    }
+
+    if not add_probe(placement) then
+      destroy_probes()
+      return nil
+    end
+  end
+
   for _, route_spec in ipairs(assembly_target.raw_input_routes or {}) do
     local local_belt_positions = transform_offset_positions(build_position, route_spec.local_belt_offsets, orientation, ctx)
     local belt_placements = create_ordered_belt_placements_from_positions(
@@ -4509,6 +4528,30 @@ local function build_assembly_block_candidate(surface, force, build_position, or
     end
   end
 
+  for _, inserter_spec in ipairs(assembly_target.output_inserters or {}) do
+    local rotated_offset = ctx.rotate_offset(inserter_spec.offset, orientation)
+    local direction_name = ctx.rotate_direction_name(inserter_spec.direction_name, orientation)
+    local placement = {
+      id = inserter_spec.id,
+      site_role = inserter_spec.site_role,
+      entity_name = inserter_spec.entity_name,
+      item_name = inserter_spec.item_name or inserter_spec.entity_name,
+      build_position = {
+        x = build_position.x + rotated_offset.x,
+        y = build_position.y + rotated_offset.y
+      },
+      build_direction = direction_name and ctx.direction_by_name[direction_name] or nil,
+      fuel = inserter_spec.fuel,
+      source_node_id = inserter_spec.source_node_id,
+      target_container_id = inserter_spec.target_container_id
+    }
+
+    if not add_probe(placement) then
+      destroy_probes()
+      return nil
+    end
+  end
+
   for _, inserter_spec in ipairs(assembly_target.internal_inserters or {}) do
     local probe_inserter = probe_entities_by_id[inserter_spec.id]
     local source_node = probe_entities_by_id[inserter_spec.source_node_id]
@@ -4526,6 +4569,31 @@ local function build_assembly_block_candidate(surface, force, build_position, or
           " drop=" .. ctx.format_position(probe_inserter and probe_inserter.drop_position or {x = 0, y = 0}) ..
           " source=" .. ctx.format_position(source_node and source_node.position or {x = 0, y = 0}) ..
           " target=" .. ctx.format_position(target_node and target_node.position or {x = 0, y = 0}) ..
+          " orientation=" .. tostring(orientation)
+        )
+      end
+      destroy_probes()
+      return nil
+    end
+  end
+
+  for _, inserter_spec in ipairs(assembly_target.output_inserters or {}) do
+    local probe_inserter = probe_entities_by_id[inserter_spec.id]
+    local source_node = probe_entities_by_id[inserter_spec.source_node_id]
+    local target_container = probe_entities_by_id[inserter_spec.target_container_id]
+    if not (probe_inserter and source_node and target_container) or
+      not entity_contains_point(source_node, probe_inserter.pickup_position, ctx) or
+      not entity_contains_point(target_container, probe_inserter.drop_position, ctx)
+    then
+      summary.failed_inserter_geometry = (summary.failed_inserter_geometry or 0) + 1
+      if summary.failed_inserter_geometry <= 5 then
+        ctx.debug_log(
+          "assembly output geometry failure: inserter=" .. inserter_spec.id ..
+          " pos=" .. ctx.format_position(probe_inserter and probe_inserter.position or {x = 0, y = 0}) ..
+          " pickup=" .. ctx.format_position(probe_inserter and probe_inserter.pickup_position or {x = 0, y = 0}) ..
+          " drop=" .. ctx.format_position(probe_inserter and probe_inserter.drop_position or {x = 0, y = 0}) ..
+          " source=" .. ctx.format_position(source_node and source_node.position or {x = 0, y = 0}) ..
+          " target=" .. ctx.format_position(target_container and target_container.position or {x = 0, y = 0}) ..
           " orientation=" .. tostring(orientation)
         )
       end
