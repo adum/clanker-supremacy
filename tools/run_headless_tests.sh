@@ -104,7 +104,8 @@ run_factorio --create "$fresh_save_path"
 
 run_case() {
   local case_name="$1"
-  local remote_setup_name="$2"
+  local _legacy_remote_setup_name="$2"
+  local remote_setup_name="$case_name"
   local server_port="$3"
   local remote_setup_arg="${4:-}"
   local case_timeout_secs="${5:-$timeout_secs}"

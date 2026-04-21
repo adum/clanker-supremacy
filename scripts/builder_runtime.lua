@@ -7612,6 +7612,82 @@ local test_remote_interface = {
   clear_test_state = clear_test_state
 }
 
+local canonical_test_case_remote_interface = {
+  firearm_outpost_physical_feed = setup_firearm_outpost_test_case,
+  pause_mode_manual_goal = setup_pause_mode_manual_goal_test_case,
+  firearm_outpost_anchor_clearance = setup_firearm_outpost_anchored_test_case,
+  tree_blocked_machine_placement = setup_tree_blocked_assembler_test_case,
+  iron_plate_belt_export_physical_feed = setup_iron_plate_belt_export_test_case,
+  iron_plate_belt_export_ignores_ground_items = setup_iron_plate_belt_export_ground_items_test_case,
+  copper_plate_belt_export_ignores_ground_items = setup_copper_plate_belt_export_ground_items_test_case,
+  output_belts_can_overlap_resources = setup_output_belts_can_overlap_resources_test_case,
+  output_belt_prefers_less_ore_direction = setup_output_belt_prefers_less_ore_direction_test_case,
+  output_belt_layout_places_inserter_then_straight_belts =
+    setup_output_belt_layout_places_inserter_then_straight_belts_test_case,
+  output_belt_sidestep_before_building = setup_output_belt_sidestep_before_building_test_case,
+  steel_output_belt_layout_places_inserter_then_straight_belts =
+    setup_steel_output_belt_layout_places_inserter_then_straight_belts_test_case,
+  steel_output_belt_counts_as_export_site = setup_steel_output_belt_counts_as_export_site_test_case,
+  output_belt_abort_preserves_transport_belts = setup_output_belt_abort_preserves_transport_belts_test_case,
+  solar_panel_factory_physical_feed = setup_solar_panel_factory_test_case,
+  solar_panel_factory_east_orientation_physical_feed = setup_solar_panel_factory_test_case_east,
+  solar_panel_factory_south_orientation_physical_feed = setup_solar_panel_factory_test_case_south,
+  solar_panel_factory_west_orientation_physical_feed = setup_solar_panel_factory_test_case_west,
+  solar_panel_factory_opposed_sources_physical_feed = setup_solar_panel_factory_opposed_sources_test_case,
+  solar_panel_factory_cross_pressure_physical_feed = setup_solar_panel_factory_cross_pressure_test_case,
+  solar_panel_factory_missing_sources_reports_blocker =
+    setup_solar_panel_factory_missing_sources_reports_blocker_test_case,
+  solar_panel_factory_block_marks_scaling_milestone =
+    setup_solar_panel_factory_block_marks_scaling_milestone_test_case,
+  solar_panel_factory_iron_input_marks_scaling_milestone =
+    setup_solar_panel_factory_iron_input_marks_scaling_milestone_test_case,
+  solar_panel_factory_power_marks_scaling_milestone =
+    setup_solar_panel_factory_power_marks_scaling_milestone_test_case,
+  scaling_collect_switches_site = setup_scaling_collect_switches_site_test_case,
+  scaling_stays_in_starter_core_until_solar_block = setup_scaling_stays_in_starter_core_until_solar_block_test_case,
+  assembler_output_collection_limits = setup_assembler_output_collection_limits_test_case,
+  wait_patrol_avoids_close_reposition = setup_wait_patrol_avoids_close_reposition_test_case,
+  wait_patrol_stops_when_inventory_cap_reached = setup_wait_patrol_stops_when_inventory_cap_reached_test_case,
+  wait_patrol_recovers_coal_when_producers_are_out_of_fuel =
+    setup_wait_patrol_recovers_coal_when_producers_are_out_of_fuel_test_case,
+  machine_refuel_respects_minimum_batch = setup_machine_refuel_respects_minimum_batch_test_case,
+  cleanup_nearby_exhausted_miners = setup_cleanup_nearby_exhausted_miners_test_case,
+  cleanup_exhausted_miner_removes_orphan_furnace = setup_cleanup_exhausted_miner_removes_orphan_furnace_test_case,
+  cleanup_exhausted_miner_removes_orphan_steel_chain =
+    setup_cleanup_exhausted_miner_removes_orphan_steel_chain_test_case,
+  steel_output_retries_blocked_anchors = setup_steel_output_retries_blocked_anchors_test_case,
+  steel_smelting_missing_inserter_does_not_place_free_inserter =
+    setup_steel_smelting_missing_inserter_does_not_place_free_inserter_test_case,
+  copper_smelting_large_patch_open_half = setup_copper_smelting_large_patch_open_half_test_case,
+  iron_plate_belt_export_large_patch_sparse_near_edge =
+    setup_iron_plate_belt_export_large_patch_sparse_near_edge_test_case,
+  iron_plate_belt_export_large_patch_blocked_near_edge =
+    setup_iron_plate_belt_export_large_patch_blocked_near_edge_test_case,
+  scaling_early_expansion_over_coal_reserve = setup_scaling_early_expansion_over_coal_reserve_test_case,
+  scaling_builds_before_coal_reserve = setup_scaling_builds_before_coal_reserve_test_case,
+  scaling_repeats_material_patterns = setup_scaling_repeats_material_patterns_test_case,
+  scaling_firearm_outpost_respects_cap = setup_scaling_firearm_outpost_respects_cap_test_case,
+  scaling_material_expansion_before_firearm_outpost =
+    setup_scaling_material_expansion_before_firearm_outpost_test_case,
+  steel_export_requires_iron_export = setup_steel_export_requires_iron_export_test_case,
+  steel_smelting_physical_feed_north = function()
+    return setup_steel_smelting_test_case("north")
+  end,
+  steel_smelting_physical_feed_east = function()
+    return setup_steel_smelting_test_case("east")
+  end,
+  steel_smelting_physical_feed_south = function()
+    return setup_steel_smelting_test_case("south")
+  end,
+  steel_smelting_physical_feed_west = function()
+    return setup_steel_smelting_test_case("west")
+  end
+}
+
+for case_name, handler in pairs(canonical_test_case_remote_interface) do
+  test_remote_interface[case_name] = handler
+end
+
 local function complete_current_task(builder_state, task, completion_message)
   if task and task.manual_goal_id and builder_state.manual_goal_request and builder_state.manual_goal_request.id == task.manual_goal_id then
     local request = builder_state.manual_goal_request

@@ -119,7 +119,7 @@ function New-RemoteSetupCommand {
     [pscustomobject]$Case
   )
 
-  $setupName = Escape-LuaString $Case.RemoteSetupName
+  $setupName = Escape-LuaString $Case.Name
   if ($null -ne $Case.RemoteSetupArg) {
     $setupArg = Escape-LuaString ([string]$Case.RemoteSetupArg)
     return "/silent-command remote.call(""enemy-builder-test"", ""$setupName"", ""$setupArg"")"
