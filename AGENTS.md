@@ -15,6 +15,7 @@ Code and architecture wise:
 - We also need great debugging tools and visualizations and ways to see what the builder is doing.
 - The key is to code SIMPLE and fast algorithms. It's okay for them to not be precise. For example, the builder might start making a project that combines a bunch of assemblers and inserters for a final project. Then before it gets to the end, he runs out of room due to a cliff. That's fine. He can just abandon that effort and try again later. This is much better than trying to calculate the needed space up front and worrying about the cliffs.
 - Don't add extra code to support old save files if we update something. It's totally fine to not be backwards compatible. It's much better to have simpler code that only works going forward. 
+- We have to do things quickly. Any long running functions cause hangs in the UI. Everything should execute in less than 10ms, preferably much faster. We can sometimes split up work into multiple passes but generally the best approach is to make simple and fast algorithms that may not be perfect.
 
 Anti-pattern:
 - A bad approach to a component would be when trying to build a new construction: planning everything out super carefully, doing a bunch of ray casts to figure the optimal distances, proving we can link every possible input and output in advance etc. 
