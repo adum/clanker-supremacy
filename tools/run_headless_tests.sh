@@ -111,10 +111,11 @@ run_case() {
   local case_timeout_secs="${5:-$timeout_secs}"
   local case_write_data_dir="$temp_root/write-data-${case_name}"
   local case_config_path="$temp_root/config-${case_name}.ini"
-  local status_file_path="$case_write_data_dir/script-output/enemy-builder-tests/${case_name}.status"
+  local status_file_path="$case_write_data_dir/script-output/${case_name}.status"
   local output_path="$temp_root/${case_name}.log"
 
   mkdir -p "$case_write_data_dir"
+  mkdir -p "$(dirname "$status_file_path")"
   cat >"$case_config_path" <<EOF
 [path]
 read-data=__PATH__system-read-data__
@@ -164,6 +165,7 @@ EOF
 
   echo
   echo "-- inject ${case_name} test case"
+  mkdir -p "$(dirname "$status_file_path")"
   local remote_command
   if [[ -n "$remote_setup_arg" ]]; then
     remote_command=$(printf '/silent-command remote.call("enemy-builder-test", "%s", "%s")\n' "$remote_setup_name" "$remote_setup_arg")
@@ -295,6 +297,7 @@ run_case "solar_panel_factory_south_orientation_physical_feed" "setup_solar_pane
 run_case "solar_panel_factory_west_orientation_physical_feed" "setup_solar_panel_factory_test_case_west" "34246" "" "600"
 run_case "solar_panel_factory_opposed_sources_physical_feed" "setup_solar_panel_factory_opposed_sources_test_case" "34243" "" "600"
 run_case "solar_panel_factory_cross_pressure_physical_feed" "setup_solar_panel_factory_cross_pressure_test_case" "34244" "" "600"
+run_case "solar_panel_factory_cross_pressure_walled_underground_physical_feed" "setup_solar_panel_factory_cross_pressure_walled_underground_test_case" "34250" "" "600"
 run_case "solar_panel_factory_missing_sources_reports_blocker" "setup_solar_panel_factory_missing_sources_reports_blocker_test_case" "34215"
 run_case "solar_panel_factory_block_marks_scaling_milestone" "setup_solar_panel_factory_block_marks_scaling_milestone_test_case" "34238"
 run_case "solar_panel_factory_iron_input_marks_scaling_milestone" "setup_solar_panel_factory_iron_input_marks_scaling_milestone_test_case" "34239"

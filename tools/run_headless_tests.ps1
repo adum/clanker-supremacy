@@ -447,6 +447,7 @@ $allCases = @(
   [pscustomobject]@{ Name = "solar_panel_factory_west_orientation_physical_feed"; RemoteSetupName = "setup_solar_panel_factory_test_case_west"; ServerPort = 34246; RemoteSetupArg = $null; TimeoutSecs = 600 },
   [pscustomobject]@{ Name = "solar_panel_factory_opposed_sources_physical_feed"; RemoteSetupName = "setup_solar_panel_factory_opposed_sources_test_case"; ServerPort = 34243; RemoteSetupArg = $null; TimeoutSecs = 600 },
   [pscustomobject]@{ Name = "solar_panel_factory_cross_pressure_physical_feed"; RemoteSetupName = "setup_solar_panel_factory_cross_pressure_test_case"; ServerPort = 34244; RemoteSetupArg = $null; TimeoutSecs = 600 },
+  [pscustomobject]@{ Name = "solar_panel_factory_cross_pressure_walled_underground_physical_feed"; RemoteSetupName = "setup_solar_panel_factory_cross_pressure_walled_underground_test_case"; ServerPort = 34250; RemoteSetupArg = $null; TimeoutSecs = 600 },
   [pscustomobject]@{ Name = "solar_panel_factory_missing_sources_reports_blocker"; RemoteSetupName = "setup_solar_panel_factory_missing_sources_reports_blocker_test_case"; ServerPort = 34215; RemoteSetupArg = $null },
   [pscustomobject]@{ Name = "solar_panel_factory_block_marks_scaling_milestone"; RemoteSetupName = "setup_solar_panel_factory_block_marks_scaling_milestone_test_case"; ServerPort = 34238; RemoteSetupArg = $null },
   [pscustomobject]@{ Name = "solar_panel_factory_iron_input_marks_scaling_milestone"; RemoteSetupName = "setup_solar_panel_factory_iron_input_marks_scaling_milestone_test_case"; ServerPort = 34239; RemoteSetupArg = $null },
@@ -569,7 +570,8 @@ try {
     $caseTimeoutSecs = if ($case.PSObject.Properties.Name -contains "TimeoutSecs" -and $case.TimeoutSecs) { [int]$case.TimeoutSecs } else { $TimeoutSecs }
     $caseWriteDataDir = Join-Path $tempRoot ("write-data-" + $case.Name)
     $caseConfigPath = Join-Path $tempRoot ("config-" + $case.Name + ".ini")
-    $statusFilePath = Join-Path $caseWriteDataDir ("script-output\enemy-builder-tests\" + $case.Name + ".status")
+    $statusFilePath = Join-Path $caseWriteDataDir ("script-output\" + $case.Name + ".status")
+    $statusDirPath = Split-Path -Parent $statusFilePath
     $outputPath = Join-Path $tempRoot ($case.Name + ".log")
     $launcherPath = Join-Path $tempRoot ("start-" + $case.Name + ".cmd")
     $currentLogPath = Join-Path $caseWriteDataDir "factorio-current.log"
@@ -577,6 +579,7 @@ try {
     $rconPassword = "codex-test-password"
 
     New-Item -ItemType Directory -Force -Path $caseWriteDataDir | Out-Null
+    New-Item -ItemType Directory -Force -Path $statusDirPath | Out-Null
     Write-ConfigFile -Path $caseConfigPath -WriteDataDir $caseWriteDataDir
 
     Remove-Item -LiteralPath $statusFilePath, $outputPath, $launcherPath -Force -ErrorAction SilentlyContinue
@@ -598,6 +601,7 @@ try {
 
       Write-Host
       Write-Host "-- inject $($case.Name) test case"
+      New-Item -ItemType Directory -Force -Path $statusDirPath | Out-Null
       $remoteCommand = New-RemoteSetupCommand -Case $case
       Invoke-RconCommand -Port $rconPort -Password $rconPassword -Command $remoteCommand
       Start-Sleep -Seconds 1

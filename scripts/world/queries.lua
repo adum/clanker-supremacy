@@ -3764,14 +3764,25 @@ local function build_belt_path_placements_between_positions(surface, force, firs
     return true
   end
 
+  local walkable_position_cache = {}
   local function is_walkable_position(position)
+    local position_key = get_position_key(position)
+    if walkable_position_cache[position_key] ~= nil then
+      return walkable_position_cache[position_key]
+    end
+
+    local function remember(result)
+      walkable_position_cache[position_key] = result
+      return result
+    end
+
     if position_is_reserved(position) then
-      return false
+      return remember(false)
     end
 
     local reusable_belt = get_reusable_belt_at_position(position)
     if reusable_belt and reusable_belt.valid then
-      return true
+      return remember(true)
     end
 
     summary.positions_checked = summary.positions_checked + 1
@@ -3782,7 +3793,7 @@ local function build_belt_path_placements_between_positions(surface, force, firs
       direction = ctx.direction_by_name.east,
       force = force
     } then
-      return false
+      return remember(false)
     end
 
     summary.placeable_positions = summary.placeable_positions + 1
@@ -3795,10 +3806,106 @@ local function build_belt_path_placements_between_positions(surface, force, firs
       ctx.direction_by_name.east
     ) then
       summary.resource_overlap_rejections = (summary.resource_overlap_rejections or 0) + 1
-      return false
+      return remember(false)
     end
 
-    return true
+    return remember(true)
+  end
+
+  local allow_underground_belts = task.allow_underground_belts == true
+  local underground_belt_name = task.underground_belt_entity_name or "underground-belt"
+  local underground_belt_item_name = task.underground_belt_item_name or underground_belt_name
+  local underground_belt_max_distance = task.underground_belt_max_distance or 5
+
+  local normal_belt_block_cache = {}
+  local function position_blocks_normal_belt(position, direction)
+    local cache_key = get_position_key(position) .. ":" .. tostring(direction or ctx.direction_by_name.east)
+    if normal_belt_block_cache[cache_key] ~= nil then
+      return normal_belt_block_cache[cache_key]
+    end
+
+    local function remember(result)
+      normal_belt_block_cache[cache_key] = result
+      return result
+    end
+
+    if position_is_reserved(position) then
+      return remember(true)
+    end
+
+    local reusable_belt = get_reusable_belt_at_position(position)
+    if reusable_belt and reusable_belt.valid then
+      return remember(false)
+    end
+
+    if not surface.can_place_entity{
+      name = task.belt_entity_name,
+      position = position,
+      direction = direction or ctx.direction_by_name.east,
+      force = force
+    } then
+      return remember(true)
+    end
+
+    if task.forbid_resource_overlap and candidate_entity_overlaps_resources(
+      surface,
+      force,
+      task.belt_entity_name,
+      position,
+      direction or ctx.direction_by_name.east
+    ) then
+      return remember(true)
+    end
+
+    return remember(false)
+  end
+
+  local underground_endpoint_cache = {}
+  local function can_place_underground_endpoint(position, direction, belt_to_ground_type)
+    local cache_key = get_position_key(position) .. ":" .. tostring(direction) .. ":" .. tostring(belt_to_ground_type)
+    if underground_endpoint_cache[cache_key] ~= nil then
+      return underground_endpoint_cache[cache_key]
+    end
+
+    local function remember(result)
+      underground_endpoint_cache[cache_key] = result
+      return result
+    end
+
+    if not allow_underground_belts or position_is_reserved(position) or get_reusable_belt_at_position(position) then
+      return remember(false)
+    end
+
+    summary.positions_checked = summary.positions_checked + 1
+
+    local placement = {
+      name = underground_belt_name,
+      position = position,
+      direction = direction,
+      force = force,
+      type = belt_to_ground_type
+    }
+    local ok, placeable = pcall(function()
+      return surface.can_place_entity(placement)
+    end)
+    if not ok or not placeable then
+      return remember(false)
+    end
+
+    summary.placeable_positions = summary.placeable_positions + 1
+
+    if task.forbid_resource_overlap and candidate_entity_overlaps_resources(
+      surface,
+      force,
+      underground_belt_name,
+      position,
+      direction
+    ) then
+      summary.resource_overlap_rejections = (summary.resource_overlap_rejections or 0) + 1
+      return remember(false)
+    end
+
+    return remember(true)
   end
 
   local function try_build_placements_from_positions(positions, axis_label)
@@ -3918,6 +4025,233 @@ local function build_belt_path_placements_between_positions(surface, force, firs
     return placements
   end
 
+  local search_margin = task.belt_route_search_margin or 10
+  local min_x = math.min(first_position.x, terminal_position.x) - search_margin
+  local max_x = math.max(first_position.x, terminal_position.x) + search_margin
+  local min_y = math.min(first_position.y, terminal_position.y) - search_margin
+  local max_y = math.max(first_position.y, terminal_position.y) + search_margin
+  local function in_bounds(position)
+    return position.x >= min_x and position.x <= max_x and position.y >= min_y and position.y <= max_y
+  end
+
+  local function build_underground_path_placements()
+    if not allow_underground_belts then
+      return nil
+    end
+
+    local goal_position_key = get_position_key(terminal_position)
+    local queue = {}
+    local head = 1
+    local parents_by_state_key = {}
+    local edges_by_state_key = {}
+    local positions_by_state_key = {}
+    local visited = {}
+    local found_goal_state_key = nil
+    local steps = {
+      {x = 1, y = 0},
+      {x = -1, y = 0},
+      {x = 0, y = 1},
+      {x = 0, y = -1}
+    }
+
+    local function make_state_key(position, edge)
+      return get_position_key(position) .. "|" ..
+        tostring(edge and edge.edge_type or "start") .. "|" ..
+        tostring(edge and edge.direction or "nil")
+    end
+
+    local start_state_key = make_state_key(first_position, nil)
+    queue[#queue + 1] = start_state_key
+    visited[start_state_key] = true
+    positions_by_state_key[start_state_key] = ctx.clone_position(first_position)
+
+    local function add_candidate(parent_state_key, candidate_position, edge)
+      local candidate_state_key = make_state_key(candidate_position, edge)
+      if visited[candidate_state_key] or not in_bounds(candidate_position) then
+        return false
+      end
+
+      visited[candidate_state_key] = true
+      parents_by_state_key[candidate_state_key] = parent_state_key
+      edges_by_state_key[candidate_state_key] = edge
+      positions_by_state_key[candidate_state_key] = ctx.clone_position(candidate_position)
+      queue[#queue + 1] = candidate_state_key
+      if get_position_key(candidate_position) == goal_position_key then
+        found_goal_state_key = candidate_state_key
+      end
+      return true
+    end
+
+    local function underground_span_crosses_blocker(current, step, distance, direction)
+      for skipped_distance = 1, distance - 1 do
+        local skipped_position = {
+          x = current.x + (step.x * skipped_distance),
+          y = current.y + (step.y * skipped_distance)
+        }
+        if position_blocks_normal_belt(skipped_position, direction) then
+          return true
+        end
+      end
+
+      return false
+    end
+
+    local function get_steps_toward_goal(current)
+      local ordered_steps = {}
+      for _, step in ipairs(steps) do
+        ordered_steps[#ordered_steps + 1] = step
+      end
+      table.sort(ordered_steps, function(left, right)
+        local left_x = current.x + left.x - terminal_position.x
+        local left_y = current.y + left.y - terminal_position.y
+        local right_x = current.x + right.x - terminal_position.x
+        local right_y = current.y + right.y - terminal_position.y
+        return ((left_x * left_x) + (left_y * left_y)) < ((right_x * right_x) + (right_y * right_y))
+      end)
+      return ordered_steps
+    end
+
+    local states_examined = 0
+    local max_states_examined = task.underground_route_max_states or 500
+    while head <= #queue and not found_goal_state_key do
+      local current_state_key = queue[head]
+      head = head + 1
+      local current = positions_by_state_key[current_state_key]
+      local current_edge = edges_by_state_key[current_state_key]
+      states_examined = states_examined + 1
+      if states_examined > max_states_examined then
+        if (summary.failed_source_routes or 0) < 5 then
+          ctx.debug_log(
+            "assembly underground route state cap from " .. ctx.format_position(first_position) ..
+            " to " .. ctx.format_position(terminal_position) ..
+            " states=" .. tostring(states_examined)
+          )
+        end
+        return nil
+      end
+
+      for _, step in ipairs(get_steps_toward_goal(current)) do
+        local next_position = {
+          x = current.x + step.x,
+          y = current.y + step.y
+        }
+        local next_position_key = get_position_key(next_position)
+        local next_is_goal = next_position_key == goal_position_key
+        local direction_name = get_direction_name_from_delta(step.x, step.y)
+        local direction = direction_name and ctx.direction_by_name[direction_name] or nil
+        local underground_exit_must_continue_forward = current_edge and current_edge.edge_type == "underground"
+        local underground_input_can_start_here = not current_edge or
+          (current_edge.edge_type ~= "underground" and current_edge.direction == direction)
+        local belt_edge = {
+          edge_type = "belt",
+          direction = direction
+        }
+        local next_state_key = make_state_key(next_position, belt_edge)
+
+        if direction and not visited[next_state_key] and in_bounds(next_position) and
+          (not underground_exit_must_continue_forward or current_edge.direction == direction) and
+          can_expand_along_step(current, next_position, next_is_goal)
+        then
+          if next_is_goal or is_walkable_position(next_position) then
+            add_candidate(current_state_key, next_position, belt_edge)
+          end
+        end
+
+        if direction and underground_input_can_start_here and
+          can_place_underground_endpoint(current, direction, "input")
+        then
+          for distance = 2, underground_belt_max_distance do
+            local exit_position = {
+              x = current.x + (step.x * distance),
+              y = current.y + (step.y * distance)
+            }
+            local exit_position_key = get_position_key(exit_position)
+            local underground_edge = {
+              edge_type = "underground",
+              direction = direction
+            }
+            local exit_state_key = make_state_key(exit_position, underground_edge)
+            if exit_position_key ~= goal_position_key and not visited[exit_state_key] and in_bounds(exit_position) and
+              underground_span_crosses_blocker(current, step, distance, direction) and
+              can_place_underground_endpoint(exit_position, direction, "output")
+            then
+              add_candidate(current_state_key, exit_position, underground_edge)
+            end
+          end
+        end
+      end
+    end
+
+    if not found_goal_state_key then
+      return nil
+    end
+
+    local ordered_state_keys = {found_goal_state_key}
+    local current_state_key = found_goal_state_key
+    while current_state_key ~= start_state_key do
+      local parent_state_key = parents_by_state_key[current_state_key]
+      if not parent_state_key then
+        return nil
+      end
+      ordered_state_keys[#ordered_state_keys + 1] = parent_state_key
+      current_state_key = parent_state_key
+    end
+
+    local node_state_keys = {}
+    for index = #ordered_state_keys, 1, -1 do
+      node_state_keys[#node_state_keys + 1] = ordered_state_keys[index]
+    end
+
+    local underground_specs_by_state_key = {}
+    for index = 2, #node_state_keys do
+      local child_state_key = node_state_keys[index]
+      local edge = edges_by_state_key[child_state_key]
+      if edge and edge.edge_type == "underground" then
+        underground_specs_by_state_key[node_state_keys[index - 1]] = {
+          direction = edge.direction,
+          belt_to_ground_type = "input"
+        }
+        underground_specs_by_state_key[child_state_key] = {
+          direction = edge.direction,
+          belt_to_ground_type = "output"
+        }
+      end
+    end
+
+    local placements = {}
+    for index, node_state_key in ipairs(node_state_keys) do
+      local position = positions_by_state_key[node_state_key]
+      local next_state_key = node_state_keys[index + 1]
+      local previous_state_key = node_state_keys[index - 1]
+      local next_position = next_state_key and positions_by_state_key[next_state_key] or nil
+      local previous_position = previous_state_key and positions_by_state_key[previous_state_key] or nil
+      local direction = nil
+      local spec = underground_specs_by_state_key[node_state_key]
+
+      if spec then
+        direction = spec.direction
+      elseif next_position then
+        local direction_name = get_direction_name_from_delta(next_position.x - position.x, next_position.y - position.y)
+        direction = direction_name and ctx.direction_by_name[direction_name] or nil
+      elseif previous_position then
+        local direction_name = get_direction_name_from_delta(position.x - previous_position.x, position.y - previous_position.y)
+        direction = direction_name and ctx.direction_by_name[direction_name] or nil
+      end
+
+      placements[#placements + 1] = {
+        id = "assembly-belt-route-" .. tostring(index),
+        site_role = "assembly-input-belt",
+        entity_name = spec and underground_belt_name or task.belt_entity_name,
+        item_name = spec and underground_belt_item_name or (task.belt_item_name or task.belt_entity_name),
+        build_position = position,
+        build_direction = direction or ctx.direction_by_name.east,
+        belt_to_ground_type = spec and spec.belt_to_ground_type or nil
+      }
+    end
+
+    return placements
+  end
+
   local axis_orders = {
     {"x", "y"},
     {"y", "x"}
@@ -3937,13 +4271,9 @@ local function build_belt_path_placements_between_positions(surface, force, firs
     ::continue::
   end
 
-  local search_margin = task.belt_route_search_margin or 10
-  local min_x = math.min(first_position.x, terminal_position.x) - search_margin
-  local max_x = math.max(first_position.x, terminal_position.x) + search_margin
-  local min_y = math.min(first_position.y, terminal_position.y) - search_margin
-  local max_y = math.max(first_position.y, terminal_position.y) + search_margin
-  local function in_bounds(position)
-    return position.x >= min_x and position.x <= max_x and position.y >= min_y and position.y <= max_y
+  local underground_placements = build_underground_path_placements()
+  if underground_placements then
+    return underground_placements
   end
 
   local start_key = get_position_key(first_position)

@@ -2756,6 +2756,143 @@ function place_test_plate_belt_sources(surface, sources)
   end
 end
 
+function build_cross_pressure_solar_test_sources()
+  return {
+    {
+      item_name = "iron-plate",
+      machine_position = {x = 8, y = -8},
+      options = {belt_direction_name = "east"}
+    },
+    {
+      item_name = "copper-plate",
+      machine_position = {x = 30, y = -14},
+      options = {belt_direction_name = "west"}
+    },
+    {
+      item_name = "copper-plate",
+      machine_position = {x = 10, y = 12},
+      options = {belt_direction_name = "east"}
+    },
+    {
+      item_name = "steel-plate",
+      machine_position = {x = 32, y = 8},
+      options = {belt_direction_name = "west"}
+    }
+  }
+end
+
+function build_walled_underground_solar_test_sources()
+  return {
+    {
+      item_name = "copper-plate",
+      machine_position = {x = 22, y = -18},
+      options = {belt_direction_name = "south"}
+    },
+    {
+      item_name = "iron-plate",
+      machine_position = {x = 26, y = -18},
+      options = {belt_direction_name = "south"}
+    },
+    {
+      item_name = "copper-plate",
+      machine_position = {x = 30, y = -18},
+      options = {belt_direction_name = "south"}
+    },
+    {
+      item_name = "steel-plate",
+      machine_position = {x = 30, y = 12},
+      options = {belt_direction_name = "north"}
+    }
+  }
+end
+
+function build_solar_underground_wall_fixture()
+  local entities = {}
+  local top_gate_x = {
+    [2] = true,
+    [6] = true,
+    [10] = true
+  }
+
+  local function add_entity(entity_name, x, y, direction_name)
+    entities[#entities + 1] = {
+      entity_name = entity_name,
+      offset = {x = x, y = y},
+      direction_name = direction_name
+    }
+  end
+
+  for x = -1, 14 do
+    add_entity(top_gate_x[x] and "gate" or "stone-wall", x, -9, "east")
+    add_entity(x == 10 and "gate" or "stone-wall", x, 4, "east")
+  end
+
+  for y = -8, 3 do
+    add_entity(y == -3 and "gate" or "stone-wall", -2, y, "north")
+    add_entity(y == -3 and "gate" or "stone-wall", 15, y, "north")
+  end
+
+  return {
+    target_item_name = "solar-panel",
+    entities = entities
+  }
+end
+
+function place_test_wall_fixture_after_assembly_block(surface, force, assertion)
+  local fixture = assertion and assertion.wall_fixture_after_assembly_block or nil
+  if not (fixture and not assertion.wall_fixture_placed) then
+    return
+  end
+
+  for _, site in ipairs(storage.production_sites or {}) do
+    if site.site_type == "assembly-block" and site.layout_build_position and
+      site.root_assembler and site.root_assembler.valid and
+      site.target_item_name == fixture.target_item_name and
+      point_in_area(site.root_assembler.position, assertion.area)
+    then
+      local orientation = site.layout_orientation or "north"
+      local placed_count = 0
+      for _, entity_spec in ipairs(fixture.entities or {}) do
+        local rotated_offset = rotate_offset(entity_spec.offset, orientation)
+        local position = {
+          x = site.layout_build_position.x + rotated_offset.x,
+          y = site.layout_build_position.y + rotated_offset.y
+        }
+        local direction_name = entity_spec.direction_name and rotate_direction_name(entity_spec.direction_name, orientation)
+        local direction = direction_name and direction_by_name[direction_name] or nil
+        local existing_entities = surface.find_entities_filtered{
+          position = position,
+          radius = 0.15,
+          force = force
+        }
+
+        if #existing_entities == 0 then
+          local create_parameters = {
+            name = entity_spec.entity_name,
+            position = position,
+            force = force,
+            create_build_effect_smoke = false
+          }
+          if direction then
+            create_parameters.direction = direction
+          end
+          local entity = surface.create_entity(create_parameters)
+          if entity and entity.valid then
+            placed_count = placed_count + 1
+          end
+        end
+      end
+
+      assertion.wall_fixture_placed = true
+      log(
+        debug_prefix .. "test: placed " .. tostring(placed_count) ..
+        " wall fixture entities around assembly block at " .. format_position(site.layout_build_position)
+      )
+      return
+    end
+  end
+end
+
 local function place_test_powered_firearm_anchor(surface, anchor_position)
   local force = ensure_builder_force()
   local assembler = surface.create_entity{
@@ -2867,7 +3004,7 @@ local function setup_manual_test(spec)
       game.tick + (storage.enemy_builder_test.assertion.deadline_offset_ticks or 0)
     storage.enemy_builder_test.assertion.result_file =
       storage.enemy_builder_test.assertion.result_file or
-      ("enemy-builder-tests/" .. sanitize_test_file_name(storage.enemy_builder_test.assertion.case_name) .. ".status")
+      (sanitize_test_file_name(storage.enemy_builder_test.assertion.case_name) .. ".status")
   end
 
   debug_markers.clear()
@@ -2983,7 +3120,7 @@ local function setup_scaling_test(spec)
       game.tick + (storage.enemy_builder_test.assertion.deadline_offset_ticks or 0)
     storage.enemy_builder_test.assertion.result_file =
       storage.enemy_builder_test.assertion.result_file or
-      ("enemy-builder-tests/" .. sanitize_test_file_name(storage.enemy_builder_test.assertion.case_name) .. ".status")
+      (sanitize_test_file_name(storage.enemy_builder_test.assertion.case_name) .. ".status")
   end
 
   debug_markers.clear()
@@ -4638,6 +4775,19 @@ function setup_solar_panel_factory_variant_test_case(spec)
     assertion.required_recipe_name = nil
   end
 
+  local inventory = {
+    {name = "assembling-machine-1", count = 3},
+    {name = "burner-inserter", count = 10},
+    {name = "small-electric-pole", count = 12},
+    {name = "splitter", count = 4},
+    {name = "transport-belt", count = 256},
+    {name = "wooden-chest", count = 1},
+    {name = "coal", count = 200}
+  }
+  for _, stack in ipairs(spec.extra_inventory or {}) do
+    inventory[#inventory + 1] = deep_copy(stack)
+  end
+
   local result = setup_manual_test{
     case_name = spec.case_name or "solar_panel_factory_physical_feed",
     component_name = "solar_panel_factory",
@@ -4652,15 +4802,7 @@ function setup_solar_panel_factory_variant_test_case(spec)
     disable_nearby_machine_output_collection = true,
     disable_nearby_machine_input_supply = spec.disable_nearby_machine_input_supply ~= false,
     pause_builder_on_manual_goal_complete = spec.pause_builder_on_manual_goal_complete == true,
-    inventory = {
-      {name = "assembling-machine-1", count = 3},
-      {name = "burner-inserter", count = 10},
-      {name = "small-electric-pole", count = 12},
-      {name = "splitter", count = 4},
-      {name = "transport-belt", count = 256},
-      {name = "wooden-chest", count = 1},
-      {name = "coal", count = 200}
-    },
+    inventory = inventory,
     mutate_request = function(request)
       local block_task = request.tasks and request.tasks[1] or nil
       if not block_task then
@@ -4759,28 +4901,41 @@ function setup_solar_panel_factory_cross_pressure_test_case()
     area_width = 88,
     area_height = 80,
     deadline_offset_ticks = 28800,
-    sources = {
-      {
-        item_name = "iron-plate",
-        machine_position = {x = 8, y = -8},
-        options = {belt_direction_name = "east"}
+    sources = build_cross_pressure_solar_test_sources()
+  }
+end
+
+function setup_solar_panel_factory_cross_pressure_walled_underground_test_case()
+  return setup_solar_panel_factory_variant_test_case{
+    case_name = "solar_panel_factory_cross_pressure_walled_underground_physical_feed",
+    anchor_position = {x = 20, y = 18},
+    factory_center = {x = 20, y = 0},
+    manual_target_position = {x = 20, y = 0},
+    area_width = 88,
+    area_height = 80,
+    deadline_offset_ticks = 7200,
+    game_speed = 16,
+    sources = build_walled_underground_solar_test_sources(),
+    extra_inventory = {
+      {name = "underground-belt", count = 32}
+    },
+    assertion_overrides = {
+      minimum_counts = {
+        ["underground-belt"] = 2
       },
-      {
-        item_name = "copper-plate",
-        machine_position = {x = 30, y = -14},
-        options = {belt_direction_name = "west"}
-      },
-      {
-        item_name = "copper-plate",
-        machine_position = {x = 10, y = 12},
-        options = {belt_direction_name = "east"}
-      },
-      {
-        item_name = "steel-plate",
-        machine_position = {x = 32, y = 8},
-        options = {belt_direction_name = "west"}
-      }
-    }
+      wall_fixture_after_assembly_block = build_solar_underground_wall_fixture()
+    },
+    mutate_request = function(request)
+      for _, request_task in ipairs(request.tasks or {}) do
+        if request_task.type == "place-assembly-input-route" then
+          request_task.allow_underground_belts = true
+          request_task.underground_belt_entity_name = "underground-belt"
+          request_task.underground_belt_item_name = "underground-belt"
+          request_task.underground_belt_max_distance = 5
+          request_task.underground_route_max_states = 80
+        end
+      end
+    end
   }
 end
 
@@ -6815,11 +6970,21 @@ local function get_test_entity_debug_details(surface, force, area, assertion)
       return "[" .. table.concat(refs, ",") .. "]"
     end
 
+    local underground_neighbour = nil
+    if entity.type == "underground-belt" then
+      local ok_neighbour, neighbour = pcall(function()
+        return entity.neighbours
+      end)
+      if ok_neighbour then
+        underground_neighbour = neighbour
+      end
+    end
+
     return string.format(
       "inputs=%s outputs=%s",
       format_neighbour_list(belt_neighbours.inputs),
       format_neighbour_list(belt_neighbours.outputs)
-    )
+    ) .. (underground_neighbour and (" underground=" .. format_entity_debug_ref(underground_neighbour)) or "")
   end
 
   for _, assembler in ipairs(surface.find_entities_filtered{
@@ -6873,6 +7038,42 @@ local function get_test_entity_debug_details(surface, force, area, assertion)
         "belt(pos=%s dir=%s iron=%d copper=%d steel=%d)",
         format_position(belt.position),
         tostring(belt.direction),
+        iron_count,
+        copper_count,
+        steel_count
+      )
+    end
+  end
+
+  for _, belt in ipairs(surface.find_entities_filtered{
+    area = area,
+    force = force,
+    name = "underground-belt"
+  }) do
+    local line1 = belt.get_transport_line and belt.get_transport_line(1) or nil
+    local line2 = belt.get_transport_line and belt.get_transport_line(2) or nil
+    local line1_contents = line1 and line1.get_contents and line1.get_contents() or {}
+    local line2_contents = line2 and line2.get_contents and line2.get_contents() or {}
+    local iron_count = (line1_contents["iron-plate"] or 0) + (line2_contents["iron-plate"] or 0)
+    local copper_count = (line1_contents["copper-plate"] or 0) + (line2_contents["copper-plate"] or 0)
+    local steel_count = (line1_contents["steel-plate"] or 0) + (line2_contents["steel-plate"] or 0)
+    if assertion and assertion.debug_all_transport_belts then
+      details[#details + 1] = string.format(
+        "underground-belt(pos=%s dir=%s type=%s iron=%d copper=%d steel=%d %s)",
+        format_position(belt.position),
+        tostring(belt.direction),
+        tostring(belt.belt_to_ground_type),
+        iron_count,
+        copper_count,
+        steel_count,
+        get_entity_belt_neighbor_details(belt)
+      )
+    elseif iron_count > 0 or copper_count > 0 or steel_count > 0 then
+      details[#details + 1] = string.format(
+        "underground-belt(pos=%s dir=%s type=%s iron=%d copper=%d steel=%d)",
+        format_position(belt.position),
+        tostring(belt.direction),
+        tostring(belt.belt_to_ground_type),
         iron_count,
         copper_count,
         steel_count
@@ -7407,6 +7608,8 @@ local function run_active_test_assertion(tick)
   end
 
   local builder_state = get_builder_state and get_builder_state() or nil
+  place_test_wall_fixture_after_assembly_block(surface, force, assertion)
+
   local drain_site = assertion.drain_site_output_when_phase
   if drain_site and not assertion.drain_site_output_completed and builder_state and builder_state.task_state and
     builder_state.task_state.phase == drain_site.phase
@@ -7566,6 +7769,8 @@ local test_remote_interface = {
   setup_solar_panel_factory_test_case_west = setup_solar_panel_factory_test_case_west,
   setup_solar_panel_factory_opposed_sources_test_case = setup_solar_panel_factory_opposed_sources_test_case,
   setup_solar_panel_factory_cross_pressure_test_case = setup_solar_panel_factory_cross_pressure_test_case,
+  setup_solar_panel_factory_cross_pressure_walled_underground_test_case =
+    setup_solar_panel_factory_cross_pressure_walled_underground_test_case,
   setup_solar_panel_factory_missing_sources_reports_blocker_test_case = setup_solar_panel_factory_missing_sources_reports_blocker_test_case,
   setup_solar_panel_factory_block_marks_scaling_milestone_test_case =
     setup_solar_panel_factory_block_marks_scaling_milestone_test_case,
@@ -7605,14 +7810,8 @@ local test_remote_interface = {
   setup_steel_smelting_missing_inserter_does_not_place_free_inserter_test_case =
     setup_steel_smelting_missing_inserter_does_not_place_free_inserter_test_case,
   setup_full_run_layout_snapshot_case = setup_full_run_layout_snapshot_case,
-  get_entry_timing_settings = entry_timing.get_settings,
-  set_entry_timing_enabled = entry_timing.set_enabled,
-  set_entry_timing_threshold_ms = entry_timing.set_threshold_ms,
-  finish_manual_test = finish_manual_test,
-  clear_test_state = clear_test_state
-}
 
-local canonical_test_case_remote_interface = {
+  -- Canonical case-name aliases match the names printed by the headless runners' ListCases mode.
   firearm_outpost_physical_feed = setup_firearm_outpost_test_case,
   pause_mode_manual_goal = setup_pause_mode_manual_goal_test_case,
   firearm_outpost_anchor_clearance = setup_firearm_outpost_anchored_test_case,
@@ -7635,6 +7834,8 @@ local canonical_test_case_remote_interface = {
   solar_panel_factory_west_orientation_physical_feed = setup_solar_panel_factory_test_case_west,
   solar_panel_factory_opposed_sources_physical_feed = setup_solar_panel_factory_opposed_sources_test_case,
   solar_panel_factory_cross_pressure_physical_feed = setup_solar_panel_factory_cross_pressure_test_case,
+  solar_panel_factory_cross_pressure_walled_underground_physical_feed =
+    setup_solar_panel_factory_cross_pressure_walled_underground_test_case,
   solar_panel_factory_missing_sources_reports_blocker =
     setup_solar_panel_factory_missing_sources_reports_blocker_test_case,
   solar_panel_factory_block_marks_scaling_milestone =
@@ -7681,12 +7882,14 @@ local canonical_test_case_remote_interface = {
   end,
   steel_smelting_physical_feed_west = function()
     return setup_steel_smelting_test_case("west")
-  end
-}
+  end,
 
-for case_name, handler in pairs(canonical_test_case_remote_interface) do
-  test_remote_interface[case_name] = handler
-end
+  get_entry_timing_settings = entry_timing.get_settings,
+  set_entry_timing_enabled = entry_timing.set_enabled,
+  set_entry_timing_threshold_ms = entry_timing.set_threshold_ms,
+  finish_manual_test = finish_manual_test,
+  clear_test_state = clear_test_state
+}
 
 local function complete_current_task(builder_state, task, completion_message)
   if task and task.manual_goal_id and builder_state.manual_goal_request and builder_state.manual_goal_request.id == task.manual_goal_id then

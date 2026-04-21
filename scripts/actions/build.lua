@@ -421,7 +421,7 @@ local function clear_ground_item_blockers(surface, entity_name, position, task, 
   return cleared_count > 0
 end
 
-local function can_place_entity_with_ground_item_clearance(surface, force, entity_name, position, direction, task, ctx)
+local function can_place_entity_with_ground_item_clearance(surface, force, entity_name, position, direction, task, ctx, entity_type)
   local placement = {
     name = entity_name,
     position = position,
@@ -430,6 +430,9 @@ local function can_place_entity_with_ground_item_clearance(surface, force, entit
 
   if direction ~= nil then
     placement.direction = direction
+  end
+  if entity_type then
+    placement.type = entity_type
   end
 
   if surface.can_place_entity(placement) then
@@ -455,8 +458,15 @@ local function find_reusable_layout_entity(surface, force, placement)
     force = force
   }) do
     if entity and entity.valid and (placement.build_direction == nil or entity.direction == placement.build_direction) then
+      if placement.belt_to_ground_type and entity.type == "underground-belt" and
+        entity.belt_to_ground_type ~= placement.belt_to_ground_type
+      then
+        goto continue
+      end
       return entity
     end
+
+    ::continue::
   end
 
   return nil
@@ -1885,7 +1895,8 @@ function action_build.place_layout_near_machine(builder_state, task, tick, ctx, 
       placement.build_position,
       placement.build_direction,
       task,
-      ctx
+      ctx,
+      placement.belt_to_ground_type
     )
   then
     if try_clear_blocking_obstacle(builder_state, task, tick, placement.entity_name, placement.build_position, ctx) then
@@ -1907,13 +1918,17 @@ function action_build.place_layout_near_machine(builder_state, task, tick, ctx, 
     return
   end
 
-  local placed_entity = surface.create_entity{
+  local create_parameters = {
     name = placement.entity_name,
     position = placement.build_position,
     direction = placement.build_direction,
     force = entity.force,
     create_build_effect_smoke = false
   }
+  if placement.belt_to_ground_type then
+    create_parameters.type = placement.belt_to_ground_type
+  end
+  local placed_entity = surface.create_entity(create_parameters)
 
   if not placed_entity then
     refund_reserved_placement_item(entity, placement.item_name, reserved_count, placement.build_position, ctx)
