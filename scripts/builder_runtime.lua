@@ -2869,11 +2869,11 @@ function place_test_solar_jungle_obstacles(surface, force)
     {left_top = {x = -62, y = -15}, right_bottom = {x = -47, y = -5}},
     {left_top = {x = -62, y = 3}, right_bottom = {x = -47, y = 13}},
     {left_top = {x = -62, y = 21}, right_bottom = {x = -47, y = 31}},
-    {left_top = {x = 42, y = -12}, right_bottom = {x = 64, y = 6}},
-    {left_top = {x = 44, y = 16}, right_bottom = {x = 52, y = 28}},
+    {left_top = {x = 4, y = -12}, right_bottom = {x = 26, y = 6}},
+    {left_top = {x = 6, y = 16}, right_bottom = {x = 14, y = 28}},
     {left_top = {x = -3, y = -9}, right_bottom = {x = 3, y = -3}}
   }
-  local barrier_x_values = {-38, -26, -14, -2, 10, 22, 34}
+  local barrier_x_values = {-38, -26, -14, -2, 10, 22, 34, 46}
   local blocker_names = {"stone-wall", "stone-wall", "wooden-chest", "stone-wall", "stone-wall"}
   local placed_count = 0
 
@@ -2944,7 +2944,15 @@ function place_test_solar_jungle_obstacles(surface, force)
     end
   end
 
-  for x = -43, 39, 6 do
+  local horizontal_bar_y_values = {-28, -18, -8, 8, 18, 28}
+  for _, y in ipairs(horizontal_bar_y_values) do
+    for x = -44, 50 do
+      local name_index = ((math.abs(x) + math.abs(y) + 2) % #blocker_names) + 1
+      place_blocker(blocker_names[name_index], x, y)
+    end
+  end
+
+  for x = -43, 51, 6 do
     for _, y in ipairs({-22, -16, -4, 4, 14, 24}) do
       if (math.abs(x + y) % 3) ~= 0 then
         place_blocker("wooden-chest", x, y)
@@ -2952,7 +2960,7 @@ function place_test_solar_jungle_obstacles(surface, force)
     end
   end
 
-  for x = -35, 31, 11 do
+  for x = -35, 42, 11 do
     for _, y in ipairs({-28, -12, 0, 18, 28}) do
       place_blocker("stone-wall", x, y)
       place_blocker("stone-wall", x + 1, y)
@@ -5092,9 +5100,9 @@ function setup_solar_panel_factory_jungle_route_test_case()
   local force = ensure_builder_force()
   local result = setup_solar_panel_factory_variant_test_case{
     case_name = "solar_panel_factory_jungle_route_physical_feed",
-    anchor_position = {x = 48, y = 22},
-    factory_center = {x = 48, y = 0},
-    manual_target_position = {x = 48, y = 0},
+    anchor_position = {x = 10, y = 22},
+    factory_center = {x = 10, y = 0},
+    manual_target_position = {x = 10, y = 0},
     manual_target_search_radius = 4,
     area_width = 150,
     area_height = 120,
@@ -5105,12 +5113,24 @@ function setup_solar_panel_factory_jungle_route_test_case()
     extra_inventory = {
       {name = "transport-belt", count = 512},
       {name = "underground-belt", count = 96},
-      {name = "splitter", count = 4}
+      {name = "splitter", count = 4},
+      {name = "coal", count = 200}
     },
     assertion_overrides = {
       debug_all_transport_belts = false,
       minimum_counts = {
         ["transport-belt"] = 180
+      },
+      minimum_entity_counts_in_areas = {
+        {
+          label = "jungle-core-belts",
+          name = "transport-belt",
+          count = 40,
+          area = {
+            left_top = {x = -42, y = -30},
+            right_bottom = {x = 24, y = 28}
+          }
+        }
       }
     },
     mutate_request = function(request)
@@ -7415,6 +7435,13 @@ local function format_test_failure_summary(surface, force, assertion)
       entity_name .. "<=" .. maximum_count .. " actual=" .. count_test_entities(surface, force, area, entity_name)
   end
 
+  for _, requirement in ipairs(assertion.minimum_entity_counts_in_areas or {}) do
+    local label = requirement.label or requirement.name or "entity"
+    parts[#parts + 1] =
+      label .. ">=" .. tostring(requirement.count or 0) ..
+      " actual=" .. count_test_entities(surface, force, requirement.area, requirement.name)
+  end
+
   for pattern_name, minimum_count in pairs(assertion.minimum_resource_site_counts or {}) do
     parts[#parts + 1] =
       "site-" .. pattern_name .. "=" .. tostring(resource_site_counts[pattern_name] or 0) .. "/" .. tostring(minimum_count)
@@ -7590,6 +7617,12 @@ local function test_assertion_passed(surface, force, assertion)
 
   for entity_name, maximum_count in pairs(assertion.maximum_counts or {}) do
     if count_test_entities(surface, force, area, entity_name) > maximum_count then
+      return false
+    end
+  end
+
+  for _, requirement in ipairs(assertion.minimum_entity_counts_in_areas or {}) do
+    if count_test_entities(surface, force, requirement.area, requirement.name) < (requirement.count or 0) then
       return false
     end
   end
