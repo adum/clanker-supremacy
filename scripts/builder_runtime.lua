@@ -2806,6 +2806,31 @@ function build_walled_underground_solar_test_sources()
   }
 end
 
+function build_jungle_solar_test_sources()
+  return {
+    {
+      item_name = "copper-plate",
+      machine_position = {x = -58, y = -26},
+      options = {belt_direction_name = "east", belt_count = 6}
+    },
+    {
+      item_name = "iron-plate",
+      machine_position = {x = -58, y = -10},
+      options = {belt_direction_name = "east", belt_count = 6}
+    },
+    {
+      item_name = "copper-plate",
+      machine_position = {x = -58, y = 8},
+      options = {belt_direction_name = "east", belt_count = 6}
+    },
+    {
+      item_name = "steel-plate",
+      machine_position = {x = -58, y = 26},
+      options = {belt_direction_name = "east", belt_count = 6}
+    }
+  }
+end
+
 function build_solar_underground_wall_fixture()
   local entities = {}
   local top_gate_x = {
@@ -2836,6 +2861,120 @@ function build_solar_underground_wall_fixture()
     target_item_name = "solar-panel",
     entities = entities
   }
+end
+
+function place_test_solar_jungle_obstacles(surface, force)
+  local protected_areas = {
+    {left_top = {x = -62, y = -31}, right_bottom = {x = -47, y = -21}},
+    {left_top = {x = -62, y = -15}, right_bottom = {x = -47, y = -5}},
+    {left_top = {x = -62, y = 3}, right_bottom = {x = -47, y = 13}},
+    {left_top = {x = -62, y = 21}, right_bottom = {x = -47, y = 31}},
+    {left_top = {x = 42, y = -12}, right_bottom = {x = 64, y = 6}},
+    {left_top = {x = 44, y = 16}, right_bottom = {x = 52, y = 28}},
+    {left_top = {x = -3, y = -9}, right_bottom = {x = 3, y = -3}}
+  }
+  local barrier_x_values = {-38, -26, -14, -2, 10, 22, 34}
+  local blocker_names = {"stone-wall", "stone-wall", "wooden-chest", "stone-wall", "stone-wall"}
+  local placed_count = 0
+
+  local function in_protected_area(position)
+    for _, area in ipairs(protected_areas) do
+      if position.x >= area.left_top.x and position.x <= area.right_bottom.x and
+        position.y >= area.left_top.y and position.y <= area.right_bottom.y
+      then
+        return true
+      end
+    end
+
+    return false
+  end
+
+  local function place_blocker(entity_name, x, y, direction_name)
+    local position = {x = x, y = y}
+    if in_protected_area(position) then
+      return
+    end
+
+    if #surface.find_entities_filtered{position = position, radius = 0.45} > 0 then
+      return
+    end
+
+    local create_parameters = {
+      name = entity_name,
+      position = position,
+      force = force,
+      create_build_effect_smoke = false
+    }
+    if direction_name then
+      create_parameters.direction = direction_by_name[direction_name]
+    elseif entity_name == "small-electric-pole" then
+      create_parameters.direction = direction_by_name.north
+    end
+
+    local can_place_parameters = {
+      name = entity_name,
+      position = position,
+      force = force
+    }
+    if create_parameters.direction then
+      can_place_parameters.direction = create_parameters.direction
+    end
+
+    local ok, can_place = pcall(function()
+      return surface.can_place_entity(can_place_parameters)
+    end)
+    if not ok or not can_place then
+      return
+    end
+
+    local entity = surface.create_entity(create_parameters)
+    if entity and entity.valid then
+      placed_count = placed_count + 1
+    end
+  end
+
+  for _, x in ipairs(barrier_x_values) do
+    for y = -34, 32 do
+      if y == -33 or y == -32 or y == 31 or y == 32 then
+        place_blocker("gate", x, y, "north")
+      else
+        local name_index = ((math.abs(x) + math.abs(y)) % #blocker_names) + 1
+        place_blocker(blocker_names[name_index], x, y)
+      end
+    end
+  end
+
+  for x = -43, 39, 6 do
+    for _, y in ipairs({-22, -16, -4, 4, 14, 24}) do
+      if (math.abs(x + y) % 3) ~= 0 then
+        place_blocker("wooden-chest", x, y)
+      end
+    end
+  end
+
+  for x = -35, 31, 11 do
+    for _, y in ipairs({-28, -12, 0, 18, 28}) do
+      place_blocker("stone-wall", x, y)
+      place_blocker("stone-wall", x + 1, y)
+    end
+  end
+
+  debug_log("test: placed solar jungle obstacle entities=" .. tostring(placed_count))
+end
+
+function enable_preferred_underground_assembly_routes(request, options)
+  options = options or {}
+
+  for _, request_task in ipairs(request.tasks or {}) do
+    if request_task.type == "place-assembly-input-route" then
+      request_task.allow_underground_belts = true
+      request_task.prefer_underground_belts = options.prefer_underground_belts ~= false
+      request_task.underground_belt_entity_name = options.entity_name or "underground-belt"
+      request_task.underground_belt_item_name = options.item_name or request_task.underground_belt_entity_name
+      request_task.underground_belt_max_distance = options.max_distance or 5
+      request_task.underground_route_max_states = options.max_states or 160
+    end
+  end
 end
 
 function place_test_wall_fixture_after_assembly_block(surface, force, assertion)
@@ -4901,7 +5040,18 @@ function setup_solar_panel_factory_cross_pressure_test_case()
     area_width = 88,
     area_height = 80,
     deadline_offset_ticks = 28800,
-    sources = build_cross_pressure_solar_test_sources()
+    sources = build_cross_pressure_solar_test_sources(),
+    extra_inventory = {
+      {name = "underground-belt", count = 32}
+    },
+    assertion_overrides = {
+      minimum_counts = {
+        ["underground-belt"] = 2
+      }
+    },
+    mutate_request = function(request)
+      enable_preferred_underground_assembly_routes(request)
+    end
   }
 end
 
@@ -4926,17 +5076,59 @@ function setup_solar_panel_factory_cross_pressure_walled_underground_test_case()
       wall_fixture_after_assembly_block = build_solar_underground_wall_fixture()
     },
     mutate_request = function(request)
+      enable_preferred_underground_assembly_routes(request, {
+        max_states = 80
+      })
+    end
+  }
+end
+
+function setup_solar_panel_factory_jungle_route_test_case()
+  local surface = game.surfaces["nauvis"] or game.surfaces[1]
+  if not surface then
+    error("enemy-builder test: nauvis surface is unavailable")
+  end
+
+  local force = ensure_builder_force()
+  local result = setup_solar_panel_factory_variant_test_case{
+    case_name = "solar_panel_factory_jungle_route_physical_feed",
+    anchor_position = {x = 48, y = 22},
+    factory_center = {x = 48, y = 0},
+    manual_target_position = {x = 48, y = 0},
+    manual_target_search_radius = 4,
+    area_width = 150,
+    area_height = 120,
+    deadline_offset_ticks = 18000,
+    game_speed = 16,
+    progress_log_interval_ticks = 120,
+    sources = build_jungle_solar_test_sources(),
+    extra_inventory = {
+      {name = "transport-belt", count = 512},
+      {name = "underground-belt", count = 96},
+      {name = "splitter", count = 4}
+    },
+    assertion_overrides = {
+      debug_all_transport_belts = false,
+      minimum_counts = {
+        ["transport-belt"] = 180
+      }
+    },
+    mutate_request = function(request)
+      enable_preferred_underground_assembly_routes(request, {
+        max_states = 1200
+      })
+
       for _, request_task in ipairs(request.tasks or {}) do
         if request_task.type == "place-assembly-input-route" then
-          request_task.allow_underground_belts = true
-          request_task.underground_belt_entity_name = "underground-belt"
-          request_task.underground_belt_item_name = "underground-belt"
-          request_task.underground_belt_max_distance = 5
-          request_task.underground_route_max_states = 80
+          request_task.belt_route_search_margin = 120
         end
       end
     end
   }
+
+  place_test_solar_jungle_obstacles(surface, force)
+
+  return result
 end
 
 local function setup_solar_panel_factory_missing_sources_reports_blocker_test_case()
@@ -7771,6 +7963,7 @@ local test_remote_interface = {
   setup_solar_panel_factory_cross_pressure_test_case = setup_solar_panel_factory_cross_pressure_test_case,
   setup_solar_panel_factory_cross_pressure_walled_underground_test_case =
     setup_solar_panel_factory_cross_pressure_walled_underground_test_case,
+  setup_solar_panel_factory_jungle_route_test_case = setup_solar_panel_factory_jungle_route_test_case,
   setup_solar_panel_factory_missing_sources_reports_blocker_test_case = setup_solar_panel_factory_missing_sources_reports_blocker_test_case,
   setup_solar_panel_factory_block_marks_scaling_milestone_test_case =
     setup_solar_panel_factory_block_marks_scaling_milestone_test_case,
@@ -7836,6 +8029,7 @@ local test_remote_interface = {
   solar_panel_factory_cross_pressure_physical_feed = setup_solar_panel_factory_cross_pressure_test_case,
   solar_panel_factory_cross_pressure_walled_underground_physical_feed =
     setup_solar_panel_factory_cross_pressure_walled_underground_test_case,
+  solar_panel_factory_jungle_route_physical_feed = setup_solar_panel_factory_jungle_route_test_case,
   solar_panel_factory_missing_sources_reports_blocker =
     setup_solar_panel_factory_missing_sources_reports_blocker_test_case,
   solar_panel_factory_block_marks_scaling_milestone =

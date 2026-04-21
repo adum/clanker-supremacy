@@ -329,6 +329,12 @@ local function make_assembly_input_route_task(route_id, item_name)
     belt_route_search_margin = 80,
     belt_entity_name = "transport-belt",
     belt_item_name = "transport-belt",
+    allow_underground_belts = true,
+    prefer_underground_belts = true,
+    underground_belt_entity_name = "underground-belt",
+    underground_belt_item_name = "underground-belt",
+    underground_belt_max_distance = 5,
+    underground_route_max_states = 160,
     forbid_resource_overlap = true
   }
 end

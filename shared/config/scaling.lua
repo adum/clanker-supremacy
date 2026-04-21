@@ -185,6 +185,7 @@ return {
       },
       required_items = {
         {name = "transport-belt", count = 96},
+        {name = "underground-belt", count = 16},
         {name = "splitter", count = 1},
         {name = "burner-inserter", count = 1}
       },
@@ -199,6 +200,7 @@ return {
       },
       required_items = {
         {name = "transport-belt", count = 96},
+        {name = "underground-belt", count = 16},
         {name = "splitter", count = 1},
         {name = "burner-inserter", count = 1}
       },
@@ -213,6 +215,7 @@ return {
       },
       required_items = {
         {name = "transport-belt", count = 96},
+        {name = "underground-belt", count = 16},
         {name = "splitter", count = 1},
         {name = "burner-inserter", count = 1}
       },
@@ -227,6 +230,7 @@ return {
       },
       required_items = {
         {name = "transport-belt", count = 96},
+        {name = "underground-belt", count = 16},
         {name = "splitter", count = 1},
         {name = "burner-inserter", count = 1}
       },

@@ -3813,6 +3813,7 @@ local function build_belt_path_placements_between_positions(surface, force, firs
   end
 
   local allow_underground_belts = task.allow_underground_belts == true
+  local prefer_underground_belts = task.prefer_underground_belts == true
   local underground_belt_name = task.underground_belt_entity_name or "underground-belt"
   local underground_belt_item_name = task.underground_belt_item_name or underground_belt_name
   local underground_belt_max_distance = task.underground_belt_max_distance or 5
@@ -4148,18 +4149,13 @@ local function build_belt_path_placements_between_positions(surface, force, firs
         }
         local next_state_key = make_state_key(next_position, belt_edge)
 
-        if direction and not visited[next_state_key] and in_bounds(next_position) and
-          (not underground_exit_must_continue_forward or current_edge.direction == direction) and
-          can_expand_along_step(current, next_position, next_is_goal)
-        then
-          if next_is_goal or is_walkable_position(next_position) then
-            add_candidate(current_state_key, next_position, belt_edge)
+        local function try_add_underground_candidates()
+          if not (direction and underground_input_can_start_here and
+            can_place_underground_endpoint(current, direction, "input")
+          ) then
+            return
           end
-        end
 
-        if direction and underground_input_can_start_here and
-          can_place_underground_endpoint(current, direction, "input")
-        then
           for distance = 2, underground_belt_max_distance do
             local exit_position = {
               x = current.x + (step.x * distance),
@@ -4178,6 +4174,27 @@ local function build_belt_path_placements_between_positions(surface, force, firs
               add_candidate(current_state_key, exit_position, underground_edge)
             end
           end
+        end
+
+        local function try_add_belt_candidate()
+          if not (direction and not visited[next_state_key] and in_bounds(next_position) and
+            (not underground_exit_must_continue_forward or current_edge.direction == direction) and
+            can_expand_along_step(current, next_position, next_is_goal))
+          then
+            return
+          end
+
+          if next_is_goal or is_walkable_position(next_position) then
+            add_candidate(current_state_key, next_position, belt_edge)
+          end
+        end
+
+        if prefer_underground_belts then
+          try_add_underground_candidates()
+          try_add_belt_candidate()
+        else
+          try_add_belt_candidate()
+          try_add_underground_candidates()
         end
       end
     end

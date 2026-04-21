@@ -298,6 +298,7 @@ run_case "solar_panel_factory_west_orientation_physical_feed" "setup_solar_panel
 run_case "solar_panel_factory_opposed_sources_physical_feed" "setup_solar_panel_factory_opposed_sources_test_case" "34243" "" "600"
 run_case "solar_panel_factory_cross_pressure_physical_feed" "setup_solar_panel_factory_cross_pressure_test_case" "34244" "" "600"
 run_case "solar_panel_factory_cross_pressure_walled_underground_physical_feed" "setup_solar_panel_factory_cross_pressure_walled_underground_test_case" "34250" "" "600"
+run_case "solar_panel_factory_jungle_route_physical_feed" "setup_solar_panel_factory_jungle_route_test_case" "34251" "" "600"
 run_case "solar_panel_factory_missing_sources_reports_blocker" "setup_solar_panel_factory_missing_sources_reports_blocker_test_case" "34215"
 run_case "solar_panel_factory_block_marks_scaling_milestone" "setup_solar_panel_factory_block_marks_scaling_milestone_test_case" "34238"
 run_case "solar_panel_factory_iron_input_marks_scaling_milestone" "setup_solar_panel_factory_iron_input_marks_scaling_milestone_test_case" "34239"

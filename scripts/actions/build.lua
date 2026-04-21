@@ -30,6 +30,10 @@ local function get_valid_route_input_inserters(valid_entities, route_id)
   return inserters
 end
 
+local function is_assembly_route_belt_entity(entity)
+  return entity and entity.valid and (entity.type == "transport-belt" or entity.type == "underground-belt")
+end
+
 local function assembly_route_input_inserters_are_valid(assembly_site, route_id, route_input_inserters, ctx)
   local local_route_belts = assembly_site and assembly_site.route_local_belts_by_id and
     assembly_site.route_local_belts_by_id[route_id] or {}
@@ -828,7 +832,7 @@ function action_build.finish_place_layout_near_machine_task(builder_state, task,
     local belt_entities = {}
 
     for _, placement in ipairs(valid_entities) do
-      if placement.entity and placement.entity.valid and placement.entity.type == "transport-belt" then
+      if is_assembly_route_belt_entity(placement.entity) then
         belt_entities[#belt_entities + 1] = placement.entity
       end
     end

@@ -131,6 +131,7 @@ return {
       {name = "small-electric-pole", count = 12},
       {name = "splitter", count = 4},
       {name = "transport-belt", count = 256},
+      {name = "underground-belt", count = 32},
       {name = "wooden-chest", count = 1}
     },
     build_task = build_tasks.solar_panel_factory
