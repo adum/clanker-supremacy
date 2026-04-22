@@ -4026,6 +4026,208 @@ local function build_belt_path_placements_between_positions(surface, force, firs
     return placements
   end
 
+  local function try_build_direct_underground_placements_from_positions(positions, axis_label)
+    if not allow_underground_belts then
+      return nil
+    end
+
+    local placements = {}
+    local seen_positions = {}
+
+    local function get_step_direction(position_index)
+      local position = positions[position_index]
+      local next_position = positions[position_index + 1]
+      local previous_position = positions[position_index - 1]
+      local direction_name = nil
+
+      if next_position then
+        direction_name = get_direction_name_from_delta(next_position.x - position.x, next_position.y - position.y)
+      elseif previous_position then
+        direction_name = get_direction_name_from_delta(position.x - previous_position.x, position.y - previous_position.y)
+      end
+
+      return direction_name, direction_name and ctx.direction_by_name[direction_name] or ctx.direction_by_name.east
+    end
+
+    local function direction_matches_step(position_index, direction_name)
+      local position = positions[position_index]
+      local next_position = positions[position_index + 1]
+      if not (position and next_position) then
+        return false
+      end
+
+      return get_direction_name_from_delta(next_position.x - position.x, next_position.y - position.y) == direction_name
+    end
+
+    local function log_failure(message)
+      if (summary.failed_source_routes or 0) < 5 then
+        ctx.debug_log(
+          message ..
+          " for path " .. ctx.format_position(first_position) .. " -> " ..
+          ctx.format_position(terminal_position) .. " via " .. axis_label
+        )
+      end
+    end
+
+    local function normal_belt_requires_underground(position, direction)
+      if position_is_reserved(position) then
+        return true
+      end
+
+      local reusable_belt = get_reusable_belt_at_position(position)
+      if reusable_belt and reusable_belt.valid then
+        return reusable_belt.direction ~= direction
+      end
+
+      return position_blocks_normal_belt(position, direction)
+    end
+
+    local function add_placement(position, direction, spec)
+      local position_key = get_position_key(position)
+      if seen_positions[position_key] then
+        log_failure("assembly direct underground route duplicate position at " .. ctx.format_position(position))
+        return false
+      end
+      seen_positions[position_key] = true
+
+      placements[#placements + 1] = {
+        id = "assembly-belt-route-" .. tostring(#placements + 1),
+        site_role = "assembly-input-belt",
+        entity_name = spec and underground_belt_name or task.belt_entity_name,
+        item_name = spec and underground_belt_item_name or (task.belt_item_name or task.belt_entity_name),
+        build_position = ctx.clone_position(position),
+        build_direction = direction,
+        belt_to_ground_type = spec and spec.belt_to_ground_type or nil
+      }
+
+      return true
+    end
+
+    local function add_normal_or_reuse(position, direction, direction_name)
+      local position_key = get_position_key(position)
+      if seen_positions[position_key] then
+        log_failure("assembly direct underground route duplicate position at " .. ctx.format_position(position))
+        return false
+      end
+
+      if reserved_position_keys and reserved_position_keys[position_key] then
+        log_failure("assembly direct underground route reserved tile at " .. ctx.format_position(position))
+        return false
+      end
+
+      local reusable_belt = get_reusable_belt_at_position(position)
+      if reusable_belt and reusable_belt.valid then
+        if reusable_belt.direction == direction then
+          seen_positions[position_key] = true
+          return true
+        end
+
+        log_failure(
+          "assembly direct underground route reusable belt mismatch at " .. ctx.format_position(position) ..
+          " existing=" .. tostring(reusable_belt.direction) .. " needed=" .. tostring(direction)
+        )
+        return false
+      end
+
+      summary.positions_checked = summary.positions_checked + 1
+
+      if not surface.can_place_entity{
+        name = task.belt_entity_name,
+        position = position,
+        direction = direction,
+        force = force
+      } then
+        local occupant_names = collect_blocking_occupant_names(surface, position, ctx)
+        log_failure(
+          "assembly direct underground route blocked at " .. ctx.format_position(position) ..
+          " dir=" .. tostring(direction_name) .. "; occupants=" .. table.concat(occupant_names, ",")
+        )
+        return false
+      end
+
+      summary.placeable_positions = summary.placeable_positions + 1
+
+      if task.forbid_resource_overlap and candidate_entity_overlaps_resources(surface, force, task.belt_entity_name, position, direction) then
+        summary.resource_overlap_rejections = (summary.resource_overlap_rejections or 0) + 1
+        log_failure("assembly direct underground route resource overlap at " .. ctx.format_position(position))
+        return false
+      end
+
+      return add_placement(position, direction)
+    end
+
+    local function find_underground_exit(start_index, direction_name, direction)
+      local best_exit_index = nil
+
+      for distance = 2, underground_belt_max_distance do
+        local exit_index = start_index + distance
+        local exit_position = positions[exit_index]
+        local crosses_obstruction = false
+
+        if not exit_position or exit_index == #positions then
+          break
+        end
+
+        for span_index = start_index, exit_index - 1 do
+          if not direction_matches_step(span_index, direction_name) then
+            crosses_obstruction = false
+            break
+          end
+          if span_index > start_index and normal_belt_requires_underground(positions[span_index], direction) then
+            crosses_obstruction = true
+          end
+        end
+
+        if crosses_obstruction and
+          direction_matches_step(exit_index, direction_name) and
+          can_place_underground_endpoint(exit_position, direction, "output")
+        then
+          best_exit_index = exit_index
+        end
+      end
+
+      return best_exit_index
+    end
+
+    local index = 1
+    local previous_direction = nil
+    while index <= #positions do
+      local position = positions[index]
+      local direction_name, direction = get_step_direction(index)
+
+      if positions[index + 1] and normal_belt_requires_underground(positions[index + 1], direction) then
+        local can_start_underground = direction and
+          (previous_direction == nil or previous_direction == direction) and
+          can_place_underground_endpoint(position, direction, "input")
+
+        if can_start_underground then
+          local exit_index = find_underground_exit(index, direction_name, direction)
+          if exit_index then
+            if not add_placement(position, direction, {belt_to_ground_type = "input"}) then
+              return nil
+            end
+            if not add_placement(positions[exit_index], direction, {belt_to_ground_type = "output"}) then
+              return nil
+            end
+            previous_direction = direction
+            index = exit_index + 1
+            goto continue_direct_route
+          end
+        end
+      end
+
+      if not add_normal_or_reuse(position, direction, direction_name) then
+        return nil
+      end
+
+      previous_direction = direction
+      index = index + 1
+      ::continue_direct_route::
+    end
+
+    return placements
+  end
+
   local search_margin = task.belt_route_search_margin or 10
   local min_x = math.min(first_position.x, terminal_position.x) - search_margin
   local max_x = math.max(first_position.x, terminal_position.x) + search_margin
@@ -4278,6 +4480,14 @@ local function build_belt_path_placements_between_positions(surface, force, firs
     local positions = build_belt_path_positions(first_position, terminal_position, axis_order, ctx)
     if not positions then
       goto continue
+    end
+
+    local direct_underground_placements = try_build_direct_underground_placements_from_positions(
+      positions,
+      table.concat(axis_order, ",") .. "+direct-underground"
+    )
+    if direct_underground_placements then
+      return direct_underground_placements
     end
 
     local placements = try_build_placements_from_positions(positions, table.concat(axis_order, ","))
