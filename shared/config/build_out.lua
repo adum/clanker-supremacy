@@ -97,6 +97,8 @@ return {
   maintenance_patrol = {
     interval_ticks = 20 * 60,
     arrival_distance = 2.5,
+    ore_patch_arrival_distance = 0.75,
+    ore_patch_search_radius = 18,
     linger_ticks = 2 * 60,
     random_candidate_pool = 5,
     site_patterns = {

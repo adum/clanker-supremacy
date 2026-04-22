@@ -5245,6 +5245,101 @@ function setup_build_out_gun_turret_factory_finds_nearby_open_space_test_case()
   }
 end
 
+function setup_build_out_patrol_walks_to_ore_patch_test_case()
+  local surface = game.surfaces["nauvis"] or game.surfaces[1]
+  if not surface then
+    error("enemy-builder test: nauvis surface is unavailable")
+  end
+
+  local builder_position = {x = 0, y = 0}
+  local patrol_center = {x = 72, y = 0}
+  local area = make_test_area(patrol_center, 168, 112)
+
+  surface.always_day = true
+  clear_test_area(surface, area)
+
+  return setup_scaling_test{
+    case_name = "build_out_patrol_walks_to_ore_patch",
+    builder_position = builder_position,
+    game_speed = 16,
+    surface_name = surface.name,
+    suppress_player_autospawn = true,
+    disable_nearby_container_collection = true,
+    disable_nearby_machine_output_collection = true,
+    disable_nearby_machine_input_supply = true,
+    inventory = {
+      {name = "coal", count = 120}
+    },
+    mutate_builder_state = function(builder_state, test_surface)
+      local force = builder_state.entity.force
+      local patrol_sites = {
+        {resource_name = "coal", position = {x = 60, y = -24}, place = place_test_runtime_coal_outpost_site},
+        {resource_name = "iron-ore", position = {x = 60, y = 0}, place = place_test_runtime_iron_smelting_site},
+        {resource_name = "copper-ore", position = {x = 60, y = 24}, place = place_test_runtime_copper_smelting_site},
+        {resource_name = "iron-ore", position = {x = 84, y = -12}, place = place_test_runtime_iron_smelting_site},
+        {resource_name = "coal", position = {x = 84, y = 12}, place = place_test_runtime_coal_outpost_site}
+      }
+
+      for _, patrol_site in ipairs(patrol_sites) do
+        create_test_resource_patch(test_surface, patrol_site.resource_name, patrol_site.position, 4, 5000)
+        patrol_site.place(test_surface, patrol_site.position)
+      end
+
+      local count_sites = {
+        {pattern_name = "iron_plate_belt_export", resource_name = "iron-ore"},
+        {pattern_name = "iron_plate_belt_export", resource_name = "iron-ore"},
+        {pattern_name = "copper_plate_belt_export", resource_name = "copper-ore"},
+        {pattern_name = "copper_plate_belt_export", resource_name = "copper-ore"},
+        {pattern_name = "steel_plate_belt_export", resource_name = "iron-ore"}
+      }
+
+      for index, site_spec in ipairs(count_sites) do
+        local counter_pole = test_surface.create_entity{
+          name = "small-electric-pole",
+          position = {x = -240 - index, y = -240},
+          force = force,
+          create_build_effect_smoke = false
+        }
+        if not (counter_pole and counter_pole.valid) then
+          error("enemy-builder test: failed to create build-out patrol dummy counter pole")
+        end
+
+        register_resource_site(
+          {
+            id = "test-build-out-patrol-counter-" .. tostring(index),
+            pattern_name = site_spec.pattern_name,
+            resource_name = site_spec.resource_name
+          },
+          counter_pole,
+          nil,
+          nil
+        )
+      end
+
+      builder_state.completed_scaling_milestones["firearm-magazine-assembler"] = true
+      for _, milestone in ipairs((builder_data.build_out and builder_data.build_out.production_milestones) or {}) do
+        builder_state.completed_scaling_milestones[milestone.name] = true
+      end
+
+      builder_state.scale_production_complete = true
+      builder_state.next_build_out_patrol_tick = game.tick
+      builder_state.task_state = nil
+      builder_state.scaling_active_task = nil
+    end,
+    assertion = {
+      case_name = "build_out_patrol_walks_to_ore_patch",
+      surface_name = surface.name,
+      area = area,
+      deadline_offset_ticks = 2400,
+      skip_output_assertion = true,
+      maximum_builder_distance_from_position = {
+        position = patrol_center,
+        distance = 36
+      }
+    }
+  }
+end
+
 function setup_solar_panel_factory_test_case_east()
   return setup_solar_panel_factory_orientation_physical_feed_test_case(
     "east",
@@ -6277,6 +6372,7 @@ local function setup_assembler_output_collection_limits_test_case()
     builder_position = builder_position,
     surface_name = surface.name,
     suppress_player_autospawn = true,
+    disable_nearby_machine_input_supply = true,
     inventory = {
       {name = "firearm-magazine", count = 100}
     },
@@ -6305,6 +6401,12 @@ local function setup_assembler_output_collection_limits_test_case()
         position = {x = 5, y = 0},
         force = force
       }
+      if force.recipes["firearm-magazine"] then
+        force.recipes["firearm-magazine"].enabled = true
+      end
+      if ammo_assembler and ammo_assembler.valid and ammo_assembler.set_recipe then
+        ammo_assembler.set_recipe("firearm-magazine")
+      end
       local ammo_output = ammo_assembler and ammo_assembler.valid and ammo_assembler.get_output_inventory and ammo_assembler.get_output_inventory() or nil
       if not ammo_output then
         error("enemy-builder test: failed to create ammo assembler output inventory for assembler output collection case")
@@ -6316,6 +6418,12 @@ local function setup_assembler_output_collection_limits_test_case()
         position = {x = 7, y = 0},
         force = force
       }
+      if force.recipes["solar-panel"] then
+        force.recipes["solar-panel"].enabled = true
+      end
+      if solar_assembler and solar_assembler.valid and solar_assembler.set_recipe then
+        solar_assembler.set_recipe("solar-panel")
+      end
       local solar_output = solar_assembler and solar_assembler.valid and solar_assembler.get_output_inventory and solar_assembler.get_output_inventory() or nil
       if not solar_output then
         error("enemy-builder test: failed to create solar assembler output inventory for assembler output collection case")
@@ -6335,6 +6443,70 @@ local function setup_assembler_output_collection_limits_test_case()
       },
       maximum_builder_inventory_items = {
         {name = "firearm-magazine", count = 100}
+      }
+    }
+  }
+end
+
+function setup_container_collection_inventory_caps_test_case()
+  local surface = game.surfaces["nauvis"] or game.surfaces[1]
+  if not surface then
+    error("enemy-builder test: nauvis surface is unavailable")
+  end
+
+  local builder_position = {x = 0, y = 0}
+  local area = make_test_area(builder_position, 24, 24)
+
+  surface.always_day = true
+  clear_test_area(surface, area)
+
+  return setup_scaling_test{
+    case_name = "container_collection_inventory_caps",
+    builder_position = builder_position,
+    surface_name = surface.name,
+    suppress_player_autospawn = true,
+    inventory = {
+      {name = "solar-panel", count = 39},
+      {name = "gun-turret", count = 39}
+    },
+    mutate_builder_state = function(builder_state, test_surface)
+      builder_state.task_state = {
+        phase = "scaling-waiting",
+        wait_reason = "test-idle",
+        next_attempt_tick = game.tick + 3600
+      }
+
+      local chest = test_surface.create_entity{
+        name = "wooden-chest",
+        position = {x = 3, y = 0},
+        force = builder_state.entity.force,
+        create_build_effect_smoke = false
+      }
+      if not (chest and chest.valid) then
+        error("enemy-builder test: failed to create cap test chest")
+      end
+
+      local inventory = get_container_inventory(chest)
+      if not inventory then
+        error("enemy-builder test: failed to get cap test chest inventory")
+      end
+
+      inventory.insert{name = "solar-panel", count = 5}
+      inventory.insert{name = "gun-turret", count = 5}
+    end,
+    assertion = {
+      case_name = "container_collection_inventory_caps",
+      surface_name = surface.name,
+      area = area,
+      deadline_offset_ticks = 600,
+      skip_output_assertion = true,
+      minimum_builder_inventory_items = {
+        {name = "solar-panel", count = 40},
+        {name = "gun-turret", count = 40}
+      },
+      maximum_builder_inventory_items = {
+        {name = "solar-panel", count = 40},
+        {name = "gun-turret", count = 40}
       }
     }
   }
@@ -8307,6 +8479,8 @@ local test_remote_interface = {
   setup_gun_turret_factory_test_case = setup_gun_turret_factory_test_case,
   setup_build_out_gun_turret_factory_finds_nearby_open_space_test_case =
     setup_build_out_gun_turret_factory_finds_nearby_open_space_test_case,
+  setup_build_out_patrol_walks_to_ore_patch_test_case =
+    setup_build_out_patrol_walks_to_ore_patch_test_case,
   setup_solar_panel_factory_test_case_east = setup_solar_panel_factory_test_case_east,
   setup_solar_panel_factory_test_case_south = setup_solar_panel_factory_test_case_south,
   setup_solar_panel_factory_test_case_west = setup_solar_panel_factory_test_case_west,
@@ -8333,6 +8507,7 @@ local test_remote_interface = {
     setup_scaling_material_expansion_before_firearm_outpost_test_case,
   setup_steel_export_requires_iron_export_test_case = setup_steel_export_requires_iron_export_test_case,
   setup_assembler_output_collection_limits_test_case = setup_assembler_output_collection_limits_test_case,
+  setup_container_collection_inventory_caps_test_case = setup_container_collection_inventory_caps_test_case,
   setup_wait_patrol_avoids_close_reposition_test_case = setup_wait_patrol_avoids_close_reposition_test_case,
   setup_wait_patrol_stops_when_inventory_cap_reached_test_case =
     setup_wait_patrol_stops_when_inventory_cap_reached_test_case,
@@ -8377,6 +8552,7 @@ local test_remote_interface = {
   gun_turret_factory_physical_feed = setup_gun_turret_factory_test_case,
   build_out_gun_turret_factory_finds_nearby_open_space =
     setup_build_out_gun_turret_factory_finds_nearby_open_space_test_case,
+  build_out_patrol_walks_to_ore_patch = setup_build_out_patrol_walks_to_ore_patch_test_case,
   solar_panel_factory_east_orientation_physical_feed = setup_solar_panel_factory_test_case_east,
   solar_panel_factory_south_orientation_physical_feed = setup_solar_panel_factory_test_case_south,
   solar_panel_factory_west_orientation_physical_feed = setup_solar_panel_factory_test_case_west,
@@ -8396,6 +8572,7 @@ local test_remote_interface = {
   scaling_collect_switches_site = setup_scaling_collect_switches_site_test_case,
   scaling_stays_in_starter_core_until_solar_block = setup_scaling_stays_in_starter_core_until_solar_block_test_case,
   assembler_output_collection_limits = setup_assembler_output_collection_limits_test_case,
+  container_collection_inventory_caps = setup_container_collection_inventory_caps_test_case,
   wait_patrol_avoids_close_reposition = setup_wait_patrol_avoids_close_reposition_test_case,
   wait_patrol_stops_when_inventory_cap_reached = setup_wait_patrol_stops_when_inventory_cap_reached_test_case,
   wait_patrol_recovers_coal_when_producers_are_out_of_fuel =

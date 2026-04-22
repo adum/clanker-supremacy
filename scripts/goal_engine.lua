@@ -1227,6 +1227,32 @@ local function find_build_out_patrol_site(builder_data, builder_state, adapters)
   return candidates[selection_index].site
 end
 
+local function find_build_out_patrol_target_position(site, patrol, adapters)
+  if site and site.miner and site.miner.valid and site.resource_name then
+    local resources = site.miner.surface.find_entities_filtered{
+      position = site.miner.position,
+      radius = patrol.ore_patch_search_radius or 18,
+      type = "resource",
+      name = site.resource_name
+    }
+
+    if #resources > 0 then
+      table.sort(resources, function(left, right)
+        if left.position.x ~= right.position.x then
+          return left.position.x < right.position.x
+        end
+
+        return left.position.y < right.position.y
+      end)
+
+      local selected_index = adapters.next_random_index and adapters.next_random_index(#resources) or 1
+      return common.clone_position(resources[selected_index].position), "ore-patch"
+    end
+  end
+
+  return adapters.get_site_collect_position(site), "collect-position"
+end
+
 local function get_build_out_patrol_interval_ticks(builder_data)
   local patrol = builder_data.build_out and builder_data.build_out.maintenance_patrol or {}
   return patrol.interval_ticks or 20 * 60
@@ -1258,21 +1284,28 @@ local function start_build_out_patrol(builder_data, builder_state, tick, adapter
     return false
   end
 
-  local target_position = adapters.get_site_collect_position(site)
+  local target_position, target_kind = find_build_out_patrol_target_position(site, patrol, adapters)
   local arrival_distance = patrol.arrival_distance or 2.5
+  if target_kind == "ore-patch" then
+    arrival_distance = patrol.ore_patch_arrival_distance or math.min(arrival_distance, 0.75)
+  end
+
   builder_state.task_state = {
     phase = "build-out-patrol-moving",
     patrol_site = site,
     target_position = common.clone_position(target_position),
-    approach_position = adapters.create_task_approach_position(nil, target_position, arrival_distance),
+    approach_position = target_kind == "ore-patch" and
+      common.clone_position(target_position) or
+      adapters.create_task_approach_position(nil, target_position, arrival_distance),
     arrival_distance = arrival_distance,
+    patrol_target_kind = target_kind,
     last_position = common.clone_position(builder_state.entity.position),
     last_progress_tick = tick
   }
 
   adapters.debug_log(
     "build out: patrolling " .. tostring(site.pattern_name or "mining area") ..
-    " at " .. adapters.format_position(target_position)
+    " toward " .. tostring(target_kind) .. " at " .. adapters.format_position(target_position)
   )
   return true
 end

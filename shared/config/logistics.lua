@@ -3,7 +3,9 @@ return {
     coal = 500,
     ["iron-plate"] = 500,
     stone = 500,
-    ["copper-plate"] = 500
+    ["copper-plate"] = 500,
+    ["solar-panel"] = 40,
+    ["gun-turret"] = 40
   },
   nearby_container_collection = {
     interval_ticks = 5 * 60,
