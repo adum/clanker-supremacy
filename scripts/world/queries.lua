@@ -3368,6 +3368,60 @@ local function build_source_cluster_search_origins(cluster_center, cluster_confi
   return search_origins
 end
 
+local function build_base_infra_search_origins(anchor_position, task, assembly_target, ctx)
+  local search_config = assembly_target.base_infra_search or task.base_infra_search or {}
+  local search_origins = {}
+  local seen_position_keys = {}
+
+  local function add_origin(center_position, search_radius, placement_step)
+    if not center_position then
+      return
+    end
+
+    local snapped_center = snap_position_to_tile_center(center_position)
+    local position_key = get_position_key(snapped_center)
+    if seen_position_keys[position_key] then
+      return
+    end
+
+    seen_position_keys[position_key] = true
+    search_origins[#search_origins + 1] = {
+      center = snapped_center,
+      search_radius = search_radius,
+      placement_step = placement_step
+    }
+  end
+
+  add_origin(
+    anchor_position,
+    search_config.local_search_radius or task.placement_search_radius or 0,
+    search_config.local_search_step or task.placement_step or 1
+  )
+
+  local radial_distances = search_config.radial_distances or {16, 28}
+  local radial_heading_count = math.max(search_config.radial_heading_count or 8, 1)
+  local radial_search_radius = search_config.radial_local_search_radius or 4
+  local radial_search_step = search_config.radial_local_search_step or task.placement_step or 1
+
+  for _, distance in ipairs(radial_distances) do
+    if distance and distance > 0 then
+      for index = 1, radial_heading_count do
+        local angle = ((index - 1) / radial_heading_count) * (math.pi * 2)
+        add_origin(
+          {
+            x = anchor_position.x + (math.cos(angle) * distance),
+            y = anchor_position.y + (math.sin(angle) * distance)
+          },
+          radial_search_radius,
+          radial_search_step
+        )
+      end
+    end
+  end
+
+  return search_origins
+end
+
 local function get_output_belt_terminal_entity(site, ctx)
   local best_belt = nil
   local best_distance = nil
@@ -6013,6 +6067,13 @@ function queries.find_assembly_block_site(builder_state, task, ctx)
               source_cluster,
               task,
               anchor_candidate.preferred_direction_vector,
+              ctx
+            )
+          elseif assembly_target.anchor_mode == "base-infra-free-space" and anchor_candidate.search_center then
+            search_origins = build_base_infra_search_origins(
+              anchor_candidate.search_center,
+              task,
+              assembly_target,
               ctx
             )
           elseif anchor_candidate.search_center then

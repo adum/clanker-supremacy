@@ -5123,6 +5123,128 @@ function setup_gun_turret_factory_test_case()
   return result
 end
 
+function setup_build_out_gun_turret_factory_finds_nearby_open_space_test_case()
+  local surface = game.surfaces["nauvis"] or game.surfaces[1]
+  if not surface then
+    error("enemy-builder test: nauvis surface is unavailable")
+  end
+
+  local builder_position = {x = 60, y = 0}
+  local anchor_position = {x = 32, y = 0}
+  local area = make_test_area({x = 40, y = 0}, 120, 88)
+
+  surface.always_day = true
+  clear_test_area(surface, area)
+
+  return setup_scaling_test{
+    case_name = "build_out_gun_turret_factory_finds_nearby_open_space",
+    builder_position = builder_position,
+    game_speed = 16,
+    surface_name = surface.name,
+    suppress_player_autospawn = true,
+    disable_nearby_container_collection = true,
+    disable_nearby_machine_output_collection = true,
+    disable_nearby_machine_input_supply = true,
+    completed_scaling_milestones = {
+      ["firearm-magazine-assembler"] = true,
+      ["solar-panel-factory-block"] = true,
+      ["solar-panel-factory-copper-cable-input"] = true,
+      ["solar-panel-factory-iron-input"] = true,
+      ["solar-panel-factory-copper-solar-input"] = true,
+      ["solar-panel-factory-steel-input"] = true,
+      ["solar-panel-factory-power"] = true
+    },
+    inventory = {
+      {name = "assembling-machine-1", count = 2},
+      {name = "burner-inserter", count = 8},
+      {name = "small-electric-pole", count = 12},
+      {name = "splitter", count = 3},
+      {name = "transport-belt", count = 128},
+      {name = "underground-belt", count = 32},
+      {name = "wooden-chest", count = 1},
+      {name = "coal", count = 120}
+    },
+    mutate_builder_state = function(builder_state, test_surface)
+      local force = builder_state.entity.force
+      local anchor_pole = test_surface.create_entity{
+        name = "small-electric-pole",
+        position = anchor_position,
+        force = force,
+        create_build_effect_smoke = false
+      }
+      if not (anchor_pole and anchor_pole.valid) then
+        error("enemy-builder test: failed to create build-out base infrastructure anchor")
+      end
+
+      for x = anchor_position.x - 20, anchor_position.x + 20 do
+        for y = anchor_position.y - 20, anchor_position.y + 20 do
+          if not (math.abs(x - anchor_position.x) <= 1 and math.abs(y - anchor_position.y) <= 1) then
+            if test_surface.can_place_entity{name = "stone-wall", position = {x = x, y = y}, force = force} then
+              test_surface.create_entity{
+                name = "stone-wall",
+                position = {x = x, y = y},
+                force = force,
+                create_build_effect_smoke = false
+              }
+            end
+          end
+        end
+      end
+
+      local count_sites = {
+        {pattern_name = "iron_plate_belt_export", resource_name = "iron-ore"},
+        {pattern_name = "iron_plate_belt_export", resource_name = "iron-ore"},
+        {pattern_name = "copper_plate_belt_export", resource_name = "copper-ore"},
+        {pattern_name = "copper_plate_belt_export", resource_name = "copper-ore"},
+        {pattern_name = "steel_plate_belt_export", resource_name = "iron-ore"}
+      }
+      for index, site_spec in ipairs(count_sites) do
+        local counter_pole = test_surface.create_entity{
+          name = "small-electric-pole",
+          position = {x = -240 - index, y = -240},
+          force = force,
+          create_build_effect_smoke = false
+        }
+        if not (counter_pole and counter_pole.valid) then
+          error("enemy-builder test: failed to create dummy production counter pole")
+        end
+
+        register_resource_site(
+          {
+            id = "test-build-out-counter-" .. tostring(index),
+            pattern_name = site_spec.pattern_name,
+            resource_name = site_spec.resource_name
+          },
+          counter_pole,
+          nil,
+          nil
+        )
+      end
+    end,
+    assertion = {
+      case_name = "build_out_gun_turret_factory_finds_nearby_open_space",
+      surface_name = surface.name,
+      area = area,
+      deadline_offset_ticks = 3600,
+      skip_output_assertion = true,
+      primary_entity_name = "assembling-machine-1",
+      minimum_primary_distance_from_position = {
+        position = anchor_position,
+        distance = 20
+      },
+      expected_counts = {
+        ["assembling-machine-1"] = 2,
+        ["burner-inserter"] = 2,
+        ["transport-belt"] = 3,
+        ["wooden-chest"] = 1
+      },
+      required_completed_scaling_milestones = {
+        "gun-turret-factory-block"
+      }
+    }
+  }
+end
+
 function setup_solar_panel_factory_test_case_east()
   return setup_solar_panel_factory_orientation_physical_feed_test_case(
     "east",
@@ -8183,6 +8305,8 @@ local test_remote_interface = {
     setup_output_belt_abort_preserves_transport_belts_test_case,
   setup_solar_panel_factory_test_case = setup_solar_panel_factory_test_case,
   setup_gun_turret_factory_test_case = setup_gun_turret_factory_test_case,
+  setup_build_out_gun_turret_factory_finds_nearby_open_space_test_case =
+    setup_build_out_gun_turret_factory_finds_nearby_open_space_test_case,
   setup_solar_panel_factory_test_case_east = setup_solar_panel_factory_test_case_east,
   setup_solar_panel_factory_test_case_south = setup_solar_panel_factory_test_case_south,
   setup_solar_panel_factory_test_case_west = setup_solar_panel_factory_test_case_west,
@@ -8251,6 +8375,8 @@ local test_remote_interface = {
   output_belt_abort_preserves_transport_belts = setup_output_belt_abort_preserves_transport_belts_test_case,
   solar_panel_factory_physical_feed = setup_solar_panel_factory_test_case,
   gun_turret_factory_physical_feed = setup_gun_turret_factory_test_case,
+  build_out_gun_turret_factory_finds_nearby_open_space =
+    setup_build_out_gun_turret_factory_finds_nearby_open_space_test_case,
   solar_panel_factory_east_orientation_physical_feed = setup_solar_panel_factory_test_case_east,
   solar_panel_factory_south_orientation_physical_feed = setup_solar_panel_factory_test_case_south,
   solar_panel_factory_west_orientation_physical_feed = setup_solar_panel_factory_test_case_west,
