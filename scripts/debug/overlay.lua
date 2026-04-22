@@ -7,6 +7,7 @@ local overlay_element_names = {
   status_root = "enemy_builder_status_overlay_root",
   goal_label = "enemy_builder_goal_overlay_label",
   status_label = "enemy_builder_status_overlay_label",
+  research_label = "enemy_builder_research_overlay_label",
   path_label = "enemy_builder_path_overlay_label",
   blockers_label = "enemy_builder_blockers_overlay_label",
   maintenance_label = "enemy_builder_maintenance_overlay_label",
@@ -63,6 +64,7 @@ local function ensure_status_overlay(player)
   if root and root.valid then
     ensure_overlay_label(root, overlay_element_names.goal_label, "", {0.75, 0.9, 1, 0.82})
     ensure_overlay_label(root, overlay_element_names.status_label, "", {1, 1, 1, 0.82})
+    ensure_overlay_label(root, overlay_element_names.research_label, "", {1, 0.9, 0.65, 0.86})
     ensure_overlay_label(root, overlay_element_names.path_label, "", {0.86, 0.94, 1, 0.72})
     ensure_overlay_label(root, overlay_element_names.blockers_label, "", {1, 0.78, 0.78, 0.78})
     ensure_overlay_label(root, overlay_element_names.maintenance_label, "", {0.86, 0.92, 0.86, 0.72})
@@ -76,6 +78,7 @@ local function ensure_status_overlay(player)
   }
   ensure_overlay_label(root, overlay_element_names.goal_label, "", {0.75, 0.9, 1, 0.82})
   ensure_overlay_label(root, overlay_element_names.status_label, "", {1, 1, 1, 0.82})
+  ensure_overlay_label(root, overlay_element_names.research_label, "", {1, 0.9, 0.65, 0.86})
   ensure_overlay_label(root, overlay_element_names.path_label, "", {0.86, 0.94, 1, 0.72})
   ensure_overlay_label(root, overlay_element_names.blockers_label, "", {1, 0.78, 0.78, 0.78})
   ensure_overlay_label(root, overlay_element_names.maintenance_label, "", {0.86, 0.92, 0.86, 0.72})
@@ -123,6 +126,54 @@ function overlay.get_activity_summary(builder_state, tick, context)
   end
 
   return "Activity: " .. goal_tree.get_activity_line(context.build_runtime_snapshot(builder_state, tick))
+end
+
+local function get_research_line(context)
+  return (((context.builder_data or {}).force or {}).research or {}).technology_line or {}
+end
+
+local function get_research_display_name(technology_name, context)
+  for _, technology_entry in ipairs(get_research_line(context)) do
+    if technology_entry.name == technology_name then
+      return technology_entry.display_name or technology_name
+    end
+  end
+
+  return technology_name or "none"
+end
+
+function overlay.get_research_summary(context)
+  local force_name = context.builder_data and context.builder_data.force_name or nil
+  local force = force_name and game and game.forces[force_name] or nil
+  if not force then
+    return "Research: unavailable"
+  end
+
+  local current_research_name = nil
+  if force.current_research then
+    pcall(function()
+      current_research_name = force.current_research.name
+    end)
+  end
+
+  if current_research_name then
+    return string.format(
+      "Research: %s %.1f%%",
+      get_research_display_name(current_research_name, context),
+      math.max(0, math.min(100, (force.research_progress or 0) * 100))
+    )
+  end
+
+  local has_research_line = false
+  for _, technology_entry in ipairs(get_research_line(context)) do
+    has_research_line = true
+    local technology = technology_entry.name and force.technologies and force.technologies[technology_entry.name] or nil
+    if technology and not technology.researched then
+      return "Research: " .. (technology_entry.display_name or technology_entry.name) .. " pending"
+    end
+  end
+
+  return has_research_line and "Research: complete" or "Research: none"
 end
 
 function overlay.get_goal_summary(builder_state, tick, context)
@@ -195,6 +246,7 @@ function overlay.update_for_player(player, builder_state, tick, context)
   local inventory_root = ensure_inventory_overlay(player, context)
   local goal_label = status_root[overlay_element_names.goal_label]
   local status_label = status_root[overlay_element_names.status_label]
+  local research_label = status_root[overlay_element_names.research_label]
   local path_label = status_root[overlay_element_names.path_label]
   local blockers_label = status_root[overlay_element_names.blockers_label]
   local maintenance_label = status_root[overlay_element_names.maintenance_label]
@@ -212,6 +264,7 @@ function overlay.update_for_player(player, builder_state, tick, context)
 
   goal_label.caption = overlay.get_goal_summary(builder_state, tick, context)
   status_label.caption = overlay.get_activity_summary(builder_state, tick, context)
+  research_label.caption = overlay.get_research_summary(context)
   local path_lines = builder_state and builder_state.goal_path_lines or {}
   local blocker_lines = builder_state and builder_state.goal_blocker_lines or {}
   local maintenance_lines = maintenance_runner.get_recent_action_lines(builder_state or {}, 4)

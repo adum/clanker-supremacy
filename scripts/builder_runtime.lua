@@ -659,6 +659,15 @@ local function enable_configured_force_recipes(force)
 
   local research = builder_data.force and builder_data.force.research or nil
   local technology_name = research and research.current_technology_name or nil
+  for _, technology_entry in ipairs((research and research.technology_line) or {}) do
+    local line_technology_name = technology_entry.name
+    local line_technology = line_technology_name and force.technologies and force.technologies[line_technology_name] or nil
+    if line_technology and not line_technology.researched then
+      technology_name = line_technology_name
+      break
+    end
+  end
+
   local technology = technology_name and force.technologies and force.technologies[technology_name] or nil
   if technology and not technology.researched then
     pcall(function()
@@ -5284,7 +5293,7 @@ function setup_automation_science_lab_test_case()
       output_entity_names = {"lab"},
       output_item_name = "automation-science-pack",
       minimum_output_item_count = 1,
-      required_current_research_name = "enemy-builder-red-science-research",
+      required_current_research_name = "enemy-builder-physical-damage-1",
       minimum_research_progress = 0.0000001
     }
   }

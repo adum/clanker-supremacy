@@ -14,7 +14,13 @@ return {
       "lab"
     },
     research = {
-      current_technology_name = constants.enemy_builder_research_technology_name
+      current_technology_name = constants.enemy_builder_research_technology_name,
+      technology_line = {
+        {
+          name = constants.enemy_builder_physical_damage_1_technology_name,
+          display_name = "Physical projectile damage 1"
+        }
+      }
     }
   },
   prototypes = {

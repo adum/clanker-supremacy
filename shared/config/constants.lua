@@ -29,7 +29,8 @@ constants.gather_sources = {
 }
 
 constants.firearm_magazine_assembler_name = "enemy-builder-firearm-magazine-assembler"
-constants.enemy_builder_research_technology_name = "enemy-builder-red-science-research"
+constants.enemy_builder_physical_damage_1_technology_name = "enemy-builder-physical-damage-1"
+constants.enemy_builder_research_technology_name = constants.enemy_builder_physical_damage_1_technology_name
 
 constants.ammo_defense_required_items = {
   {name = "burner-inserter", count = 2},
