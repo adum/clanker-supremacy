@@ -460,6 +460,7 @@ $allCases = @(
   [pscustomobject]@{ Name = "wait_patrol_stops_when_inventory_cap_reached"; RemoteSetupName = "setup_wait_patrol_stops_when_inventory_cap_reached_test_case"; ServerPort = 34224; RemoteSetupArg = $null },
   [pscustomobject]@{ Name = "wait_patrol_recovers_coal_when_producers_are_out_of_fuel"; RemoteSetupName = "setup_wait_patrol_recovers_coal_when_producers_are_out_of_fuel_test_case"; ServerPort = 34219; RemoteSetupArg = $null },
   [pscustomobject]@{ Name = "machine_refuel_respects_minimum_batch"; RemoteSetupName = "setup_machine_refuel_respects_minimum_batch_test_case"; ServerPort = 34212; RemoteSetupArg = $null },
+  [pscustomobject]@{ Name = "nearby_tree_harvest_tops_up_wood"; RemoteSetupName = "setup_nearby_tree_harvest_tops_up_wood_test_case"; ServerPort = 34252; RemoteSetupArg = $null },
   [pscustomobject]@{ Name = "cleanup_nearby_exhausted_miners"; RemoteSetupName = "setup_cleanup_nearby_exhausted_miners_test_case"; ServerPort = 34232; RemoteSetupArg = $null },
   [pscustomobject]@{ Name = "cleanup_exhausted_miner_removes_orphan_furnace"; RemoteSetupName = "setup_cleanup_exhausted_miner_removes_orphan_furnace_test_case"; ServerPort = 34234; RemoteSetupArg = $null },
   [pscustomobject]@{ Name = "cleanup_exhausted_miner_removes_orphan_steel_chain"; RemoteSetupName = "setup_cleanup_exhausted_miner_removes_orphan_steel_chain_test_case"; ServerPort = 34235; RemoteSetupArg = $null },

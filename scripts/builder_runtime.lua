@@ -6425,6 +6425,65 @@ local function setup_machine_refuel_respects_minimum_batch_test_case()
   }
 end
 
+function setup_nearby_tree_harvest_tops_up_wood_test_case()
+  local surface = game.surfaces["nauvis"] or game.surfaces[1]
+  if not surface then
+    error("enemy-builder test: nauvis surface is unavailable")
+  end
+
+  local builder_position = {x = 0, y = 0}
+  local area = make_test_area(builder_position, 24, 24)
+
+  surface.always_day = true
+  clear_test_area(surface, area)
+
+  return setup_scaling_test{
+    case_name = "nearby_tree_harvest_tops_up_wood",
+    builder_position = builder_position,
+    surface_name = surface.name,
+    suppress_player_autospawn = true,
+    disable_nearby_machine_output_collection = true,
+    inventory = {
+      {name = "wood", count = 56}
+    },
+    mutate_builder_state = function(builder_state, test_surface)
+      builder_state.task_state = {
+        phase = "scaling-waiting",
+        wait_reason = "test-idle",
+        next_attempt_tick = game.tick + 3600
+      }
+      builder_state.next_nearby_tree_harvest_tick = game.tick
+      builder_state.next_machine_refuel_tick = game.tick + 3600
+      builder_state.next_machine_output_collection_tick = game.tick + 3600
+      builder_state.next_machine_input_supply_tick = game.tick + 3600
+      builder_state.next_exhausted_miner_cleanup_tick = game.tick + 3600
+
+      for index = 1, 3 do
+        local tree = test_surface.create_entity{
+          name = "tree-08",
+          position = {x = 2 + index * 3, y = 0}
+        }
+        if not (tree and tree.valid) then
+          error("enemy-builder test: failed to create nearby tree " .. tostring(index))
+        end
+      end
+    end,
+    assertion = {
+      case_name = "nearby_tree_harvest_tops_up_wood",
+      surface_name = surface.name,
+      area = area,
+      deadline_offset_ticks = 30,
+      skip_output_assertion = true,
+      minimum_builder_inventory_items = {
+        {name = "wood", count = 60}
+      },
+      maximum_builder_inventory_items = {
+        {name = "wood", count = 60}
+      }
+    }
+  }
+end
+
 function setup_cleanup_nearby_exhausted_miners_test_case()
   local surface = game.surfaces["nauvis"] or game.surfaces[1]
   if not surface then
@@ -8039,6 +8098,7 @@ local test_remote_interface = {
   setup_wait_patrol_recovers_coal_when_producers_are_out_of_fuel_test_case =
     setup_wait_patrol_recovers_coal_when_producers_are_out_of_fuel_test_case,
   setup_machine_refuel_respects_minimum_batch_test_case = setup_machine_refuel_respects_minimum_batch_test_case,
+  setup_nearby_tree_harvest_tops_up_wood_test_case = setup_nearby_tree_harvest_tops_up_wood_test_case,
   setup_cleanup_nearby_exhausted_miners_test_case = setup_cleanup_nearby_exhausted_miners_test_case,
   setup_cleanup_exhausted_miner_removes_orphan_furnace_test_case =
     setup_cleanup_exhausted_miner_removes_orphan_furnace_test_case,
@@ -8097,6 +8157,7 @@ local test_remote_interface = {
   wait_patrol_recovers_coal_when_producers_are_out_of_fuel =
     setup_wait_patrol_recovers_coal_when_producers_are_out_of_fuel_test_case,
   machine_refuel_respects_minimum_batch = setup_machine_refuel_respects_minimum_batch_test_case,
+  nearby_tree_harvest_tops_up_wood = setup_nearby_tree_harvest_tops_up_wood_test_case,
   cleanup_nearby_exhausted_miners = setup_cleanup_nearby_exhausted_miners_test_case,
   cleanup_exhausted_miner_removes_orphan_furnace = setup_cleanup_exhausted_miner_removes_orphan_furnace_test_case,
   cleanup_exhausted_miner_removes_orphan_steel_chain =
@@ -8702,6 +8763,8 @@ maintenance_pass_context = {
   get_container_inventory = get_container_inventory,
   get_item_count = get_item_count,
   insert_item = insert_item,
+  insert_products = insert_products,
+  format_products = format_products,
   pull_inventory_contents_to_builder = pull_inventory_contents_to_builder,
   remove_item = remove_item,
   square_distance = square_distance

@@ -22,6 +22,13 @@ return {
     own_force_only = true,
     max_entities_per_scan = 24
   },
+  nearby_tree_harvest = {
+    interval_ticks = 60,
+    radius = 24,
+    item_name = "wood",
+    target_item_count = 60,
+    items_per_tree = 4
+  },
   nearby_exhausted_miner_cleanup = {
     interval_ticks = 10 * 60,
     radius = 24,

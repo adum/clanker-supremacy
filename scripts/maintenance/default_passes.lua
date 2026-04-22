@@ -1,6 +1,7 @@
 local collect_containers = require("scripts.maintenance.passes.collect_containers")
 local collect_outputs = require("scripts.maintenance.passes.collect_outputs")
 local cleanup_exhausted_miners = require("scripts.maintenance.passes.cleanup_exhausted_miners")
+local harvest_nearby_trees = require("scripts.maintenance.passes.harvest_nearby_trees")
 local refuel_machines = require("scripts.maintenance.passes.refuel_machines")
 local supply_inputs = require("scripts.maintenance.passes.supply_inputs")
 
@@ -10,6 +11,7 @@ function default_passes.build(context)
   return {
     {name = "collect-containers", run = function(builder_state, tick) return collect_containers.run(builder_state, tick, context) end},
     {name = "collect-machine-output", run = function(builder_state, tick) return collect_outputs.run(builder_state, tick, context) end},
+    {name = "harvest-nearby-trees", run = function(builder_state, tick) return harvest_nearby_trees.run(builder_state, tick, context) end},
     {name = "cleanup-exhausted-miners", run = function(builder_state, tick) return cleanup_exhausted_miners.run(builder_state, tick, context) end},
     {name = "refuel-machines", run = function(builder_state, tick) return refuel_machines.run(builder_state, tick, context) end},
     {name = "supply-machine-inputs", run = function(builder_state, tick) return supply_inputs.run(builder_state, tick, context) end}
