@@ -656,6 +656,49 @@ local function enable_configured_force_recipes(force)
       enable_force_recipe_if_available(force, milestone.task.recipe_name)
     end
   end
+
+  local research = builder_data.force and builder_data.force.research or nil
+  local technology_name = research and research.current_technology_name or nil
+  local technology = technology_name and force.technologies and force.technologies[technology_name] or nil
+  if technology and not technology.researched then
+    pcall(function()
+      technology.enabled = true
+    end)
+
+    local current_research_name = nil
+    if force.current_research then
+      pcall(function()
+        current_research_name = force.current_research.name
+      end)
+    end
+
+    if current_research_name ~= technology_name then
+      if force.enable_research then
+        pcall(function()
+          force.enable_research()
+        end)
+      end
+
+      local queued = false
+      if force.add_research then
+        local ok, result = pcall(function()
+          return force.add_research(technology_name)
+        end)
+        queued = ok and result == true
+      end
+
+      local ok, message = true, nil
+      if not queued then
+        ok, message = pcall(function()
+          force.research_queue = {technology_name}
+        end)
+      end
+
+      if not ok then
+        log("[enemy-builder] failed to queue current research " .. technology_name .. ": " .. tostring(message))
+      end
+    end
+  end
 end
 
 local function ensure_builder_force()
@@ -5170,6 +5213,99 @@ function setup_gun_turret_factory_test_case()
   return result
 end
 
+function setup_automation_science_lab_test_case()
+  local surface = game.surfaces["nauvis"] or game.surfaces[1]
+  if not surface then
+    error("enemy-builder test: nauvis surface is unavailable")
+  end
+
+  local anchor_position = {x = 18, y = 18}
+  local builder_position = {x = 0, y = -6}
+  local factory_center = {x = 18, y = 0}
+  local area = make_test_area(factory_center, 80, 72)
+
+  surface.always_day = true
+  clear_test_area(surface, area)
+
+  local result = setup_manual_test{
+    case_name = "automation_science_lab_physical_feed",
+    component_name = "automation_science_lab",
+    builder_position = builder_position,
+    game_speed = 8,
+    progress_log_interval_ticks = 60,
+    surface_name = surface.name,
+    suppress_player_autospawn = true,
+    disable_nearby_container_collection = true,
+    disable_nearby_machine_output_collection = true,
+    disable_nearby_machine_input_supply = true,
+    inventory = {
+      {name = "assembling-machine-1", count = 2},
+      {name = "lab", count = 1},
+      {name = "burner-inserter", count = 8},
+      {name = "small-electric-pole", count = 12},
+      {name = "splitter", count = 2},
+      {name = "transport-belt", count = 256},
+      {name = "underground-belt", count = 48},
+      {name = "coal", count = 200}
+    },
+    mutate_request = function(request)
+      local block_task = request.tasks and request.tasks[1] or nil
+      if not block_task then
+        error("enemy-builder test: expected automation science manual request to include a block task")
+      end
+
+      for _, request_task in ipairs(request.tasks or {}) do
+        request_task.post_place_pause_ticks = 0
+        if request_task.type == "place-assembly-input-route" then
+          request_task.belt_route_search_margin = 96
+          request_task.underground_route_max_states = 240
+        end
+      end
+
+      block_task.manual_target_position = clone_position(factory_center)
+      block_task.manual_target_search_radius = 12
+      block_task.manual_target_search_step = 1
+    end,
+    assertion = {
+      case_name = "automation_science_lab_physical_feed",
+      surface_name = surface.name,
+      area = area,
+      deadline_offset_ticks = 18000,
+      primary_entity_name = "assembling-machine-1",
+      debug_all_transport_belts = true,
+      expected_counts = {
+        ["assembling-machine-1"] = 2,
+        ["burner-inserter"] = 4,
+        ["lab"] = 1
+      },
+      minimum_counts = {
+        ["small-electric-pole"] = 3
+      },
+      output_entity_names = {"lab"},
+      output_item_name = "automation-science-pack",
+      minimum_output_item_count = 1,
+      required_current_research_name = "enemy-builder-red-science-research",
+      minimum_research_progress = 0.0000001
+    }
+  }
+
+  place_test_powered_firearm_anchor(surface, anchor_position)
+  place_test_plate_belt_sources(surface, {
+    {
+      item_name = "iron-plate",
+      machine_position = {x = 6, y = -12},
+      options = {belt_direction_name = "east"}
+    },
+    {
+      item_name = "copper-plate",
+      machine_position = {x = 30, y = -12},
+      options = {belt_direction_name = "west"}
+    }
+  })
+
+  return result
+end
+
 function setup_build_out_gun_turret_factory_finds_nearby_open_space_test_case()
   local surface = game.surfaces["nauvis"] or game.surfaces[1]
   if not surface then
@@ -7545,6 +7681,9 @@ local function get_test_output_item_count(surface, force, area, entity_names, it
     if not inventory and (entity.type == "container" or entity.type == "logistic-container") then
       inventory = entity.get_inventory and entity.get_inventory(defines.inventory.chest) or nil
     end
+    if not inventory and entity.type == "lab" and defines.inventory.lab_input then
+      inventory = entity.get_inventory and entity.get_inventory(defines.inventory.lab_input) or nil
+    end
 
     if inventory then
       total_count = total_count + inventory.get_item_count(item_name)
@@ -8016,6 +8155,17 @@ local function format_test_failure_summary(surface, force, assertion)
     end
   end
 
+  if assertion.required_current_research_name or assertion.minimum_research_progress then
+    local current_research_name = "nil"
+    if force.current_research then
+      pcall(function()
+        current_research_name = force.current_research.name or "nil"
+      end)
+    end
+    parts[#parts + 1] = "research=" .. current_research_name
+    parts[#parts + 1] = string.format("research-progress=%.8f", force.research_progress or 0)
+  end
+
   for _, requirement in ipairs(assertion.minimum_builder_inventory_items or {}) do
     parts[#parts + 1] =
       "builder-" .. requirement.name .. "=" ..
@@ -8172,6 +8322,23 @@ local function test_assertion_passed(surface, force, assertion)
     if count_test_entities(surface, force, area, entity_name) > maximum_count then
       return false
     end
+  end
+
+  if assertion.required_current_research_name then
+    local current_research_name = nil
+    if force.current_research then
+      pcall(function()
+        current_research_name = force.current_research.name
+      end)
+    end
+
+    if current_research_name ~= assertion.required_current_research_name then
+      return false
+    end
+  end
+
+  if assertion.minimum_research_progress and (force.research_progress or 0) < assertion.minimum_research_progress then
+    return false
   end
 
   for _, requirement in ipairs(assertion.minimum_entity_counts_in_areas or {}) do
@@ -8565,6 +8732,7 @@ local test_remote_interface = {
     setup_output_belt_abort_preserves_transport_belts_test_case,
   setup_solar_panel_factory_test_case = setup_solar_panel_factory_test_case,
   setup_gun_turret_factory_test_case = setup_gun_turret_factory_test_case,
+  setup_automation_science_lab_test_case = setup_automation_science_lab_test_case,
   setup_build_out_gun_turret_factory_finds_nearby_open_space_test_case =
     setup_build_out_gun_turret_factory_finds_nearby_open_space_test_case,
   setup_build_out_patrol_walks_to_ore_patch_test_case =
@@ -8639,6 +8807,7 @@ local test_remote_interface = {
   output_belt_abort_preserves_transport_belts = setup_output_belt_abort_preserves_transport_belts_test_case,
   solar_panel_factory_physical_feed = setup_solar_panel_factory_test_case,
   gun_turret_factory_physical_feed = setup_gun_turret_factory_test_case,
+  automation_science_lab_physical_feed = setup_automation_science_lab_test_case,
   build_out_gun_turret_factory_finds_nearby_open_space =
     setup_build_out_gun_turret_factory_finds_nearby_open_space_test_case,
   build_out_patrol_walks_to_ore_patch = setup_build_out_patrol_walks_to_ore_patch_test_case,

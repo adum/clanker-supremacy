@@ -395,6 +395,19 @@ build_tasks.gun_turret_factory_copper_input =
 build_tasks.gun_turret_factory_power =
   make_assembly_power_task("gun-turret-factory-power", "gun_turret_factory", "gun-turret")
 
+build_tasks.automation_science_lab = make_assembly_block_task(
+  "automation-science-lab-block",
+  "automation_science_lab",
+  "automation-science-pack",
+  "automation_science_lab"
+)
+build_tasks.automation_science_lab_iron_gear_input =
+  make_assembly_input_route_task("automation_science_lab", "automation-science-pack", "iron-plate-to-gear-line", "iron-plate")
+build_tasks.automation_science_lab_copper_input =
+  make_assembly_input_route_task("automation_science_lab", "automation-science-pack", "copper-plate-to-science-line", "copper-plate")
+build_tasks.automation_science_lab_power =
+  make_assembly_power_task("automation-science-lab-power", "automation_science_lab", "automation-science-pack")
+
 build_tasks.copper_plate_belt_export = make_fresh_output_belt_task(
   "copper_plate_belt_export",
   "copper-ore",

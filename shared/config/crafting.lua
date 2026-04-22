@@ -95,6 +95,14 @@ return {
         {name = "iron-plate", count = 20}
       }
     },
+    ["lab"] = {
+      craft_ticks = 120,
+      ingredients = {
+        {name = "iron-gear-wheel", count = 10},
+        {name = "electronic-circuit", count = 10},
+        {name = "transport-belt", count = 4}
+      }
+    },
     ["solar-panel"] = {
       craft_ticks = 600,
       ingredients = {

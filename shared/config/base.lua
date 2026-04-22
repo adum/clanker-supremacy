@@ -9,7 +9,12 @@ return {
       "copper-cable",
       "electronic-circuit",
       "solar-panel",
-      "gun-turret"
+      "gun-turret",
+      "automation-science-pack",
+      "lab"
+    },
+    research = {
+      current_technology_name = constants.enemy_builder_research_technology_name
     }
   },
   prototypes = {

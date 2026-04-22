@@ -294,6 +294,7 @@ run_case "steel_output_belt_counts_as_export_site" "setup_steel_output_belt_coun
 run_case "output_belt_abort_preserves_transport_belts" "setup_output_belt_abort_preserves_transport_belts_test_case" "34228"
 run_case "solar_panel_factory_physical_feed" "setup_solar_panel_factory_test_case" "34206" "" "600"
 run_case "gun_turret_factory_physical_feed" "setup_gun_turret_factory_test_case" "34253" "" "600"
+run_case "automation_science_lab_physical_feed" "setup_automation_science_lab_test_case" "34258" "" "600"
 run_case "build_out_gun_turret_factory_finds_nearby_open_space" "setup_build_out_gun_turret_factory_finds_nearby_open_space_test_case" "34254" "" "240"
 run_case "build_out_patrol_walks_to_ore_patch" "setup_build_out_patrol_walks_to_ore_patch_test_case" "34255" "" "240"
 run_case "solar_panel_factory_east_orientation_physical_feed" "setup_solar_panel_factory_test_case_east" "34240" "" "600"

@@ -155,5 +155,24 @@ return {
       {name = "wooden-chest", count = 1}
     },
     build_task = build_tasks.gun_turret_factory
+  },
+  automation_science_lab = {
+    display_name = "automation science lab",
+    tasks = {
+      build_tasks.automation_science_lab,
+      build_tasks.automation_science_lab_iron_gear_input,
+      build_tasks.automation_science_lab_copper_input,
+      build_tasks.automation_science_lab_power
+    },
+    required_items = {
+      {name = "assembling-machine-1", count = 2},
+      {name = "lab", count = 1},
+      {name = "burner-inserter", count = 6},
+      {name = "small-electric-pole", count = 10},
+      {name = "splitter", count = 2},
+      {name = "transport-belt", count = 192},
+      {name = "underground-belt", count = 24}
+    },
+    build_task = build_tasks.automation_science_lab
   }
 }

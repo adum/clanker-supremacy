@@ -444,6 +444,7 @@ $allCases = @(
   [pscustomobject]@{ Name = "output_belt_abort_preserves_transport_belts"; RemoteSetupName = "setup_output_belt_abort_preserves_transport_belts_test_case"; ServerPort = 34228; RemoteSetupArg = $null },
   [pscustomobject]@{ Name = "solar_panel_factory_physical_feed"; RemoteSetupName = "setup_solar_panel_factory_test_case"; ServerPort = 34206; RemoteSetupArg = $null; TimeoutSecs = 600 },
   [pscustomobject]@{ Name = "gun_turret_factory_physical_feed"; RemoteSetupName = "setup_gun_turret_factory_test_case"; ServerPort = 34253; RemoteSetupArg = $null; TimeoutSecs = 600 },
+  [pscustomobject]@{ Name = "automation_science_lab_physical_feed"; RemoteSetupName = "setup_automation_science_lab_test_case"; ServerPort = 34258; RemoteSetupArg = $null; TimeoutSecs = 600 },
   [pscustomobject]@{ Name = "build_out_gun_turret_factory_finds_nearby_open_space"; RemoteSetupName = "setup_build_out_gun_turret_factory_finds_nearby_open_space_test_case"; ServerPort = 34254; RemoteSetupArg = $null; TimeoutSecs = 240 },
   [pscustomobject]@{ Name = "build_out_patrol_walks_to_ore_patch"; RemoteSetupName = "setup_build_out_patrol_walks_to_ore_patch_test_case"; ServerPort = 34255; RemoteSetupArg = $null; TimeoutSecs = 240 },
   [pscustomobject]@{ Name = "solar_panel_factory_east_orientation_physical_feed"; RemoteSetupName = "setup_solar_panel_factory_test_case_east"; ServerPort = 34240; RemoteSetupArg = $null; TimeoutSecs = 600 },

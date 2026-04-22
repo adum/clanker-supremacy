@@ -63,6 +63,26 @@ local gun_turret_factory_power_task = milestone_task(
   "gun-turret-factory-block"
 )
 
+local automation_science_lab_task = milestone_task(
+  build_tasks.automation_science_lab,
+  "build-out-place-automation-science-lab"
+)
+local automation_science_lab_iron_gear_input_task = milestone_task(
+  build_tasks.automation_science_lab_iron_gear_input,
+  "build-out-connect-automation-science-lab-iron-gear-input",
+  "automation-science-lab-block"
+)
+local automation_science_lab_copper_input_task = milestone_task(
+  build_tasks.automation_science_lab_copper_input,
+  "build-out-connect-automation-science-lab-copper-input",
+  "automation-science-lab-block"
+)
+local automation_science_lab_power_task = milestone_task(
+  build_tasks.automation_science_lab_power,
+  "build-out-connect-automation-science-lab-power",
+  "automation-science-lab-block"
+)
+
 return {
   enabled = true,
   idle_retry_ticks = 2 * 60,
@@ -276,6 +296,66 @@ return {
         {name = "small-electric-pole", count = 32}
       },
       task = gun_turret_factory_power_task
+    },
+    {
+      name = "automation-science-lab-block",
+      display_name = "Place automation science lab block",
+      pursue_proactively = true,
+      unlock = {
+        required_completed_milestones = {"gun-turret-factory-power"}
+      },
+      required_items = {
+        {name = "assembling-machine-1", count = 2},
+        {name = "lab", count = 1},
+        {name = "burner-inserter", count = 4},
+        {name = "small-electric-pole", count = 6},
+        {name = "transport-belt", count = 64}
+      },
+      task = automation_science_lab_task
+    },
+    {
+      name = "automation-science-lab-iron-gear-input",
+      display_name = "Connect automation science lab gear iron input",
+      pursue_proactively = true,
+      unlock = {
+        required_completed_milestones = {"automation-science-lab-block"}
+      },
+      required_items = {
+        {name = "transport-belt", count = 96},
+        {name = "underground-belt", count = 16},
+        {name = "splitter", count = 1},
+        {name = "burner-inserter", count = 1}
+      },
+      task = automation_science_lab_iron_gear_input_task
+    },
+    {
+      name = "automation-science-lab-copper-input",
+      display_name = "Connect automation science lab copper input",
+      pursue_proactively = true,
+      unlock = {
+        required_completed_milestones = {"automation-science-lab-iron-gear-input"}
+      },
+      required_items = {
+        {name = "transport-belt", count = 96},
+        {name = "underground-belt", count = 16},
+        {name = "splitter", count = 1},
+        {name = "burner-inserter", count = 1}
+      },
+      task = automation_science_lab_copper_input_task
+    },
+    {
+      name = "automation-science-lab-power",
+      display_name = "Connect automation science lab power",
+      pursue_proactively = true,
+      unlock = {
+        required_completed_milestones = {
+          "automation-science-lab-copper-input"
+        }
+      },
+      required_items = {
+        {name = "small-electric-pole", count = 32}
+      },
+      task = automation_science_lab_power_task
     }
   }
 }

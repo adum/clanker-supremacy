@@ -433,5 +433,179 @@ return {
         }
       },
     }
+  },
+  automation_science_lab = {
+    display_name = "automation science lab",
+    target_item_name = "automation-science-pack",
+    defer_power_poles_until_end = true,
+    place_local_poles_with_power_task = true,
+    anchor_mode = "base-infra-free-space",
+    store_root_assembler_as_anchor_entity = true,
+    skip_initial_power_validation = true,
+    base_infra_search = {
+      max_origins = 10,
+      pole_search_radius = 96,
+      use_registered_sites = true,
+      include_power_poles = true
+    },
+    free_rectangle = {
+      min_x = -1,
+      max_x = 12,
+      min_y = -8,
+      max_y = 3
+    },
+    power_anchor_entity_name = "small-electric-pole",
+    source_route_splitter = {
+      entity_name = "splitter",
+      item_name = "splitter"
+    },
+    source_route_extractor = {
+      entity_name = "burner-inserter",
+      item_name = "burner-inserter",
+      fuel = {
+        name = "coal",
+        count = 4
+      }
+    },
+    local_poles = {
+      {
+        id = "power-pole-entry",
+        site_role = "power-pole",
+        entity_name = "small-electric-pole",
+        item_name = "small-electric-pole",
+        offset = {x = 0, y = 1},
+        is_power_entry = true
+      },
+      {
+        id = "power-pole-gear",
+        site_role = "power-pole",
+        entity_name = "small-electric-pole",
+        item_name = "small-electric-pole",
+        offset = {x = 1, y = -1}
+      },
+      {
+        id = "power-pole-science",
+        site_role = "power-pole",
+        entity_name = "small-electric-pole",
+        item_name = "small-electric-pole",
+        offset = {x = 5, y = -1}
+      },
+      {
+        id = "power-pole-lab",
+        site_role = "power-pole",
+        entity_name = "small-electric-pole",
+        item_name = "small-electric-pole",
+        offset = {x = 9, y = -1}
+      }
+    },
+    assembler_nodes = {
+      {
+        id = "iron-gear-assembler",
+        site_role = "assembly-node",
+        entity_name = "assembling-machine-1",
+        item_name = "assembling-machine-1",
+        recipe_name = "iron-gear-wheel",
+        offset = {x = 2, y = -3}
+      },
+      {
+        id = "automation-science-assembler",
+        site_role = "assembly-root",
+        entity_name = "assembling-machine-1",
+        item_name = "assembling-machine-1",
+        recipe_name = "automation-science-pack",
+        offset = {x = 6, y = -3}
+      }
+    },
+    output_containers = {
+      {
+        id = "automation-science-lab",
+        site_role = "research-lab",
+        entity_name = "lab",
+        item_name = "lab",
+        offset = {x = 10, y = -3}
+      }
+    },
+    internal_inserters = {
+      {
+        id = "gear-to-automation-science",
+        site_role = "internal-inserter",
+        source_node_id = "iron-gear-assembler",
+        target_node_id = "automation-science-assembler",
+        entity_name = "burner-inserter",
+        item_name = "burner-inserter",
+        offset = {x = 4, y = -3},
+        direction_name = "west",
+        fuel = {
+          name = "coal",
+          count = 4
+        }
+      }
+    },
+    output_inserters = {
+      {
+        id = "automation-science-to-lab",
+        site_role = "research-inserter",
+        source_node_id = "automation-science-assembler",
+        target_container_id = "automation-science-lab",
+        entity_name = "burner-inserter",
+        item_name = "burner-inserter",
+        offset = {x = 8, y = -3},
+        direction_name = "west",
+        fuel = {
+          name = "coal",
+          count = 4
+        }
+      }
+    },
+    raw_input_routes = {
+      {
+        id = "iron-plate-to-gear-line",
+        item_name = "iron-plate",
+        route_target_offset = {x = 2, y = -7},
+        local_belt_offsets = {
+          {x = 2, y = -6}
+        },
+        local_belt_direction_name = "south",
+        input_inserters = {
+          {
+            id = "iron-to-gears-for-science",
+            site_role = "input-inserter",
+            target_node_id = "iron-gear-assembler",
+            entity_name = "burner-inserter",
+            item_name = "burner-inserter",
+            offset = {x = 2, y = -5},
+            direction_name = "north",
+            fuel = {
+              name = "coal",
+              count = 4
+            }
+          }
+        }
+      },
+      {
+        id = "copper-plate-to-science-line",
+        item_name = "copper-plate",
+        route_target_offset = {x = 6, y = -7},
+        local_belt_offsets = {
+          {x = 6, y = -6}
+        },
+        local_belt_direction_name = "south",
+        input_inserters = {
+          {
+            id = "copper-to-automation-science",
+            site_role = "input-inserter",
+            target_node_id = "automation-science-assembler",
+            entity_name = "burner-inserter",
+            item_name = "burner-inserter",
+            offset = {x = 6, y = -5},
+            direction_name = "north",
+            fuel = {
+              name = "coal",
+              count = 4
+            }
+          }
+        }
+      },
+    }
   }
 }
