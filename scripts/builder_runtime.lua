@@ -5284,7 +5284,8 @@ function setup_automation_science_lab_test_case()
       debug_all_transport_belts = true,
       expected_counts = {
         ["assembling-machine-1"] = 2,
-        ["burner-inserter"] = 4,
+        ["burner-inserter"] = 6,
+        ["gun-turret"] = 1,
         ["lab"] = 1
       },
       minimum_counts = {
@@ -5293,8 +5294,14 @@ function setup_automation_science_lab_test_case()
       output_entity_names = {"lab"},
       output_item_name = "automation-science-pack",
       minimum_output_item_count = 1,
-      required_current_research_name = "enemy-builder-physical-damage-1",
-      minimum_research_progress = 0.0000001
+      required_researched_technologies = {"enemy-builder-physical-damage-1"},
+      minimum_ammo_damage_modifiers = {
+        ["bullet"] = 0.1,
+        ["shotgun-shell"] = 0.1
+      },
+      minimum_turret_attack_modifiers = {
+        ["gun-turret"] = 0.1
+      }
     }
   }
 
@@ -5311,6 +5318,28 @@ function setup_automation_science_lab_test_case()
       options = {belt_direction_name = "west"}
     }
   })
+
+  local turret = surface.create_entity{
+    name = "gun-turret",
+    position = {x = 44, y = 10},
+    force = ensure_builder_force(),
+    direction = defines.direction.north,
+    create_build_effect_smoke = false
+  }
+  if not (turret and turret.valid) then
+    error("enemy-builder test: failed to place builder-owned lab damage preview turret")
+  end
+
+  local ammo_inventory = turret.get_inventory(defines.inventory.turret_ammo)
+  if ammo_inventory then
+    ammo_inventory.insert{name = "firearm-magazine", count = 10}
+  end
+
+  local force = ensure_builder_force()
+  if force.current_research and force.current_research.name == "enemy-builder-physical-damage-1" then
+    -- Keep the headless case quick while still requiring a real lab-fed science pack to finish the tech.
+    force.research_progress = math.max(force.research_progress or 0, 0.9)
+  end
 
   return result
 end
@@ -8035,12 +8064,22 @@ local function get_test_entity_debug_details(surface, force, area, assertion)
     name = "gun-turret"
   }) do
     local ammo_inventory = turret.get_inventory(defines.inventory.turret_ammo)
-    local ammo_count = ammo_inventory and ammo_inventory.get_contents()["firearm-magazine"] or 0
+    local ammo_count = ammo_inventory and ammo_inventory.get_item_count("firearm-magazine") or 0
+    local bullet_damage_modifier = 0
+    local turret_attack_modifier = 0
+    pcall(function()
+      bullet_damage_modifier = force.get_ammo_damage_modifier("bullet") or 0
+    end)
+    pcall(function()
+      turret_attack_modifier = force.get_turret_attack_modifier("gun-turret") or 0
+    end)
     details[#details + 1] = string.format(
-      "turret(pos=%s dir=%s ammo=%d)",
+      "turret(pos=%s dir=%s ammo=%d bullet_damage=%.3f turret_attack=%.3f)",
       format_position(turret.position),
       tostring(turret.direction),
-      ammo_count or 0
+      ammo_count or 0,
+      bullet_damage_modifier,
+      turret_attack_modifier
     )
   end
 
@@ -8164,7 +8203,7 @@ local function format_test_failure_summary(surface, force, assertion)
     end
   end
 
-  if assertion.required_current_research_name or assertion.minimum_research_progress then
+  if assertion.required_current_research_name or assertion.minimum_research_progress or assertion.required_researched_technologies then
     local current_research_name = "nil"
     if force.current_research then
       pcall(function()
@@ -8173,6 +8212,41 @@ local function format_test_failure_summary(surface, force, assertion)
     end
     parts[#parts + 1] = "research=" .. current_research_name
     parts[#parts + 1] = string.format("research-progress=%.8f", force.research_progress or 0)
+  end
+
+  for _, technology_name in ipairs(assertion.required_researched_technologies or {}) do
+    local researched = false
+    pcall(function()
+      local technology = force.technologies and force.technologies[technology_name] or nil
+      researched = technology and technology.researched == true
+    end)
+    parts[#parts + 1] = "tech-" .. technology_name .. "-researched=" .. tostring(researched)
+  end
+
+  for ammo_category, minimum_modifier in pairs(assertion.minimum_ammo_damage_modifiers or {}) do
+    local actual_modifier = 0
+    pcall(function()
+      actual_modifier = force.get_ammo_damage_modifier(ammo_category) or 0
+    end)
+    parts[#parts + 1] = string.format(
+      "ammo-damage-%s=%.3f/%.3f",
+      ammo_category,
+      actual_modifier,
+      minimum_modifier
+    )
+  end
+
+  for turret_name, minimum_modifier in pairs(assertion.minimum_turret_attack_modifiers or {}) do
+    local actual_modifier = 0
+    pcall(function()
+      actual_modifier = force.get_turret_attack_modifier(turret_name) or 0
+    end)
+    parts[#parts + 1] = string.format(
+      "turret-attack-%s=%.3f/%.3f",
+      turret_name,
+      actual_modifier,
+      minimum_modifier
+    )
   end
 
   for _, requirement in ipairs(assertion.minimum_builder_inventory_items or {}) do
@@ -8348,6 +8422,37 @@ local function test_assertion_passed(surface, force, assertion)
 
   if assertion.minimum_research_progress and (force.research_progress or 0) < assertion.minimum_research_progress then
     return false
+  end
+
+  for _, technology_name in ipairs(assertion.required_researched_technologies or {}) do
+    local researched = false
+    pcall(function()
+      local technology = force.technologies and force.technologies[technology_name] or nil
+      researched = technology and technology.researched == true
+    end)
+    if not researched then
+      return false
+    end
+  end
+
+  for ammo_category, minimum_modifier in pairs(assertion.minimum_ammo_damage_modifiers or {}) do
+    local actual_modifier = 0
+    pcall(function()
+      actual_modifier = force.get_ammo_damage_modifier(ammo_category) or 0
+    end)
+    if actual_modifier + 0.000001 < minimum_modifier then
+      return false
+    end
+  end
+
+  for turret_name, minimum_modifier in pairs(assertion.minimum_turret_attack_modifiers or {}) do
+    local actual_modifier = 0
+    pcall(function()
+      actual_modifier = force.get_turret_attack_modifier(turret_name) or 0
+    end)
+    if actual_modifier + 0.000001 < minimum_modifier then
+      return false
+    end
   end
 
   for _, requirement in ipairs(assertion.minimum_entity_counts_in_areas or {}) do
