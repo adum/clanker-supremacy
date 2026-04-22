@@ -710,15 +710,62 @@ local function enable_configured_force_recipes(force)
   end
 end
 
+function configure_builder_force_relationships(force)
+  if not (force and force.valid) then
+    return
+  end
+
+  for _, other_force in pairs(game.forces) do
+    if other_force and other_force.valid and other_force.name ~= force.name then
+      local hostile_to_builder = other_force.name == "player"
+      local cease_fire = not hostile_to_builder
+      pcall(function()
+        force.set_cease_fire(other_force.name, cease_fire)
+      end)
+      pcall(function()
+        other_force.set_cease_fire(force.name, cease_fire)
+      end)
+      pcall(function()
+        force.set_friend(other_force.name, false)
+      end)
+      pcall(function()
+        other_force.set_friend(force.name, false)
+      end)
+    end
+  end
+end
+
+function get_artillery_ammo_inventory(entity)
+  if not (entity and entity.valid and entity.get_inventory) then
+    return nil
+  end
+
+  local inventory_index = defines.inventory.artillery_turret_ammo or defines.inventory.turret_ammo
+  if not inventory_index then
+    return nil
+  end
+
+  local ok, inventory = pcall(function()
+    return entity.get_inventory(inventory_index)
+  end)
+  if ok then
+    return inventory
+  end
+
+  return nil
+end
+
 local function ensure_builder_force()
   local force = game.forces[builder_data.force_name]
   if force then
     enable_configured_force_recipes(force)
+    configure_builder_force_relationships(force)
     return force
   end
 
   force = game.create_force(builder_data.force_name)
   enable_configured_force_recipes(force)
+  configure_builder_force_relationships(force)
   return force
 end
 
@@ -3468,6 +3515,105 @@ function setup_builder_starts_with_inventory_armor_test_case()
         next_attempt_tick = game.tick + 3600
       }
     end
+  }
+end
+
+function setup_clanker_artillery_placement_test_case()
+  local surface = game.surfaces["nauvis"] or game.surfaces[1]
+  if not surface then
+    error("enemy-builder test: nauvis surface is unavailable")
+  end
+
+  local artillery_item_name = builder_data.prototypes.clanker_artillery_item_name
+  local artillery_entity_name = builder_data.prototypes.clanker_artillery_entity_name
+  local shell_count = 5
+  local artillery_position = {x = 0, y = 0}
+  local area = make_test_area(artillery_position, 48, 48)
+
+  surface.always_day = true
+  clear_test_area(surface, area)
+
+  return setup_scaling_test{
+    case_name = "clanker_artillery_placement",
+    builder_position = {x = -8, y = 0},
+    surface_name = surface.name,
+    suppress_player_autospawn = true,
+    disable_nearby_machine_output_collection = true,
+    inventory = {
+      {name = artillery_item_name, count = 1},
+      {name = "artillery-shell", count = shell_count}
+    },
+    mutate_builder_state = function(builder_state, test_surface)
+      local builder_recipe = builder_state.entity.force.recipes[artillery_item_name]
+      if not (builder_recipe and builder_recipe.enabled) then
+        error("enemy-builder test: Clanker Artillery recipe should be enabled for the builder force")
+      end
+
+      local player_force = game.forces.player
+      local player_recipe = player_force and player_force.recipes[artillery_item_name] or nil
+      if player_recipe and player_recipe.enabled then
+        error("enemy-builder test: Clanker Artillery recipe should not be enabled for the player force")
+      end
+
+      local builder_inventory = get_builder_main_inventory(builder_state.entity)
+      if not builder_inventory then
+        error("enemy-builder test: builder inventory unavailable for clanker artillery case")
+      end
+
+      if builder_inventory.remove{name = artillery_item_name, count = 1} < 1 then
+        error("enemy-builder test: expected builder to hold Clanker Artillery before placement")
+      end
+
+      local artillery = test_surface.create_entity{
+        name = artillery_entity_name,
+        position = artillery_position,
+        force = builder_state.entity.force,
+        create_build_effect_smoke = false
+      }
+      if not (artillery and artillery.valid) then
+        error("enemy-builder test: failed to place Clanker Artillery")
+      end
+
+      local ammo_inventory = get_artillery_ammo_inventory(artillery)
+      if not ammo_inventory then
+        error("enemy-builder test: Clanker Artillery has no artillery ammo inventory")
+      end
+
+      local removed_shells = builder_inventory.remove{name = "artillery-shell", count = shell_count}
+      if removed_shells < shell_count then
+        error("enemy-builder test: expected builder to hold artillery shells before loading")
+      end
+
+      local inserted_shells = ammo_inventory.insert{name = "artillery-shell", count = removed_shells}
+      if inserted_shells < shell_count then
+        error("enemy-builder test: failed to load Clanker Artillery with artillery shells")
+      end
+
+      builder_state.task_state = {
+        phase = "waiting-for-resource",
+        wait_reason = "test-idle",
+        next_attempt_tick = game.tick + 3600
+      }
+    end,
+    assertion = {
+      case_name = "clanker_artillery_placement",
+      surface_name = surface.name,
+      area = area,
+      deadline_offset_ticks = 1,
+      skip_output_assertion = true,
+      expected_counts = {
+        [artillery_entity_name] = 1
+      },
+      minimum_entity_inventory_items = {
+        {
+          label = "clanker-artillery-shells",
+          entity_name = artillery_entity_name,
+          inventory = "artillery_turret_ammo",
+          item_name = "artillery-shell",
+          count = shell_count
+        }
+      }
+    }
   }
 end
 
@@ -7707,6 +7853,31 @@ local function get_test_turret_ammo_count(surface, force, area, item_name)
   return ammo_count
 end
 
+function get_test_entity_inventory_item_count(surface, force, area, requirement)
+  local total_count = 0
+
+  for _, entity in ipairs(surface.find_entities_filtered{
+    area = area,
+    force = force,
+    name = requirement.entity_name
+  }) do
+    local inventory = nil
+    if requirement.inventory == "artillery_turret_ammo" then
+      inventory = get_artillery_ammo_inventory(entity)
+    elseif requirement.inventory == "turret_ammo" and defines.inventory.turret_ammo then
+      inventory = entity.get_inventory and entity.get_inventory(defines.inventory.turret_ammo) or nil
+    elseif type(requirement.inventory) == "number" then
+      inventory = entity.get_inventory and entity.get_inventory(requirement.inventory) or nil
+    end
+
+    if inventory then
+      total_count = total_count + inventory.get_item_count(requirement.item_name)
+    end
+  end
+
+  return total_count
+end
+
 local function get_test_output_item_count(surface, force, area, entity_names, item_name)
   local total_count = 0
 
@@ -8083,6 +8254,21 @@ local function get_test_entity_debug_details(surface, force, area, assertion)
     )
   end
 
+  for _, artillery in ipairs(surface.find_entities_filtered{
+    area = area,
+    force = force,
+    name = builder_data.prototypes.clanker_artillery_entity_name
+  }) do
+    local ammo_inventory = get_artillery_ammo_inventory(artillery)
+    local shell_count = ammo_inventory and ammo_inventory.get_item_count("artillery-shell") or 0
+    details[#details + 1] = string.format(
+      "artillery(pos=%s name=%s shells=%d)",
+      format_position(artillery.position),
+      artillery.name,
+      shell_count
+    )
+  end
+
   for _, furnace in ipairs(surface.find_entities_filtered{
     area = area,
     force = force,
@@ -8161,6 +8347,13 @@ local function format_test_failure_summary(surface, force, assertion)
     parts[#parts + 1] =
       label .. ">=" .. tostring(requirement.count or 0) ..
       " actual=" .. count_test_entities(surface, force, requirement.area, requirement.name)
+  end
+
+  for _, requirement in ipairs(assertion.minimum_entity_inventory_items or {}) do
+    local label = requirement.label or (tostring(requirement.entity_name) .. "-" .. tostring(requirement.item_name))
+    parts[#parts + 1] =
+      label .. ">=" .. tostring(requirement.count or 0) ..
+      " actual=" .. get_test_entity_inventory_item_count(surface, force, area, requirement)
   end
 
   for pattern_name, minimum_count in pairs(assertion.minimum_resource_site_counts or {}) do
@@ -8457,6 +8650,12 @@ local function test_assertion_passed(surface, force, assertion)
 
   for _, requirement in ipairs(assertion.minimum_entity_counts_in_areas or {}) do
     if count_test_entities(surface, force, requirement.area, requirement.name) < (requirement.count or 0) then
+      return false
+    end
+  end
+
+  for _, requirement in ipairs(assertion.minimum_entity_inventory_items or {}) do
+    if get_test_entity_inventory_item_count(surface, force, area, requirement) < (requirement.count or 0) then
       return false
     end
   end
@@ -8825,6 +9024,7 @@ end
 local test_remote_interface = {
   setup_manual_test = setup_manual_test,
   setup_builder_starts_with_inventory_armor_test_case = setup_builder_starts_with_inventory_armor_test_case,
+  setup_clanker_artillery_placement_test_case = setup_clanker_artillery_placement_test_case,
   setup_firearm_outpost_test_case = setup_firearm_outpost_test_case,
   setup_pause_mode_manual_goal_test_case = setup_pause_mode_manual_goal_test_case,
   setup_firearm_outpost_anchored_test_case = setup_firearm_outpost_anchored_test_case,
@@ -8903,6 +9103,7 @@ local test_remote_interface = {
 
   -- Canonical case-name aliases match the names printed by the headless runners' ListCases mode.
   builder_starts_with_inventory_armor = setup_builder_starts_with_inventory_armor_test_case,
+  clanker_artillery_placement = setup_clanker_artillery_placement_test_case,
   firearm_outpost_physical_feed = setup_firearm_outpost_test_case,
   pause_mode_manual_goal = setup_pause_mode_manual_goal_test_case,
   firearm_outpost_anchor_clearance = setup_firearm_outpost_anchored_test_case,

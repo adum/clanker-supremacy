@@ -29,6 +29,10 @@ constants.gather_sources = {
 }
 
 constants.firearm_magazine_assembler_name = "enemy-builder-firearm-magazine-assembler"
+constants.clanker_artillery_item_name = "clanker-artillery"
+constants.clanker_artillery_entity_name = "clanker-artillery"
+constants.clanker_artillery_cannon_name = "clanker-artillery-cannon"
+constants.clanker_artillery_range = 60
 constants.enemy_builder_physical_damage_1_technology_name = "enemy-builder-physical-damage-1"
 constants.enemy_builder_research_technology_name = constants.enemy_builder_physical_damage_1_technology_name
 
