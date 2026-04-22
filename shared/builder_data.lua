@@ -1,4 +1,5 @@
 local base = require("shared.config.base")
+local build_out = require("shared.config.build_out")
 local crafting = require("shared.config.crafting")
 local logistics = require("shared.config.logistics")
 local plans = require("shared.config.plans")
@@ -15,6 +16,7 @@ local builder_data = {
   default_plan = base.default_plan,
   avatar = base.avatar,
   build = base.build,
+  build_out = build_out,
   recovery = base.recovery,
   movement = base.movement,
   ui = ui,

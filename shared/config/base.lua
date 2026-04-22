@@ -8,7 +8,8 @@ return {
       "steel-plate",
       "copper-cable",
       "electronic-circuit",
-      "solar-panel"
+      "solar-panel",
+      "gun-turret"
     }
   },
   prototypes = {

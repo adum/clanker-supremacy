@@ -52,7 +52,8 @@ return {
     minimum_assembler_items_to_collect = 1,
     assembler_item_limits = {
       ["firearm-magazine"] = 100,
-      ["solar-panel"] = 100
+      ["solar-panel"] = 100,
+      ["gun-turret"] = 100
     },
     own_force_only = true,
     max_entities_per_scan = 12

@@ -18,7 +18,8 @@ function status.get_task_phase_status(snapshot)
   if phase == "moving" or phase == "moving-to-source" or phase == "moving-to-resource" or
     phase == "building" or phase == "post-place-pause" or phase == "build-complete" or
     phase == "harvesting" or phase == "scaling-moving-to-site" or
-    phase == "scaling-collecting-site" or phase == "scaling-crafting"
+    phase == "scaling-collecting-site" or phase == "scaling-crafting" or
+    phase == "build-out-patrol-moving" or phase == "build-out-patrol-lingering"
   then
     return "running"
   end
@@ -33,6 +34,14 @@ function status.derive_action_summary(snapshot)
 
   local task = snapshot.display_task
   local task_state = snapshot.task_state or {}
+
+  if task_state.phase == "build-out-patrol-moving" then
+    return "Patrol mining areas"
+  end
+
+  if task_state.phase == "build-out-patrol-lingering" then
+    return "Check mining area"
+  end
 
   if not task then
     return "Planning next goal"

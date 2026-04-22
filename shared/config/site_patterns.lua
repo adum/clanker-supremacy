@@ -135,5 +135,25 @@ return {
       {name = "wooden-chest", count = 1}
     },
     build_task = build_tasks.solar_panel_factory
+  },
+  gun_turret_factory = {
+    display_name = "gun turret factory",
+    tasks = {
+      build_tasks.gun_turret_factory,
+      build_tasks.gun_turret_factory_iron_gear_input,
+      build_tasks.gun_turret_factory_iron_turret_input,
+      build_tasks.gun_turret_factory_copper_input,
+      build_tasks.gun_turret_factory_power
+    },
+    required_items = {
+      {name = "assembling-machine-1", count = 2},
+      {name = "burner-inserter", count = 5},
+      {name = "small-electric-pole", count = 10},
+      {name = "splitter", count = 3},
+      {name = "transport-belt", count = 192},
+      {name = "underground-belt", count = 24},
+      {name = "wooden-chest", count = 1}
+    },
+    build_task = build_tasks.gun_turret_factory
   }
 }

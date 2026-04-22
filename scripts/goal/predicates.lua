@@ -41,7 +41,32 @@ function predicates.get_milestone(builder_data, milestone_name)
     end
   end
 
+  for _, milestone in ipairs((builder_data.build_out and builder_data.build_out.production_milestones) or {}) do
+    if milestone.name == milestone_name then
+      return milestone
+    end
+  end
+
   return nil
+end
+
+function predicates.milestone_belongs_to_config(milestones, milestone_name)
+  for _, milestone in ipairs(milestones or {}) do
+    if milestone.name == milestone_name then
+      return true
+    end
+  end
+
+  return false
+end
+
+function predicates.task_targets_milestone(task, milestones)
+  local milestone_name = task and (task.completed_scaling_milestone_name or task.repeatable_scaling_milestone_name) or nil
+  if not milestone_name then
+    return false
+  end
+
+  return predicates.milestone_belongs_to_config(milestones, milestone_name)
 end
 
 function predicates.unlock_requirements_met(builder_state, unlock, get_resource_site_counts)
@@ -79,6 +104,10 @@ function predicates.list_component_names(builder_data)
   end
 
   for _, milestone in ipairs((builder_data.scaling and builder_data.scaling.production_milestones) or {}) do
+    names[#names + 1] = milestone.name
+  end
+
+  for _, milestone in ipairs((builder_data.build_out and builder_data.build_out.production_milestones) or {}) do
     names[#names + 1] = milestone.name
   end
 

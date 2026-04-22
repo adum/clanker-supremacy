@@ -31,6 +31,22 @@ local function validate_scaling(builder_data)
   end
 end
 
+local function validate_milestones(builder_data, config_name, milestones)
+  local seen_milestones = {}
+  for _, milestone in ipairs(milestones or {}) do
+    assert_valid(type(milestone.name) == "string", config_name .. ".production_milestones entries must have a string name")
+    assert_valid(seen_milestones[milestone.name] == nil, "duplicate " .. config_name .. " milestone '" .. milestone.name .. "'")
+    seen_milestones[milestone.name] = true
+    assert_valid(type(milestone.display_name) == "string", config_name .. " milestone '" .. milestone.name .. "' must have a display_name")
+    assert_valid(type(milestone.task) == "table", config_name .. " milestone '" .. milestone.name .. "' must have a task")
+    assert_valid(type(milestone.task.type) == "string", config_name .. " milestone '" .. milestone.name .. "' task must have a type")
+  end
+end
+
+local function validate_build_out(builder_data)
+  validate_milestones(builder_data, "build_out", (builder_data.build_out or {}).production_milestones)
+end
+
 local function validate_plans(builder_data)
   for plan_name, plan in pairs(builder_data.plans or {}) do
     assert_valid(type(plan.display_name) == "string", "plan '" .. plan_name .. "' must have a display_name")
@@ -52,10 +68,12 @@ return function(builder_data)
   assert_valid(type(builder_data.world_item_sources) == "table", "world_item_sources must be a table")
   assert_valid(type(builder_data.site_patterns) == "table", "site_patterns must be a table")
   assert_valid(type(builder_data.scaling) == "table", "scaling must be a table")
+  assert_valid(type(builder_data.build_out) == "table", "build_out must be a table")
   assert_valid(type(builder_data.plans) == "table", "plans must be a table")
 
   validate_patterns(builder_data)
   validate_scaling(builder_data)
+  validate_build_out(builder_data)
   validate_plans(builder_data)
 
   return builder_data

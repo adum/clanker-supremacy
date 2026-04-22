@@ -8,33 +8,18 @@ firearm_magazine_assembler_task.anchor_pattern_names = {"iron_smelting", "copper
 firearm_magazine_assembler_task.max_anchor_sites = 8
 firearm_magazine_assembler_task.arrival_distance = 1.1
 
-local solar_panel_factory_task = deep_copy(build_tasks.solar_panel_factory)
-solar_panel_factory_task.id = "scale-place-solar-panel-factory"
-
-local solar_panel_factory_iron_input_task = deep_copy(build_tasks.solar_panel_factory_iron_input)
-solar_panel_factory_iron_input_task.id = "scale-connect-solar-panel-factory-iron-input"
-solar_panel_factory_iron_input_task.reopen_completed_scaling_milestone_name = "solar-panel-factory-block"
-
-local solar_panel_factory_copper_cable_input_task = deep_copy(build_tasks.solar_panel_factory_copper_cable_input)
-solar_panel_factory_copper_cable_input_task.id = "scale-connect-solar-panel-factory-copper-cable-input"
-solar_panel_factory_copper_cable_input_task.reopen_completed_scaling_milestone_name = "solar-panel-factory-block"
-
-local solar_panel_factory_copper_solar_input_task = deep_copy(build_tasks.solar_panel_factory_copper_solar_input)
-solar_panel_factory_copper_solar_input_task.id = "scale-connect-solar-panel-factory-copper-solar-input"
-solar_panel_factory_copper_solar_input_task.reopen_completed_scaling_milestone_name = "solar-panel-factory-block"
-
-local solar_panel_factory_steel_input_task = deep_copy(build_tasks.solar_panel_factory_steel_input)
-solar_panel_factory_steel_input_task.id = "scale-connect-solar-panel-factory-steel-input"
-solar_panel_factory_steel_input_task.reopen_completed_scaling_milestone_name = "solar-panel-factory-block"
-
-local solar_panel_factory_power_task = deep_copy(build_tasks.solar_panel_factory_power)
-solar_panel_factory_power_task.id = "scale-connect-solar-panel-factory-power"
-solar_panel_factory_power_task.reopen_completed_scaling_milestone_name = "solar-panel-factory-block"
-
 return {
   enabled = true,
   idle_retry_ticks = 2 * 60,
   pursue_milestones_proactively = false,
+  completion = {
+    required_completed_milestones = {"firearm-magazine-assembler"},
+    minimum_site_counts = {
+      iron_plate_belt_export = 2,
+      copper_plate_belt_export = 2,
+      steel_plate_belt_export = 1
+    }
+  },
   starter_resource_core = {
     resource_names = {"coal", "iron-ore", "copper-ore", "stone"},
     discovery_radius = 128,
@@ -153,103 +138,6 @@ return {
       },
       required_items = deep_copy(site_patterns.firearm_magazine_outpost.required_items),
       task = firearm_magazine_assembler_task
-    },
-    {
-      name = "solar-panel-factory-block",
-      display_name = "Place solar panel factory block",
-      pursue_proactively = true,
-      unlocks_remote_resource_expansion = true,
-      unlock = {
-        required_completed_milestones = {"firearm-magazine-assembler"},
-        minimum_site_counts = {
-          iron_plate_belt_export = 2,
-          copper_plate_belt_export = 2,
-          steel_plate_belt_export = 1
-        }
-      },
-      required_items = {
-        {name = "assembling-machine-1", count = 3},
-        {name = "burner-inserter", count = 6},
-        {name = "small-electric-pole", count = 8},
-        {name = "transport-belt", count = 96},
-        {name = "wooden-chest", count = 1}
-      },
-      task = solar_panel_factory_task
-    },
-    {
-      name = "solar-panel-factory-copper-cable-input",
-      display_name = "Connect solar factory copper cable input",
-      pursue_proactively = true,
-      unlock = {
-        required_completed_milestones = {"solar-panel-factory-block"}
-      },
-      required_items = {
-        {name = "transport-belt", count = 96},
-        {name = "underground-belt", count = 16},
-        {name = "splitter", count = 1},
-        {name = "burner-inserter", count = 1}
-      },
-      task = solar_panel_factory_copper_cable_input_task
-    },
-    {
-      name = "solar-panel-factory-iron-input",
-      display_name = "Connect solar factory iron input",
-      pursue_proactively = true,
-      unlock = {
-        required_completed_milestones = {"solar-panel-factory-copper-cable-input"}
-      },
-      required_items = {
-        {name = "transport-belt", count = 96},
-        {name = "underground-belt", count = 16},
-        {name = "splitter", count = 1},
-        {name = "burner-inserter", count = 1}
-      },
-      task = solar_panel_factory_iron_input_task
-    },
-    {
-      name = "solar-panel-factory-copper-solar-input",
-      display_name = "Connect solar factory direct copper input",
-      pursue_proactively = true,
-      unlock = {
-        required_completed_milestones = {"solar-panel-factory-iron-input"}
-      },
-      required_items = {
-        {name = "transport-belt", count = 96},
-        {name = "underground-belt", count = 16},
-        {name = "splitter", count = 1},
-        {name = "burner-inserter", count = 1}
-      },
-      task = solar_panel_factory_copper_solar_input_task
-    },
-    {
-      name = "solar-panel-factory-steel-input",
-      display_name = "Connect solar factory steel input",
-      pursue_proactively = true,
-      unlock = {
-        required_completed_milestones = {"solar-panel-factory-copper-solar-input"}
-      },
-      required_items = {
-        {name = "transport-belt", count = 96},
-        {name = "underground-belt", count = 16},
-        {name = "splitter", count = 1},
-        {name = "burner-inserter", count = 1}
-      },
-      task = solar_panel_factory_steel_input_task
-    },
-    {
-      name = "solar-panel-factory-power",
-      display_name = "Connect solar factory power",
-      pursue_proactively = true,
-      unlock = {
-        required_completed_milestones = {
-          "solar-panel-factory-copper-solar-input",
-          "solar-panel-factory-steel-input"
-        }
-      },
-      required_items = {
-        {name = "small-electric-pole", count = 32}
-      },
-      task = solar_panel_factory_power_task
     }
   }
 }

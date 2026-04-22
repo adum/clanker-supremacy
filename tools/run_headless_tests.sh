@@ -292,6 +292,7 @@ run_case "steel_output_belt_layout_places_inserter_then_straight_belts" "setup_s
 run_case "steel_output_belt_counts_as_export_site" "setup_steel_output_belt_counts_as_export_site_test_case" "34237"
 run_case "output_belt_abort_preserves_transport_belts" "setup_output_belt_abort_preserves_transport_belts_test_case" "34228"
 run_case "solar_panel_factory_physical_feed" "setup_solar_panel_factory_test_case" "34206" "" "600"
+run_case "gun_turret_factory_physical_feed" "setup_gun_turret_factory_test_case" "34253" "" "600"
 run_case "solar_panel_factory_east_orientation_physical_feed" "setup_solar_panel_factory_test_case_east" "34240" "" "600"
 run_case "solar_panel_factory_south_orientation_physical_feed" "setup_solar_panel_factory_test_case_south" "34245" "" "600"
 run_case "solar_panel_factory_west_orientation_physical_feed" "setup_solar_panel_factory_test_case_west" "34246" "" "600"

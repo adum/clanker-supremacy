@@ -442,6 +442,7 @@ $allCases = @(
   [pscustomobject]@{ Name = "steel_output_belt_counts_as_export_site"; RemoteSetupName = "setup_steel_output_belt_counts_as_export_site_test_case"; ServerPort = 34237; RemoteSetupArg = $null },
   [pscustomobject]@{ Name = "output_belt_abort_preserves_transport_belts"; RemoteSetupName = "setup_output_belt_abort_preserves_transport_belts_test_case"; ServerPort = 34228; RemoteSetupArg = $null },
   [pscustomobject]@{ Name = "solar_panel_factory_physical_feed"; RemoteSetupName = "setup_solar_panel_factory_test_case"; ServerPort = 34206; RemoteSetupArg = $null; TimeoutSecs = 600 },
+  [pscustomobject]@{ Name = "gun_turret_factory_physical_feed"; RemoteSetupName = "setup_gun_turret_factory_test_case"; ServerPort = 34253; RemoteSetupArg = $null; TimeoutSecs = 600 },
   [pscustomobject]@{ Name = "solar_panel_factory_east_orientation_physical_feed"; RemoteSetupName = "setup_solar_panel_factory_test_case_east"; ServerPort = 34240; RemoteSetupArg = $null; TimeoutSecs = 600 },
   [pscustomobject]@{ Name = "solar_panel_factory_south_orientation_physical_feed"; RemoteSetupName = "setup_solar_panel_factory_test_case_south"; ServerPort = 34245; RemoteSetupArg = $null; TimeoutSecs = 600 },
   [pscustomobject]@{ Name = "solar_panel_factory_west_orientation_physical_feed"; RemoteSetupName = "setup_solar_panel_factory_test_case_west"; ServerPort = 34246; RemoteSetupArg = $null; TimeoutSecs = 600 },

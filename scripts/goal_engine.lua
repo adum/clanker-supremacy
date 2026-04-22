@@ -7,6 +7,44 @@ local goal_tree = require("scripts.goal_tree")
 
 local goal_engine = {}
 
+local function shallow_copy(input)
+  local copy = {}
+  for key, value in pairs(input or {}) do
+    copy[key] = value
+  end
+  return copy
+end
+
+local function merge_phase_scaling_config(base_scaling, phase_config)
+  local merged = shallow_copy(base_scaling)
+  for key, value in pairs(phase_config or {}) do
+    merged[key] = value
+  end
+  return merged
+end
+
+local function make_phase_builder_data(builder_data, phase_config)
+  local phase_builder_data = shallow_copy(builder_data)
+  phase_builder_data.scaling = merge_phase_scaling_config(builder_data.scaling, phase_config)
+  return phase_builder_data
+end
+
+local function update_scale_production_complete(builder_data, builder_state, adapters)
+  if not (builder_state and adapters and adapters.get_resource_site_counts) then
+    return false
+  end
+
+  local completion = builder_data.scaling and builder_data.scaling.completion or nil
+  if not completion then
+    builder_state.scale_production_complete = false
+    return false
+  end
+
+  builder_state.scale_production_complete =
+    predicates.unlock_requirements_met(builder_state, completion, adapters.get_resource_site_counts)
+  return builder_state.scale_production_complete
+end
+
 local function create_scaling_build_task(builder_data, get_site_pattern, pattern_name)
   local pattern = get_site_pattern(pattern_name)
   if not pattern then
@@ -97,8 +135,8 @@ function goal_engine.normalize_scaling_active_task(builder_data, builder_state, 
   end
 end
 
-function goal_engine.get_pending_scaling_milestone(builder_data, builder_state, tick, adapters)
-  for _, milestone in ipairs((builder_data.scaling and builder_data.scaling.production_milestones) or {}) do
+local function get_pending_milestone(milestones, builder_state, tick, adapters)
+  for _, milestone in ipairs(milestones or {}) do
     if
       predicates.is_milestone_unlocked(builder_state, milestone, adapters.get_resource_site_counts) and
       not adapters.is_goal_retry_blocked(builder_state, "milestone:" .. milestone.name, tick) and
@@ -109,6 +147,15 @@ function goal_engine.get_pending_scaling_milestone(builder_data, builder_state, 
   end
 
   return nil
+end
+
+function goal_engine.get_pending_scaling_milestone(builder_data, builder_state, tick, adapters)
+  return get_pending_milestone(
+    (builder_data.scaling and builder_data.scaling.production_milestones) or {},
+    builder_state,
+    tick,
+    adapters
+  )
 end
 
 function goal_engine.resolve_required_items(builder_data, entity, required_items, adapters)
@@ -1134,6 +1181,211 @@ local function plan_scaling(builder_data, builder_state, tick, adapters)
   start_scaling_subtask(builder_state, build_task, tick, adapters)
 end
 
+local function build_out_milestones_completed(builder_data, builder_state)
+  for _, milestone in ipairs((builder_data.build_out and builder_data.build_out.production_milestones) or {}) do
+    if not builder_state.completed_scaling_milestones[milestone.name] then
+      return false
+    end
+  end
+
+  return true
+end
+
+local function get_build_out_phase_data(builder_data)
+  return make_phase_builder_data(builder_data, builder_data.build_out or {})
+end
+
+local function find_build_out_patrol_site(builder_data, builder_state, adapters)
+  adapters.discover_resource_sites(builder_state)
+
+  local patrol = builder_data.build_out and builder_data.build_out.maintenance_patrol or nil
+  local pattern_names = patrol and patrol.site_patterns or nil
+  local candidates = {}
+  local builder = builder_state.entity
+
+  for _, site in ipairs(adapters.cleanup_resource_sites()) do
+    local collect_position = adapters.get_site_collect_position(site)
+    if collect_position and (not pattern_names or site_matches_pattern_names(site, pattern_names)) then
+      candidates[#candidates + 1] = {
+        site = site,
+        collect_position = collect_position,
+        distance = adapters.square_distance(builder.position, collect_position)
+      }
+    end
+  end
+
+  if #candidates == 0 then
+    return nil
+  end
+
+  table.sort(candidates, function(left, right)
+    return left.distance < right.distance
+  end)
+
+  local selection_pool_size = math.min(#candidates, (patrol and patrol.random_candidate_pool) or 4)
+  local selection_index = adapters.next_random_index and adapters.next_random_index(selection_pool_size) or 1
+  return candidates[selection_index].site
+end
+
+local function get_build_out_patrol_interval_ticks(builder_data)
+  local patrol = builder_data.build_out and builder_data.build_out.maintenance_patrol or {}
+  return patrol.interval_ticks or 20 * 60
+end
+
+local function schedule_initial_build_out_patrol(builder_data, builder_state, tick)
+  if builder_state.next_build_out_patrol_tick == nil then
+    builder_state.next_build_out_patrol_tick = tick + get_build_out_patrol_interval_ticks(builder_data)
+  end
+end
+
+local function build_out_patrol_is_due(builder_state, tick)
+  return builder_state.next_build_out_patrol_tick ~= nil and tick >= builder_state.next_build_out_patrol_tick
+end
+
+local function start_build_out_patrol(builder_data, builder_state, tick, adapters)
+  local patrol = builder_data.build_out and builder_data.build_out.maintenance_patrol or {}
+  if tick < (builder_state.next_build_out_patrol_tick or 0) then
+    adapters.set_idle(builder_state.entity)
+    return false
+  end
+
+  local site = find_build_out_patrol_site(builder_data, builder_state, adapters)
+  if not site then
+    local idle_retry_ticks = (builder_data.build_out and builder_data.build_out.idle_retry_ticks) or (2 * 60)
+    builder_state.next_build_out_patrol_tick = tick + idle_retry_ticks
+    adapters.set_idle(builder_state.entity)
+    adapters.debug_log("build out: no mining areas available for patrol; retry at tick " .. tostring(builder_state.next_build_out_patrol_tick))
+    return false
+  end
+
+  local target_position = adapters.get_site_collect_position(site)
+  local arrival_distance = patrol.arrival_distance or 2.5
+  builder_state.task_state = {
+    phase = "build-out-patrol-moving",
+    patrol_site = site,
+    target_position = common.clone_position(target_position),
+    approach_position = adapters.create_task_approach_position(nil, target_position, arrival_distance),
+    arrival_distance = arrival_distance,
+    last_position = common.clone_position(builder_state.entity.position),
+    last_progress_tick = tick
+  }
+
+  adapters.debug_log(
+    "build out: patrolling " .. tostring(site.pattern_name or "mining area") ..
+    " at " .. adapters.format_position(target_position)
+  )
+  return true
+end
+
+local function advance_build_out_patrol(builder_data, builder_state, tick, adapters)
+  local task_state = builder_state.task_state
+  local phase = task_state and task_state.phase or nil
+  local patrol = builder_data.build_out and builder_data.build_out.maintenance_patrol or {}
+
+  if phase == "build-out-patrol-moving" then
+    local entity = builder_state.entity
+    local destination_position = task_state.target_position
+    local movement_position = task_state.approach_position or destination_position
+    local arrival_distance = task_state.arrival_distance or patrol.arrival_distance or 2.5
+
+    if adapters.square_distance(entity.position, destination_position) <= (arrival_distance * arrival_distance) then
+      adapters.set_idle(entity)
+      task_state.phase = "build-out-patrol-lingering"
+      task_state.next_attempt_tick = tick + (patrol.linger_ticks or 2 * 60)
+      adapters.debug_log("build out: reached patrol area at " .. adapters.format_position(destination_position))
+      return
+    end
+
+    local direction = adapters.direction_from_delta(
+      movement_position.x - entity.position.x,
+      movement_position.y - entity.position.y
+    )
+
+    if direction then
+      entity.walking_state = {
+        walking = true,
+        direction = direction
+      }
+    end
+
+    if adapters.square_distance(entity.position, task_state.last_position) > 0.0025 then
+      task_state.last_position = common.clone_position(entity.position)
+      task_state.last_progress_tick = tick
+      return
+    end
+
+    if tick - task_state.last_progress_tick >= (3 * 60) then
+      adapters.debug_log("build out: patrol movement stalled; choosing another mining area")
+      builder_state.task_state = nil
+      builder_state.next_build_out_patrol_tick = tick + ((builder_data.build_out and builder_data.build_out.idle_retry_ticks) or (2 * 60))
+    end
+    return
+  end
+
+  if phase == "build-out-patrol-lingering" then
+    adapters.set_idle(builder_state.entity)
+    if tick >= (task_state.next_attempt_tick or 0) then
+      builder_state.task_state = nil
+      builder_state.next_build_out_patrol_tick = tick + (patrol.interval_ticks or 20 * 60)
+    end
+    return
+  end
+end
+
+local function plan_build_out(builder_data, builder_state, tick, adapters)
+  local phase_data = get_build_out_phase_data(builder_data)
+  local build_out_complete = build_out_milestones_completed(builder_data, builder_state)
+
+  if not build_out_complete then
+    schedule_initial_build_out_patrol(builder_data, builder_state, tick)
+    if build_out_patrol_is_due(builder_state, tick) and start_build_out_patrol(builder_data, builder_state, tick, adapters) then
+      return
+    end
+  end
+
+  local milestone = get_pending_milestone(
+    (builder_data.build_out and builder_data.build_out.production_milestones) or {},
+    builder_state,
+    tick,
+    adapters
+  )
+
+  if milestone and predicates.should_pursue_milestone(phase_data, builder_state, milestone, adapters.get_item_count, function(item_name)
+    return predicates.get_recipe(builder_data, item_name)
+  end) then
+    local task = create_scaling_milestone_task(milestone)
+    if predicates.resolve_required_items(builder_state.entity, milestone.required_items, adapters.get_item_count, function(item_name)
+      return predicates.get_recipe(builder_data, item_name)
+    end) ~= nil then
+      if plan_scaling_required_items(phase_data, builder_state, milestone.required_items, tick, task, adapters) then
+        return
+      end
+    end
+
+    if not task then
+      start_scaling_wait(
+        phase_data,
+        builder_state,
+        tick,
+        "missing-build-out-task",
+        "build out: missing task for milestone " .. tostring(milestone.name),
+        {id = "build-out-milestone-" .. milestone.name, completed_scaling_milestone_name = milestone.name},
+        adapters
+      )
+      return
+    end
+
+    start_scaling_subtask(builder_state, task, tick, adapters)
+    return
+  end
+
+  if build_out_complete then
+    start_build_out_patrol(builder_data, builder_state, tick, adapters)
+  else
+    adapters.set_idle(builder_state.entity)
+  end
+end
+
 local function advance_scaling(builder_data, builder_state, tick, adapters)
   if builder_state.scaling_active_task and builder_state.task_state then
     normalize_scaling_collection_task_state(builder_state.task_state, adapters)
@@ -1314,6 +1566,34 @@ local function advance_scaling(builder_data, builder_state, tick, adapters)
   builder_state.task_state = nil
 end
 
+local function advance_build_out(builder_data, builder_state, tick, adapters)
+  local phase = builder_state.task_state and builder_state.task_state.phase or nil
+  if phase == "build-out-patrol-moving" or phase == "build-out-patrol-lingering" then
+    advance_build_out_patrol(builder_data, builder_state, tick, adapters)
+    return
+  end
+
+  local phase_data = get_build_out_phase_data(builder_data)
+  if builder_state.scaling_active_task and builder_state.task_state then
+    advance_scaling(phase_data, builder_state, tick, adapters)
+    return
+  end
+
+  if phase and tostring(phase):match("^scaling") then
+    advance_scaling(phase_data, builder_state, tick, adapters)
+    return
+  end
+
+  builder_state.scaling_active_task = nil
+
+  if not builder_state.task_state then
+    plan_build_out(builder_data, builder_state, tick, adapters)
+    return
+  end
+
+  builder_state.task_state = nil
+end
+
 function goal_engine.get_active_task(builder_data, builder_state)
   sync_goal_model(builder_data, builder_state)
   return model.get_active_task(builder_data, builder_state)
@@ -1326,6 +1606,7 @@ end
 
 function goal_engine.advance(builder_data, builder_state, tick, adapters)
   instances.ensure_state(builder_state)
+  update_scale_production_complete(builder_data, builder_state, adapters)
   sync_goal_model(builder_data, builder_state)
 
   local execution = model.get_active_execution(builder_data, builder_state)
@@ -1346,6 +1627,9 @@ function goal_engine.advance(builder_data, builder_state, tick, adapters)
   if active_branch == "scaling" and builder_data.scaling and builder_data.scaling.enabled then
     advance_scaling(builder_data, builder_state, tick, adapters)
     sync_goal_model(builder_data, builder_state)
+  elseif active_branch == "build-out" and builder_data.build_out and builder_data.build_out.enabled then
+    advance_build_out(builder_data, builder_state, tick, adapters)
+    sync_goal_model(builder_data, builder_state)
   else
     set_scaling_display_task(builder_state, nil)
     adapters.set_idle(builder_state.entity)
@@ -1354,6 +1638,7 @@ end
 
 function goal_engine.sync_model(builder_data, builder_state, tick, adapters)
   instances.ensure_state(builder_state)
+  update_scale_production_complete(builder_data, builder_state, adapters)
   sync_goal_model(builder_data, builder_state)
 
   local snapshot = adapters.build_runtime_snapshot(builder_state, tick)

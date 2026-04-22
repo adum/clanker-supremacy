@@ -6,7 +6,7 @@ local specs = require("scripts.goal.specs")
 local status = require("scripts.goal.status")
 
 local model = {}
-local MODEL_VERSION = 3
+local MODEL_VERSION = 4
 
 local function new_instance(spec_id, title, kind)
   return {
@@ -399,8 +399,9 @@ local function ensure_model(builder_data, builder_state)
   local paused = new_instance(spec_tree.paused.id, spec_tree.paused.title, spec_tree.paused.kind)
   local bootstrap = new_instance(spec_tree.bootstrap.id, spec_tree.bootstrap.title, spec_tree.bootstrap.kind)
   local scaling = new_instance(spec_tree.scaling.id, spec_tree.scaling.title, spec_tree.scaling.kind)
+  local build_out = new_instance(spec_tree.build_out.id, spec_tree.build_out.title, spec_tree.build_out.kind)
 
-  root.children = {manual, paused, bootstrap, scaling}
+  root.children = {manual, paused, bootstrap, scaling, build_out}
   ensure_bootstrap_children(bootstrap, builder_data)
 
   state.model = {
@@ -411,7 +412,9 @@ local function ensure_model(builder_data, builder_state)
     paused = paused,
     bootstrap = bootstrap,
     scaling = scaling,
-    scaling_focus = nil
+    build_out = build_out,
+    scaling_focus = nil,
+    build_out_focus = nil
   }
 
   return state.model
@@ -580,12 +583,54 @@ local function sync_bootstrap(model_state, builder_data, builder_state, snapshot
   end
 end
 
+local function phase_name_starts_with(builder_state, prefix)
+  local phase = builder_state and builder_state.task_state and builder_state.task_state.phase or nil
+  return type(phase) == "string" and phase:sub(1, #prefix) == prefix
+end
+
+local function all_milestones_completed(snapshot_or_state, milestones)
+  local completed = snapshot_or_state and snapshot_or_state.completed_scaling_milestones or {}
+  for _, milestone in ipairs(milestones or {}) do
+    if not completed[milestone.name] then
+      return false
+    end
+  end
+
+  return true
+end
+
+local function scaling_is_complete(builder_state)
+  return builder_state and builder_state.scale_production_complete == true
+end
+
+local function task_is_scaling_task(builder_data, task)
+  if not task then
+    return false
+  end
+
+  return task.scaling_pattern_name ~= nil or
+    predicates.task_targets_milestone(task, (builder_data.scaling and builder_data.scaling.production_milestones) or {})
+end
+
+local function task_is_build_out_task(builder_data, task)
+  return predicates.task_targets_milestone(
+    task,
+    (builder_data.build_out and builder_data.build_out.production_milestones) or {}
+  )
+end
+
 local function sync_scaling_focus_state(model_state, builder_data, builder_state)
   local scaling = model_state.scaling
   reset_instance(scaling, false)
 
   if not (builder_data.scaling and builder_data.scaling.enabled) then
     scaling.status = "pending"
+    model_state.scaling_focus = nil
+    return nil
+  end
+
+  if scaling_is_complete(builder_state) and not task_is_scaling_task(builder_data, builder_state.scaling_active_task) then
+    scaling.status = "completed"
     model_state.scaling_focus = nil
     return nil
   end
@@ -850,6 +895,124 @@ local function sync_scaling_details(model_state, builder_data, builder_state, sn
   end
 end
 
+local function sync_build_out_focus_state(model_state, builder_data, builder_state)
+  local build_out = model_state.build_out
+  reset_instance(build_out, false)
+
+  if not (builder_data.build_out and builder_data.build_out.enabled) then
+    build_out.status = "pending"
+    model_state.build_out_focus = nil
+    return nil
+  end
+
+  local state = instances.ensure_state(builder_state)
+  local display_task = state and state.scaling_display_task or nil
+  local active_task = builder_state.scaling_active_task
+  local active_task_is_build_out = task_is_build_out_task(builder_data, active_task)
+  local display_task_is_build_out = task_is_build_out_task(builder_data, display_task)
+  local build_out_phase_active =
+    phase_name_starts_with(builder_state, "build-out") or
+    (phase_name_starts_with(builder_state, "scaling") and (active_task_is_build_out or display_task_is_build_out))
+
+  local focus = model_state.build_out_focus
+  if focus then
+    if focus.execution_kind == "task" then
+      if active_task ~= focus.task then
+        focus = nil
+        model_state.build_out_focus = nil
+      end
+    elseif not build_out_phase_active then
+      focus = nil
+      model_state.build_out_focus = nil
+    end
+  end
+
+  if active_task_is_build_out and (not focus or focus.task ~= active_task) then
+    focus = {
+      id = "build-out-active-task",
+      title = common.humanize_identifier(active_task.completed_scaling_milestone_name or active_task.id or "build out task"),
+      task = active_task,
+      display_task = active_task,
+      execution_kind = "task"
+    }
+    model_state.build_out_focus = focus
+  end
+
+  if not focus and build_out_phase_active then
+    focus = {
+      id = "build-out-phase",
+      title = display_task and common.humanize_identifier(display_task.completed_scaling_milestone_name or display_task.id or "build out") or "Build Out",
+      task = nil,
+      display_task = display_task,
+      execution_kind = "scaling-phase"
+    }
+    model_state.build_out_focus = focus
+  end
+
+  if focus then
+    build_out.status = builder_state.task_state and status.get_task_phase_status{
+      task_state = builder_state.task_state,
+      display_task = focus.display_task or focus.task
+    } or "ready"
+  elseif all_milestones_completed(builder_state, builder_data.build_out.production_milestones) then
+    build_out.status = "ready"
+  else
+    build_out.status = "pending"
+  end
+
+  return focus
+end
+
+local function sync_build_out_details(model_state, builder_data, builder_state, snapshot, adapter)
+  local build_out = model_state.build_out
+  local active_context = get_active_context(snapshot)
+  local milestones_root = new_instance("build-out-milestones", "Milestones", "selector")
+  local maintenance_node = new_instance("build-out-maintenance", "Patrol Mining Areas", "action")
+
+  local active_milestone_id = nil
+  for _, milestone in ipairs((builder_data.build_out and builder_data.build_out.production_milestones) or {}) do
+    local child = build_milestone_node(builder_data, snapshot, adapter, milestone, active_context)
+    if child.active then
+      active_milestone_id = child.id
+    end
+    instances.add_child(milestones_root, child)
+  end
+  if active_milestone_id then
+    milestones_root.active = true
+    set_active_child(milestones_root, active_milestone_id)
+  end
+  finalize_group_status(milestones_root)
+
+  local build_out_complete = all_milestones_completed(snapshot, (builder_data.build_out and builder_data.build_out.production_milestones) or {})
+  if phase_name_starts_with(builder_state, "build-out-patrol") then
+    maintenance_node.status = status.get_task_phase_status(snapshot)
+    maintenance_node.active = true
+    maintenance_node.meta.execution_kind = "build-out-maintenance"
+  elseif build_out_complete then
+    maintenance_node.status = "ready"
+  else
+    maintenance_node.status = "pending"
+  end
+
+  build_out.children = {milestones_root, maintenance_node}
+  build_out.active = build_out.status == "running" or build_out.status == "blocked" or build_out.status == "ready"
+
+  if active_milestone_id then
+    build_out.active = true
+    build_out.active_child_id = milestones_root.id
+    milestones_root.active = true
+  elseif maintenance_node.active then
+    build_out.active = true
+    build_out.active_child_id = maintenance_node.id
+  else
+    build_out.active_child_id = nil
+  end
+
+  if build_out.active then
+    add_runtime_blockers(build_out, snapshot)
+  end
+end
+
 function model.sync(builder_data, builder_state, options)
   local model_state = ensure_model(builder_data, builder_state)
   if not model_state then
@@ -864,13 +1027,15 @@ function model.sync(builder_data, builder_state, options)
   sync_paused(model_state, builder_state, snapshot)
   sync_bootstrap(model_state, builder_data, builder_state, snapshot)
   sync_scaling_focus_state(model_state, builder_data, builder_state)
+  sync_build_out_focus_state(model_state, builder_data, builder_state)
   if snapshot and adapter then
     sync_scaling_details(model_state, builder_data, builder_state, snapshot, adapter)
+    sync_build_out_details(model_state, builder_data, builder_state, snapshot, adapter)
   end
 
   local root = model_state.root
   reset_instance(root, true)
-  root.children = {model_state.manual, model_state.paused, model_state.bootstrap, model_state.scaling}
+  root.children = {model_state.manual, model_state.paused, model_state.bootstrap, model_state.scaling, model_state.build_out}
   root.active = true
 
   if builder_state.manual_goal_request then
@@ -882,9 +1047,14 @@ function model.sync(builder_data, builder_state, options)
   elseif model_state.bootstrap.status ~= "completed" then
     set_active_child(root, model_state.bootstrap.id)
     root.status = model_state.bootstrap.status
-  elseif builder_data.scaling and builder_data.scaling.enabled then
+  elseif builder_data.scaling and builder_data.scaling.enabled and
+    (not scaling_is_complete(builder_state) or task_is_scaling_task(builder_data, builder_state.scaling_active_task))
+  then
     set_active_child(root, model_state.scaling.id)
     root.status = model_state.scaling.status
+  elseif builder_data.build_out and builder_data.build_out.enabled then
+    set_active_child(root, model_state.build_out.id)
+    root.status = model_state.build_out.status
   else
     root.active_child_id = nil
     for _, child in ipairs(root.children or {}) do
@@ -961,6 +1131,12 @@ function model.get_display_task(builder_data, builder_state)
   end
 
   local model_state = ensure_model(builder_data, builder_state)
+  if model_state and model_state.build_out_focus and
+    (model_state.root and model_state.root.active_child_id == model_state.build_out.id)
+  then
+    return model_state.build_out_focus.display_task or model_state.build_out_focus.task
+  end
+
   if model_state and model_state.scaling_focus then
     return model_state.scaling_focus.display_task or model_state.scaling_focus.task
   end

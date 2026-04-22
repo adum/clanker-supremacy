@@ -53,6 +53,8 @@ function world_snapshot.build(builder_data, builder_state, tick, adapter)
     active_task = active_task,
     display_task = display_task,
     scaling_enabled = builder_data.scaling and builder_data.scaling.enabled or false,
+    build_out_enabled = builder_data.build_out and builder_data.build_out.enabled or false,
+    scale_production_complete = builder_state.scale_production_complete == true,
     scaling_active_task = builder_state.scaling_active_task,
     scaling_pattern_index = builder_state.scaling_pattern_index,
     completed_scaling_milestones = clone_table(builder_state.completed_scaling_milestones or {}),

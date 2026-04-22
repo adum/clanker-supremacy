@@ -286,41 +286,50 @@ build_tasks.firearm_magazine_outpost = {
   }
 }
 
-build_tasks.solar_panel_factory = {
-  id = "solar-panel-factory-block",
-  type = "place-assembly-block",
-  pattern_name = "solar_panel_factory",
-  target_item_name = "solar-panel",
-  entity_name = "assembling-machine-1",
-  assembly_target_name = "solar_panel_factory",
-  assembly_target = deep_copy(assembly_targets.solar_panel_factory),
-  max_anchor_entities = 6,
-  search_retry_ticks = 5 * 60,
-  placement_search_radius = 10,
-  placement_step = 1,
-  layout_orientations = {"north", "east", "south", "west"},
-  belt_route_search_margin = 80,
-  arrival_distance = 1.6,
-  stuck_retry_ticks = 3 * 60,
-  base_infra_search = {
-    max_origins = 10,
-    pole_search_radius = 96
-  },
-  belt_entity_name = "transport-belt",
-  belt_item_name = "transport-belt",
-  forbid_resource_overlap = true
-}
-
-local function make_assembly_input_route_task(route_id, item_name)
+local function make_assembly_block_task(task_id, pattern_name, target_item_name, assembly_target_name)
   return {
-    id = "solar-panel-factory-" .. route_id,
+    id = task_id,
+    type = "place-assembly-block",
+    pattern_name = pattern_name,
+    target_item_name = target_item_name,
+    entity_name = "assembling-machine-1",
+    assembly_target_name = assembly_target_name,
+    assembly_target = deep_copy(assembly_targets[assembly_target_name]),
+    max_anchor_entities = 6,
+    search_retry_ticks = 5 * 60,
+    placement_search_radius = 10,
+    placement_step = 1,
+    layout_orientations = {"north", "east", "south", "west"},
+    belt_route_search_margin = 80,
+    arrival_distance = 1.6,
+    stuck_retry_ticks = 3 * 60,
+    base_infra_search = {
+      max_origins = 10,
+      pole_search_radius = 96
+    },
+    belt_entity_name = "transport-belt",
+    belt_item_name = "transport-belt",
+    forbid_resource_overlap = true
+  }
+end
+
+build_tasks.solar_panel_factory = make_assembly_block_task(
+  "solar-panel-factory-block",
+  "solar_panel_factory",
+  "solar-panel",
+  "solar_panel_factory"
+)
+
+local function make_assembly_input_route_task(assembly_target_name, target_item_name, route_id, item_name)
+  return {
+    id = assembly_target_name .. "-" .. route_id,
     type = "place-assembly-input-route",
-    pattern_name = "solar_panel_factory",
-    target_item_name = "solar-panel",
+    pattern_name = assembly_target_name,
+    target_item_name = target_item_name,
     route_id = route_id,
     route_item_name = item_name,
-    assembly_target_name = "solar_panel_factory",
-    assembly_target = deep_copy(assembly_targets.solar_panel_factory),
+    assembly_target_name = assembly_target_name,
+    assembly_target = deep_copy(assembly_targets[assembly_target_name]),
     max_anchor_entities = 8,
     search_retry_ticks = 5 * 60,
     arrival_distance = 1.6,
@@ -339,28 +348,52 @@ local function make_assembly_input_route_task(route_id, item_name)
   }
 end
 
-build_tasks.solar_panel_factory_iron_input = make_assembly_input_route_task("iron-plate-line", "iron-plate")
-build_tasks.solar_panel_factory_copper_cable_input = make_assembly_input_route_task("copper-plate-to-cable-line", "copper-plate")
-build_tasks.solar_panel_factory_copper_solar_input = make_assembly_input_route_task("copper-plate-to-solar-line", "copper-plate")
-build_tasks.solar_panel_factory_steel_input = make_assembly_input_route_task("steel-plate-line", "steel-plate")
-build_tasks.solar_panel_factory_power = {
-  id = "solar-panel-factory-power",
-  type = "connect-assembly-power",
-  pattern_name = "solar_panel_factory",
-  target_item_name = "solar-panel",
-  assembly_target_name = "solar_panel_factory",
-  assembly_target = deep_copy(assembly_targets.solar_panel_factory),
-  max_anchor_entities = 8,
-  search_retry_ticks = 5 * 60,
-  arrival_distance = 1.6,
-  approach_randomness = 0,
-  stuck_retry_ticks = 3 * 60,
-  power_anchor_search_radius = 96,
-  power_anchor_failure_cooldown_ticks = 30 * 60,
-  belt_entity_name = "transport-belt",
-  belt_item_name = "transport-belt",
-  forbid_resource_overlap = true
-}
+local function make_assembly_power_task(task_id, assembly_target_name, target_item_name)
+  return {
+    id = task_id,
+    type = "connect-assembly-power",
+    pattern_name = assembly_target_name,
+    target_item_name = target_item_name,
+    assembly_target_name = assembly_target_name,
+    assembly_target = deep_copy(assembly_targets[assembly_target_name]),
+    max_anchor_entities = 8,
+    search_retry_ticks = 5 * 60,
+    arrival_distance = 1.6,
+    approach_randomness = 0,
+    stuck_retry_ticks = 3 * 60,
+    power_anchor_search_radius = 96,
+    power_anchor_failure_cooldown_ticks = 30 * 60,
+    belt_entity_name = "transport-belt",
+    belt_item_name = "transport-belt",
+    forbid_resource_overlap = true
+  }
+end
+
+build_tasks.solar_panel_factory_iron_input =
+  make_assembly_input_route_task("solar_panel_factory", "solar-panel", "iron-plate-line", "iron-plate")
+build_tasks.solar_panel_factory_copper_cable_input =
+  make_assembly_input_route_task("solar_panel_factory", "solar-panel", "copper-plate-to-cable-line", "copper-plate")
+build_tasks.solar_panel_factory_copper_solar_input =
+  make_assembly_input_route_task("solar_panel_factory", "solar-panel", "copper-plate-to-solar-line", "copper-plate")
+build_tasks.solar_panel_factory_steel_input =
+  make_assembly_input_route_task("solar_panel_factory", "solar-panel", "steel-plate-line", "steel-plate")
+build_tasks.solar_panel_factory_power =
+  make_assembly_power_task("solar-panel-factory-power", "solar_panel_factory", "solar-panel")
+
+build_tasks.gun_turret_factory = make_assembly_block_task(
+  "gun-turret-factory-block",
+  "gun_turret_factory",
+  "gun-turret",
+  "gun_turret_factory"
+)
+build_tasks.gun_turret_factory_iron_gear_input =
+  make_assembly_input_route_task("gun_turret_factory", "gun-turret", "iron-plate-to-gear-line", "iron-plate")
+build_tasks.gun_turret_factory_iron_turret_input =
+  make_assembly_input_route_task("gun_turret_factory", "gun-turret", "iron-plate-to-turret-line", "iron-plate")
+build_tasks.gun_turret_factory_copper_input =
+  make_assembly_input_route_task("gun_turret_factory", "gun-turret", "copper-plate-line", "copper-plate")
+build_tasks.gun_turret_factory_power =
+  make_assembly_power_task("gun-turret-factory-power", "gun_turret_factory", "gun-turret")
 
 build_tasks.copper_plate_belt_export = make_fresh_output_belt_task(
   "copper_plate_belt_export",

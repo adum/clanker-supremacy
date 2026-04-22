@@ -527,6 +527,10 @@ local function ensure_builder_state_fields(builder_state)
     builder_state.completed_scaling_milestones = {}
   end
 
+  if builder_state.scale_production_complete == nil then
+    builder_state.scale_production_complete = false
+  end
+
   if builder_state.manual_goal_request == nil then
     builder_state.manual_goal_request = nil
   end
@@ -642,6 +646,12 @@ local function enable_configured_force_recipes(force)
   end
 
   for _, milestone in ipairs((builder_data.scaling and builder_data.scaling.production_milestones) or {}) do
+    if milestone.task and milestone.task.recipe_name then
+      enable_force_recipe_if_available(force, milestone.task.recipe_name)
+    end
+  end
+
+  for _, milestone in ipairs((builder_data.build_out and builder_data.build_out.production_milestones) or {}) do
     if milestone.task and milestone.task.recipe_name then
       enable_force_recipe_if_available(force, milestone.task.recipe_name)
     end
@@ -1729,6 +1739,15 @@ function builder_runtime.is_remote_resource_expansion_unlocked(builder_state)
     end
   end
 
+  local build_out = builder_data.build_out or {}
+  for _, milestone in ipairs(build_out.production_milestones or {}) do
+    if milestone.unlocks_remote_resource_expansion and
+      builder_state.completed_scaling_milestones[milestone.name]
+    then
+      return true, milestone.name
+    end
+  end
+
   return false, nil
 end
 
@@ -2053,6 +2072,7 @@ local function initialize_builder_state(entity)
     scaling_pattern_index = 1,
     scaling_pattern_repeat_count = 0,
     scaling_active_task = nil,
+    scale_production_complete = false,
     completed_scaling_milestones = {}
   }
 
@@ -5005,6 +5025,102 @@ local function setup_solar_panel_factory_test_case()
   return setup_solar_panel_factory_variant_test_case{
     case_name = "solar_panel_factory_physical_feed"
   }
+end
+
+function setup_gun_turret_factory_test_case()
+  local surface = game.surfaces["nauvis"] or game.surfaces[1]
+  if not surface then
+    error("enemy-builder test: nauvis surface is unavailable")
+  end
+
+  local anchor_position = {x = 18, y = 18}
+  local builder_position = {x = 0, y = -6}
+  local factory_center = {x = 18, y = 0}
+  local area = make_test_area(factory_center, 80, 72)
+
+  surface.always_day = true
+  clear_test_area(surface, area)
+
+  local result = setup_manual_test{
+    case_name = "gun_turret_factory_physical_feed",
+    component_name = "gun_turret_factory",
+    builder_position = builder_position,
+    game_speed = 8,
+    progress_log_interval_ticks = 60,
+    surface_name = surface.name,
+    suppress_player_autospawn = true,
+    disable_nearby_container_collection = true,
+    disable_nearby_machine_output_collection = true,
+    disable_nearby_machine_input_supply = true,
+    inventory = {
+      {name = "assembling-machine-1", count = 2},
+      {name = "burner-inserter", count = 8},
+      {name = "small-electric-pole", count = 12},
+      {name = "splitter", count = 3},
+      {name = "transport-belt", count = 256},
+      {name = "underground-belt", count = 48},
+      {name = "wooden-chest", count = 1},
+      {name = "coal", count = 200}
+    },
+    mutate_request = function(request)
+      local block_task = request.tasks and request.tasks[1] or nil
+      if not block_task then
+        error("enemy-builder test: expected gun turret manual request to include a block task")
+      end
+
+      for _, request_task in ipairs(request.tasks or {}) do
+        request_task.post_place_pause_ticks = 0
+        if request_task.type == "place-assembly-input-route" then
+          request_task.belt_route_search_margin = 96
+          request_task.underground_route_max_states = 240
+        end
+      end
+
+      block_task.manual_target_position = clone_position(factory_center)
+      block_task.manual_target_search_radius = 12
+      block_task.manual_target_search_step = 1
+    end,
+    assertion = {
+      case_name = "gun_turret_factory_physical_feed",
+      surface_name = surface.name,
+      area = area,
+      deadline_offset_ticks = 18000,
+      primary_entity_name = "assembling-machine-1",
+      debug_all_transport_belts = true,
+      expected_counts = {
+        ["assembling-machine-1"] = 2,
+        ["burner-inserter"] = 5,
+        ["wooden-chest"] = 1
+      },
+      minimum_counts = {
+        ["small-electric-pole"] = 3
+      },
+      output_entity_names = {"wooden-chest"},
+      output_item_name = "gun-turret",
+      minimum_output_item_count = 1
+    }
+  }
+
+  place_test_powered_firearm_anchor(surface, anchor_position)
+  place_test_plate_belt_sources(surface, {
+    {
+      item_name = "iron-plate",
+      machine_position = {x = 6, y = -12},
+      options = {belt_direction_name = "east"}
+    },
+    {
+      item_name = "iron-plate",
+      machine_position = {x = 30, y = -12},
+      options = {belt_direction_name = "west"}
+    },
+    {
+      item_name = "copper-plate",
+      machine_position = {x = 18, y = 12},
+      options = {belt_direction_name = "north"}
+    }
+  })
+
+  return result
 end
 
 function setup_solar_panel_factory_test_case_east()
@@ -8066,6 +8182,7 @@ local test_remote_interface = {
   setup_output_belt_abort_preserves_transport_belts_test_case =
     setup_output_belt_abort_preserves_transport_belts_test_case,
   setup_solar_panel_factory_test_case = setup_solar_panel_factory_test_case,
+  setup_gun_turret_factory_test_case = setup_gun_turret_factory_test_case,
   setup_solar_panel_factory_test_case_east = setup_solar_panel_factory_test_case_east,
   setup_solar_panel_factory_test_case_south = setup_solar_panel_factory_test_case_south,
   setup_solar_panel_factory_test_case_west = setup_solar_panel_factory_test_case_west,
@@ -8133,6 +8250,7 @@ local test_remote_interface = {
   steel_output_belt_counts_as_export_site = setup_steel_output_belt_counts_as_export_site_test_case,
   output_belt_abort_preserves_transport_belts = setup_output_belt_abort_preserves_transport_belts_test_case,
   solar_panel_factory_physical_feed = setup_solar_panel_factory_test_case,
+  gun_turret_factory_physical_feed = setup_gun_turret_factory_test_case,
   solar_panel_factory_east_orientation_physical_feed = setup_solar_panel_factory_test_case_east,
   solar_panel_factory_south_orientation_physical_feed = setup_solar_panel_factory_test_case_south,
   solar_panel_factory_west_orientation_physical_feed = setup_solar_panel_factory_test_case_west,
