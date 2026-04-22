@@ -5670,6 +5670,7 @@ function queries.find_assembly_power_site(builder_state, task, ctx)
     anchor_entities_considered = 0,
     anchors_skipped_blocked = 0,
     anchors_skipped_registered = 0,
+    anchors_skipped_dead_power = 0,
     anchors_missing_power = 0,
     positions_checked = 0,
     placeable_positions = 0,
@@ -5738,6 +5739,49 @@ function queries.find_assembly_power_site(builder_state, task, ctx)
 
       local local_network_id = power_entry_pole and power_entry_pole.valid and power_entry_pole.electric_network_id or 0
       local already_connected_to_external_power = false
+      local current_tick = game and game.tick or 0
+
+      local function rejected_power_anchor_is_active(rejected_until_tick)
+        if rejected_until_tick == true then
+          return true
+        end
+
+        if type(rejected_until_tick) == "number" then
+          return rejected_until_tick > current_tick
+        end
+
+        return false
+      end
+
+      local function power_anchor_was_rejected(power_anchor_pole)
+        local rejected_power_anchor_keys = assembly_site.rejected_power_anchor_keys or {}
+        local rejected_power_network_ids = assembly_site.rejected_power_network_ids or {}
+        local power_anchor_key = get_position_key(power_anchor_pole.position)
+        local rejected_until_tick = rejected_power_anchor_keys[power_anchor_key]
+
+        if rejected_until_tick ~= nil then
+          if rejected_power_anchor_is_active(rejected_until_tick) then
+            return true
+          end
+
+          rejected_power_anchor_keys[power_anchor_key] = nil
+        end
+
+        local network_id = power_anchor_pole.electric_network_id or 0
+        if network_id ~= 0 then
+          local network_key = tostring(network_id)
+          rejected_until_tick = rejected_power_network_ids[network_key]
+          if rejected_until_tick ~= nil then
+            if rejected_power_anchor_is_active(rejected_until_tick) then
+              return true
+            end
+
+            rejected_power_network_ids[network_key] = nil
+          end
+        end
+
+        return false
+      end
 
       for _, power_anchor_pole in ipairs(power_anchor_entities) do
         if not power_anchor_pole.valid then
@@ -5745,6 +5789,11 @@ function queries.find_assembly_power_site(builder_state, task, ctx)
         end
 
         if power_entry_pole and power_anchor_pole == power_entry_pole then
+          goto continue_power_anchor
+        end
+
+        if power_anchor_was_rejected(power_anchor_pole) then
+          summary.anchors_skipped_dead_power = (summary.anchors_skipped_dead_power or 0) + 1
           goto continue_power_anchor
         end
 

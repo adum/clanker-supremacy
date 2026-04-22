@@ -1039,9 +1039,27 @@ configure_builder_entity = function(entity)
   entity.health = 1000000
 end
 
-local function get_post_place_pause_ticks(task)
+function builder_runtime.is_belt_build_entity(entity)
+  return entity and entity.valid and (
+    entity.type == "transport-belt" or
+    entity.type == "underground-belt" or
+    entity.type == "splitter"
+  )
+end
+
+local function get_post_place_pause_ticks(task, placed_entity)
+  if builder_runtime.is_belt_build_entity(placed_entity) then
+    if task.belt_post_place_pause_ticks ~= nil then
+      return task.belt_post_place_pause_ticks
+    end
+  end
+
   if task.post_place_pause_ticks ~= nil then
     return task.post_place_pause_ticks
+  end
+
+  if builder_runtime.is_belt_build_entity(placed_entity) and builder_data.build and builder_data.build.belt_post_place_pause_ticks then
+    return builder_data.build.belt_post_place_pause_ticks
   end
 
   if builder_data.build and builder_data.build.post_place_pause_ticks then

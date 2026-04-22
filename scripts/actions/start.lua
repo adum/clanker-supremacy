@@ -631,6 +631,7 @@ local function start_connect_assembly_power_task(builder_state, task, tick, ctx)
       tostring(summary.anchor_entities_considered or 0) .. " assembly blocks, " ..
       tostring(summary.anchors_skipped_blocked or 0) .. " anchors blocked, " ..
       tostring(summary.anchors_skipped_registered or 0) .. " already powered, " ..
+      tostring(summary.anchors_skipped_dead_power or 0) .. " rejected dead power anchors, " ..
       tostring(summary.anchors_missing_power or 0) .. " anchors without nearby power, " ..
       tostring(summary.failed_power_bridge or 0) .. " failed power bridges" ..
       (wait_detail and ("; primary blocker: " .. wait_detail) or "") ..

@@ -23,7 +23,8 @@ return {
     tint = {r = 0.42, g = 0.9, b = 1, a = 0.85}
   },
   build = {
-    post_place_pause_ticks = 90
+    post_place_pause_ticks = 90,
+    belt_post_place_pause_ticks = 23
   },
   recovery = {
     max_task_retries = 6,

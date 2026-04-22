@@ -74,6 +74,42 @@ local function assembly_block_has_live_power(assembly_site, power_anchor_pole)
   return true
 end
 
+local function get_power_anchor_key(power_anchor_pole)
+  if not (power_anchor_pole and power_anchor_pole.valid and power_anchor_pole.position) then
+    return nil
+  end
+
+  return string.format("%.2f:%.2f", power_anchor_pole.position.x, power_anchor_pole.position.y)
+end
+
+local function reject_failed_power_anchor(assembly_site, power_anchor_pole, task, tick, ctx)
+  if not (assembly_site and power_anchor_pole and power_anchor_pole.valid) then
+    return
+  end
+
+  local cooldown_ticks = task.power_anchor_failure_cooldown_ticks or (30 * 60)
+  local rejected_until_tick = tick + cooldown_ticks
+  local power_anchor_key = get_power_anchor_key(power_anchor_pole)
+  assembly_site.rejected_power_anchor_keys = assembly_site.rejected_power_anchor_keys or {}
+  assembly_site.rejected_power_network_ids = assembly_site.rejected_power_network_ids or {}
+
+  if power_anchor_key then
+    assembly_site.rejected_power_anchor_keys[power_anchor_key] = rejected_until_tick
+  end
+
+  local network_id = power_anchor_pole.electric_network_id or 0
+  if network_id ~= 0 then
+    assembly_site.rejected_power_network_ids[tostring(network_id)] = rejected_until_tick
+  end
+
+  ctx.debug_log(
+    "task " .. task.id .. ": rejected dead power anchor " ..
+    power_anchor_pole.name .. " at " .. ctx.format_position(power_anchor_pole.position) ..
+    " network=" .. tostring(network_id) ..
+    " until tick " .. tostring(rejected_until_tick)
+  )
+end
+
 local function try_set_entity_recipe(entity, recipe_name)
   if not (entity and entity.valid and recipe_name and entity.set_recipe) then
     return false, "entity-or-recipe-missing"
@@ -103,7 +139,7 @@ end
 
 local function begin_post_place_pause(builder_state, task, tick, next_phase, placed_entity, ctx)
   local task_state = builder_state.task_state
-  local pause_ticks = ctx.get_post_place_pause_ticks(task)
+  local pause_ticks = ctx.get_post_place_pause_ticks(task, placed_entity)
 
   ctx.set_idle(builder_state.entity)
 
@@ -919,6 +955,7 @@ function action_build.finish_place_layout_near_machine_task(builder_state, task,
       end
 
       ctx.debug_log("task " .. task.id .. ": assembly block still lacks live power after bridge build; refreshing task")
+      reject_failed_power_anchor(assembly_site, power_anchor_pole, task, tick, ctx)
       refresh_task(builder_state, task, tick, ctx)
       return
     end
