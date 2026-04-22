@@ -317,6 +317,31 @@ local function cleanup_placed_layout_entities(builder_entity, task_state, refund
   return {}, preserved_layout_entities
 end
 
+local function release_scaling_task_for_missing_item(builder_state, task, item_name, ctx)
+  if not (builder_state and task and task.no_advance and task.consume_items_on_place) then
+    return false
+  end
+
+  builder_state.scaling_active_task = nil
+  builder_state.task_state = nil
+  if builder_state.goal_engine then
+    builder_state.goal_engine.scaling_display_task = nil
+  end
+  ctx.set_idle(builder_state.entity)
+  ctx.builder_runtime.clear_task_retry_state(builder_state, task)
+  ctx.builder_runtime.record_recovery(
+    builder_state,
+    "released " .. tostring(task.id or task.type or "scaling task") ..
+      " to restock " .. tostring(item_name)
+  )
+  ctx.debug_log(
+    "task " .. tostring(task.id or task.type or "scaling task") ..
+      ": missing " .. tostring(item_name) ..
+      "; releasing scaling task so requirements can restock"
+  )
+  return true
+end
+
 local function build_entity_placement_area(entity_name, position)
   local prototype = prototypes and prototypes.entity and entity_name and prototypes.entity[entity_name] or nil
   local collision_box = prototype and (prototype.collision_box or prototype.selection_box) or nil
@@ -1089,7 +1114,7 @@ function action_build.place_miner(builder_state, task, tick, ctx, refresh_task)
     end
   end
 
-  local function abort_build(reason)
+  local function abort_build(reason, options)
     local _, preserved_layout_entities = cleanup_placed_layout_entities(
       entity,
       task_state,
@@ -1102,6 +1127,12 @@ function action_build.place_miner(builder_state, task, tick, ctx, refresh_task)
         ctx.format_products(preserved_layout_entities) ..
         " despite " .. reason
       )
+    end
+    if options and options.missing_item_name and
+      release_scaling_task_for_missing_item(builder_state, task, options.missing_item_name, ctx)
+    then
+      ctx.debug_log("task " .. task.id .. ": " .. reason)
+      return
     end
     refresh_task(builder_state, task, tick, ctx)
     ctx.debug_log("task " .. task.id .. ": " .. reason)
@@ -1138,6 +1169,9 @@ function action_build.place_miner(builder_state, task, tick, ctx, refresh_task)
 
     local item_reserved, reserved_count = reserve_placement_item(entity, task, task.miner_name, task_state.build_position, ctx)
     if not item_reserved then
+      if release_scaling_task_for_missing_item(builder_state, task, task.miner_name, ctx) then
+        return
+      end
       refresh_task(builder_state, task, tick, ctx)
       return
     end
@@ -1267,7 +1301,9 @@ function action_build.place_miner(builder_state, task, tick, ctx, refresh_task)
       ctx
     )
     if not item_reserved then
-      abort_build("missing " .. task.downstream_machine.name .. " in builder inventory")
+      abort_build("missing " .. task.downstream_machine.name .. " in builder inventory", {
+        missing_item_name = task.downstream_machine.name
+      })
       return
     end
 
@@ -1360,7 +1396,9 @@ function action_build.place_miner(builder_state, task, tick, ctx, refresh_task)
       ctx
     )
     if not item_reserved then
-      abort_build("missing " .. task.output_container.name .. " in builder inventory")
+      abort_build("missing " .. task.output_container.name .. " in builder inventory", {
+        missing_item_name = task.output_container.name
+      })
       return
     end
 
@@ -1485,7 +1523,9 @@ function action_build.place_miner(builder_state, task, tick, ctx, refresh_task)
       ctx
     )
     if not item_reserved then
-      abort_build("missing " .. placement.item_name .. " in builder inventory")
+      abort_build("missing " .. placement.item_name .. " in builder inventory", {
+        missing_item_name = placement.item_name
+      })
       return
     end
 
@@ -1865,7 +1905,7 @@ function action_build.place_layout_near_machine(builder_state, task, tick, ctx, 
     task_state.consumed_build_items[item_name] = (task_state.consumed_build_items[item_name] or 0) + (count or 1)
   end
 
-  local function abort_build(reason)
+  local function abort_build(reason, options)
     local _, preserved_layout_entities = cleanup_placed_layout_entities(
       entity,
       task_state,
@@ -1878,6 +1918,12 @@ function action_build.place_layout_near_machine(builder_state, task, tick, ctx, 
         ctx.format_products(preserved_layout_entities) ..
         " despite " .. reason
       )
+    end
+    if options and options.missing_item_name and
+      release_scaling_task_for_missing_item(builder_state, task, options.missing_item_name, ctx)
+    then
+      ctx.debug_log("task " .. task.id .. ": " .. reason)
+      return
     end
     refresh_task(builder_state, task, tick, ctx)
     ctx.debug_log("task " .. task.id .. ": " .. reason)
@@ -1955,7 +2001,9 @@ function action_build.place_layout_near_machine(builder_state, task, tick, ctx, 
     ctx
   )
   if not item_reserved then
-    abort_build("missing " .. placement.item_name .. " in builder inventory")
+    abort_build("missing " .. placement.item_name .. " in builder inventory", {
+      missing_item_name = placement.item_name
+    })
     return
   end
 

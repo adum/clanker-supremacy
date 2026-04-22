@@ -247,7 +247,7 @@ return {
         }
       },
       required_items = {
-        {name = "small-electric-pole", count = 4}
+        {name = "small-electric-pole", count = 32}
       },
       task = solar_panel_factory_power_task
     }
