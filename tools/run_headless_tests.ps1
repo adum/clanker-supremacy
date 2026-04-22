@@ -428,6 +428,7 @@ function Show-FileIfPresent {
 }
 
 $allCases = @(
+  [pscustomobject]@{ Name = "builder_starts_with_inventory_armor"; RemoteSetupName = "setup_builder_starts_with_inventory_armor_test_case"; ServerPort = 34257; RemoteSetupArg = $null },
   [pscustomobject]@{ Name = "firearm_outpost_physical_feed"; RemoteSetupName = "setup_firearm_outpost_test_case"; ServerPort = 34197; RemoteSetupArg = $null },
   [pscustomobject]@{ Name = "pause_mode_manual_goal"; RemoteSetupName = "setup_pause_mode_manual_goal_test_case"; ServerPort = 34214; RemoteSetupArg = $null },
   [pscustomobject]@{ Name = "firearm_outpost_anchor_clearance"; RemoteSetupName = "setup_firearm_outpost_anchored_test_case"; ServerPort = 34198; RemoteSetupArg = $null },

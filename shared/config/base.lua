@@ -18,6 +18,8 @@ return {
   default_plan = "bootstrap",
   avatar = {
     prototype_name = "enemy-builder-avatar",
+    armor_prototype_name = "enemy-builder-inventory-armor",
+    armor_inventory_bonus = 100,
     spawn_offset = {x = 2, y = 0},
     spawn_search_radius = 8,
     spawn_precision = 0.5,

@@ -1047,6 +1047,14 @@ configure_builder_entity = function(entity)
   entity.operable = false
   entity.color = builder_data.avatar.tint
   entity.health = 1000000
+
+  local armor_name = builder_data.avatar and builder_data.avatar.armor_prototype_name or nil
+  local armor_inventory = armor_name and entity.get_inventory and
+    entity.get_inventory(defines.inventory.character_armor) or nil
+  if armor_inventory and armor_inventory.get_item_count(armor_name) <= 0 then
+    armor_inventory.clear()
+    armor_inventory.insert{name = armor_name, count = 1}
+  end
 end
 
 function builder_runtime.is_belt_build_entity(entity)
@@ -3369,6 +3377,45 @@ local function setup_scaling_test(spec)
 
   return {
     builder_position = clone_position(builder_state.entity.position)
+  }
+end
+
+function setup_builder_starts_with_inventory_armor_test_case()
+  return setup_scaling_test{
+    case_name = "builder_starts_with_inventory_armor",
+    assertion = {
+      deadline_offset_ticks = 60,
+      skip_output_assertion = true,
+      required_builder_armor_name = builder_data.avatar.armor_prototype_name,
+      minimum_builder_inventory_bonus = builder_data.avatar.armor_inventory_bonus
+    },
+    mutate_builder_state = function(builder_state)
+      local assertion = storage.enemy_builder_test and storage.enemy_builder_test.assertion or nil
+      local armor_name = builder_data.avatar and builder_data.avatar.armor_prototype_name or nil
+      local armor_inventory = builder_state.entity.get_inventory(defines.inventory.character_armor)
+
+      if assertion and armor_name and armor_inventory and armor_inventory.get_item_count(armor_name) > 0 then
+        local main_inventory = get_builder_main_inventory(builder_state.entity)
+        local armored_slots = main_inventory and #main_inventory or 0
+
+        armor_inventory.clear()
+        local unarmored_inventory = get_builder_main_inventory(builder_state.entity)
+        local unarmored_slots = unarmored_inventory and #unarmored_inventory or 0
+        local reinserted_count = armor_inventory.insert{name = armor_name, count = 1}
+        local rearmored_inventory = get_builder_main_inventory(builder_state.entity)
+        local rearmored_slots = rearmored_inventory and #rearmored_inventory or 0
+
+        assertion.observed_builder_inventory_slots = math.max(armored_slots, rearmored_slots)
+        assertion.observed_builder_inventory_bonus = rearmored_slots - unarmored_slots
+        assertion.observed_builder_armor_reinserted = reinserted_count == 1
+      end
+
+      builder_state.task_state = {
+        phase = "waiting-for-resource",
+        wait_reason = "test-idle",
+        next_attempt_tick = game.tick + 3600
+      }
+    end
   }
 end
 
@@ -7981,6 +8028,25 @@ local function format_test_failure_summary(surface, force, assertion)
       " actual=" .. get_test_builder_inventory_item_count(requirement.name)
   end
 
+  if assertion.required_builder_armor_name then
+    local armor_inventory = builder_state and builder_state.entity and
+      builder_state.entity.get_inventory(defines.inventory.character_armor) or nil
+    parts[#parts + 1] =
+      "builder-armor-" .. assertion.required_builder_armor_name .. "=" ..
+      tostring(armor_inventory and armor_inventory.get_item_count(assertion.required_builder_armor_name) or 0)
+  end
+
+  if assertion.minimum_builder_inventory_bonus then
+    parts[#parts + 1] =
+      "builder-inventory-bonus=" ..
+      tostring(assertion.observed_builder_inventory_bonus or 0) .. "/" ..
+      tostring(assertion.minimum_builder_inventory_bonus)
+  end
+
+  if assertion.observed_builder_inventory_slots then
+    parts[#parts + 1] = "builder-inventory-slots=" .. tostring(assertion.observed_builder_inventory_slots)
+  end
+
   if assertion.maximum_builder_distance_from_position then
     local builder_position = get_test_builder_position()
     local maximum_distance = assertion.maximum_builder_distance_from_position.distance or 0
@@ -8202,6 +8268,27 @@ local function test_assertion_passed(surface, force, assertion)
 
   for _, requirement in ipairs(assertion.maximum_builder_inventory_items or {}) do
     if get_test_builder_inventory_item_count(requirement.name) > requirement.count then
+      return false
+    end
+  end
+
+  if assertion.required_builder_armor_name then
+    local armor_inventory = builder_state and builder_state.entity and
+      builder_state.entity.get_inventory(defines.inventory.character_armor) or nil
+    if not (
+      armor_inventory and
+      armor_inventory.get_item_count(assertion.required_builder_armor_name) > 0
+    ) then
+      return false
+    end
+  end
+
+  if assertion.minimum_builder_inventory_bonus then
+    if (assertion.observed_builder_inventory_bonus or 0) < assertion.minimum_builder_inventory_bonus then
+      return false
+    end
+
+    if assertion.observed_builder_armor_reinserted == false then
       return false
     end
   end
@@ -8456,6 +8543,7 @@ end
 
 local test_remote_interface = {
   setup_manual_test = setup_manual_test,
+  setup_builder_starts_with_inventory_armor_test_case = setup_builder_starts_with_inventory_armor_test_case,
   setup_firearm_outpost_test_case = setup_firearm_outpost_test_case,
   setup_pause_mode_manual_goal_test_case = setup_pause_mode_manual_goal_test_case,
   setup_firearm_outpost_anchored_test_case = setup_firearm_outpost_anchored_test_case,
@@ -8532,6 +8620,7 @@ local test_remote_interface = {
   setup_full_run_layout_snapshot_case = setup_full_run_layout_snapshot_case,
 
   -- Canonical case-name aliases match the names printed by the headless runners' ListCases mode.
+  builder_starts_with_inventory_armor = setup_builder_starts_with_inventory_armor_test_case,
   firearm_outpost_physical_feed = setup_firearm_outpost_test_case,
   pause_mode_manual_goal = setup_pause_mode_manual_goal_test_case,
   firearm_outpost_anchor_clearance = setup_firearm_outpost_anchored_test_case,

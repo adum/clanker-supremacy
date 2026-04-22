@@ -277,6 +277,7 @@ EOF
   fi
 }
 
+run_case "builder_starts_with_inventory_armor" "setup_builder_starts_with_inventory_armor_test_case" "34257"
 run_case "firearm_outpost_physical_feed" "setup_firearm_outpost_test_case" "34197"
 run_case "pause_mode_manual_goal" "setup_pause_mode_manual_goal_test_case" "34214"
 run_case "firearm_outpost_anchor_clearance" "setup_firearm_outpost_anchored_test_case" "34198"
