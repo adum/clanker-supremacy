@@ -445,7 +445,52 @@ local function begin_build_sidestep(builder_state, task, tick, entity_name, posi
   )
 end
 
+local function get_build_reach_distance(task, ctx)
+  if task and task.build_reach_distance then
+    return task.build_reach_distance
+  end
+
+  local movement_settings = (ctx.builder_data and ctx.builder_data.movement) or {}
+  return movement_settings.build_reach_distance or 6
+end
+
+local function begin_build_reach_move(builder_state, task, tick, entity_name, position, ctx, reach_distance)
+  local task_state = builder_state.task_state
+
+  task_state.phase = "moving"
+  task_state.move_destination_position = ctx.clone_position(position)
+  task_state.move_next_phase = "building"
+  task_state.move_arrival_distance = reach_distance
+  task_state.move_require_approach = false
+  task_state.approach_position = ctx.clone_position(position)
+  task_state.last_position = ctx.clone_position(builder_state.entity.position)
+  task_state.last_progress_tick = tick
+  ctx.debug_log(
+    "task " .. task.id .. ": moving within build reach for " .. entity_name ..
+      " at " .. ctx.format_position(position) ..
+      " from " .. ctx.format_position(builder_state.entity.position)
+  )
+end
+
+local function ensure_builder_within_build_reach(builder_state, task, tick, entity_name, position, ctx)
+  if not (builder_state and builder_state.entity and builder_state.entity.valid and position) then
+    return false
+  end
+
+  local reach_distance = get_build_reach_distance(task, ctx)
+  if ctx.square_distance(builder_state.entity.position, position) <= (reach_distance * reach_distance) then
+    return false
+  end
+
+  begin_build_reach_move(builder_state, task, tick, entity_name, position, ctx, reach_distance)
+  return true
+end
+
 local function ensure_builder_clear_for_placement(builder_state, task, tick, entity_name, position, ctx)
+  if ensure_builder_within_build_reach(builder_state, task, tick, entity_name, position, ctx) then
+    return true
+  end
+
   if not builder_blocks_entity_placement(builder_state.entity, entity_name, position) then
     return false
   end

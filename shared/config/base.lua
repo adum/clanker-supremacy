@@ -33,6 +33,7 @@ return {
   movement = {
     approach_randomness = 0.6,
     build_standoff_distance = 0.85,
-    build_approach_tolerance = 0.3
+    build_approach_tolerance = 0.3,
+    build_reach_distance = 6
   }
 }
