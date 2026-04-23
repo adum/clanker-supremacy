@@ -20,6 +20,10 @@ return {
         {
           name = constants.enemy_builder_physical_damage_1_technology_name,
           display_name = "Physical projectile damage 1"
+        },
+        {
+          name = constants.enemy_builder_piercing_rounds_technology_name,
+          display_name = "Piercing rounds magazine"
         }
       }
     }

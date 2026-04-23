@@ -607,5 +607,172 @@ return {
         }
       },
     }
+  },
+  piercing_rounds_factory = {
+    display_name = "piercing rounds factory",
+    target_item_name = "piercing-rounds-magazine",
+    defer_power_poles_until_end = true,
+    place_local_poles_with_power_task = true,
+    anchor_mode = "base-infra-free-space",
+    store_root_assembler_as_anchor_entity = true,
+    skip_initial_power_validation = true,
+    base_infra_search = {
+      max_origins = 10,
+      pole_search_radius = 96,
+      use_registered_sites = true,
+      include_power_poles = true
+    },
+    free_rectangle = {
+      min_x = -1,
+      max_x = 8,
+      min_y = -8,
+      max_y = 3
+    },
+    power_anchor_entity_name = "small-electric-pole",
+    source_route_splitter = {
+      entity_name = "splitter",
+      item_name = "splitter"
+    },
+    source_route_extractor = {
+      entity_name = "burner-inserter",
+      item_name = "burner-inserter",
+      fuel = {
+        name = "coal",
+        count = 4
+      }
+    },
+    local_poles = {
+      {
+        id = "power-pole-entry",
+        site_role = "power-pole",
+        entity_name = "small-electric-pole",
+        item_name = "small-electric-pole",
+        offset = {x = 0, y = 1},
+        is_power_entry = true
+      },
+      {
+        id = "power-pole-magazine",
+        site_role = "power-pole",
+        entity_name = "small-electric-pole",
+        item_name = "small-electric-pole",
+        offset = {x = 1, y = -1}
+      },
+      {
+        id = "power-pole-output",
+        site_role = "power-pole",
+        entity_name = "small-electric-pole",
+        item_name = "small-electric-pole",
+        offset = {x = 5, y = -1}
+      }
+    },
+    assembler_nodes = {
+      {
+        id = "piercing-rounds-assembler",
+        site_role = "assembly-root",
+        entity_name = "assembling-machine-1",
+        item_name = "assembling-machine-1",
+        recipe_name = "piercing-rounds-magazine",
+        offset = {x = 4, y = -3}
+      }
+    },
+    output_containers = {
+      {
+        id = "piercing-rounds-output-chest",
+        site_role = "output-container",
+        entity_name = "wooden-chest",
+        item_name = "wooden-chest",
+        offset = {x = 7, y = -3}
+      }
+    },
+    output_inserters = {
+      {
+        id = "piercing-rounds-output",
+        site_role = "output-inserter",
+        source_node_id = "piercing-rounds-assembler",
+        target_container_id = "piercing-rounds-output-chest",
+        entity_name = "burner-inserter",
+        item_name = "burner-inserter",
+        offset = {x = 6, y = -3},
+        direction_name = "west",
+        fuel = {
+          name = "coal",
+          count = 4
+        }
+      }
+    },
+    raw_input_routes = {
+      {
+        id = "firearm-magazine-line",
+        item_name = "firearm-magazine",
+        route_target_offset = {x = 0, y = -3},
+        local_belt_offsets = {
+          {x = 1, y = -3}
+        },
+        local_belt_direction_name = "east",
+        input_inserters = {
+          {
+            id = "magazine-to-piercing-rounds",
+            site_role = "input-inserter",
+            target_node_id = "piercing-rounds-assembler",
+            entity_name = "burner-inserter",
+            item_name = "burner-inserter",
+            offset = {x = 2, y = -3},
+            direction_name = "west",
+            fuel = {
+              name = "coal",
+              count = 4
+            }
+          }
+        }
+      },
+      {
+        id = "steel-plate-line",
+        item_name = "steel-plate",
+        route_target_offset = {x = 4, y = -7},
+        local_belt_offsets = {
+          {x = 4, y = -6}
+        },
+        local_belt_direction_name = "south",
+        input_inserters = {
+          {
+            id = "steel-to-piercing-rounds",
+            site_role = "input-inserter",
+            target_node_id = "piercing-rounds-assembler",
+            entity_name = "burner-inserter",
+            item_name = "burner-inserter",
+            offset = {x = 4, y = -5},
+            direction_name = "north",
+            fuel = {
+              name = "coal",
+              count = 4
+            }
+          }
+        }
+      },
+      {
+        id = "copper-plate-line",
+        item_name = "copper-plate",
+        route_target_offset = {x = 4, y = 1},
+        local_belt_offsets = {
+          {x = 4, y = 0}
+        },
+        local_belt_direction_name = "north",
+        input_inserters = {
+          {
+            id = "copper-to-piercing-rounds",
+            site_role = "input-inserter",
+            target_node_id = "piercing-rounds-assembler",
+            entity_name = "burner-inserter",
+            item_name = "burner-inserter",
+            offset = {x = 4, y = -1},
+            direction_name = "south",
+            fuel = {
+              name = "coal",
+              count = 4
+            }
+          }
+        }
+      },
+    }
   }
 }

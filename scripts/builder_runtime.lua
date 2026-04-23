@@ -627,6 +627,68 @@ local function get_task_consumed_item_name(task)
   return task and task.entity_name or nil
 end
 
+function builder_runtime.queue_next_configured_research(force)
+  if not force then
+    return
+  end
+
+  local research = builder_data.force and builder_data.force.research or nil
+  local technology_name = research and research.current_technology_name or nil
+  for _, technology_entry in ipairs((research and research.technology_line) or {}) do
+    local line_technology_name = technology_entry.name
+    local line_technology = line_technology_name and force.technologies and force.technologies[line_technology_name] or nil
+    if line_technology and not line_technology.researched then
+      technology_name = line_technology_name
+      break
+    end
+  end
+
+  local technology = technology_name and force.technologies and force.technologies[technology_name] or nil
+  if not (technology and not technology.researched) then
+    return
+  end
+
+  pcall(function()
+    technology.enabled = true
+  end)
+
+  local current_research_name = nil
+  if force.current_research then
+    pcall(function()
+      current_research_name = force.current_research.name
+    end)
+  end
+
+  if current_research_name == technology_name then
+    return
+  end
+
+  if force.enable_research then
+    pcall(function()
+      force.enable_research()
+    end)
+  end
+
+  local queued = false
+  if force.add_research then
+    local ok, result = pcall(function()
+      return force.add_research(technology_name)
+    end)
+    queued = ok and result == true
+  end
+
+  local ok, message = true, nil
+  if not queued then
+    ok, message = pcall(function()
+      force.research_queue = {technology_name}
+    end)
+  end
+
+  if not ok then
+    log("[enemy-builder] failed to queue current research " .. technology_name .. ": " .. tostring(message))
+  end
+end
+
 local function enable_configured_force_recipes(force)
   if not force then
     return
@@ -657,57 +719,7 @@ local function enable_configured_force_recipes(force)
     end
   end
 
-  local research = builder_data.force and builder_data.force.research or nil
-  local technology_name = research and research.current_technology_name or nil
-  for _, technology_entry in ipairs((research and research.technology_line) or {}) do
-    local line_technology_name = technology_entry.name
-    local line_technology = line_technology_name and force.technologies and force.technologies[line_technology_name] or nil
-    if line_technology and not line_technology.researched then
-      technology_name = line_technology_name
-      break
-    end
-  end
-
-  local technology = technology_name and force.technologies and force.technologies[technology_name] or nil
-  if technology and not technology.researched then
-    pcall(function()
-      technology.enabled = true
-    end)
-
-    local current_research_name = nil
-    if force.current_research then
-      pcall(function()
-        current_research_name = force.current_research.name
-      end)
-    end
-
-    if current_research_name ~= technology_name then
-      if force.enable_research then
-        pcall(function()
-          force.enable_research()
-        end)
-      end
-
-      local queued = false
-      if force.add_research then
-        local ok, result = pcall(function()
-          return force.add_research(technology_name)
-        end)
-        queued = ok and result == true
-      end
-
-      local ok, message = true, nil
-      if not queued then
-        ok, message = pcall(function()
-          force.research_queue = {technology_name}
-        end)
-      end
-
-      if not ok then
-        log("[enemy-builder] failed to queue current research " .. technology_name .. ": " .. tostring(message))
-      end
-    end
-  end
+  builder_runtime.queue_next_configured_research(force)
 end
 
 function configure_builder_force_relationships(force)
@@ -5672,6 +5684,233 @@ function setup_automation_science_lab_test_case()
   return result
 end
 
+function setup_piercing_rounds_factory_test_case()
+  local surface = game.surfaces["nauvis"] or game.surfaces[1]
+  if not surface then
+    error("enemy-builder test: nauvis surface is unavailable")
+  end
+
+  local anchor_position = {x = 18, y = 18}
+  local builder_position = {x = 0, y = -6}
+  local factory_center = {x = 18, y = 0}
+  local area = make_test_area(factory_center, 80, 72)
+
+  surface.always_day = true
+  clear_test_area(surface, area)
+
+  local result = setup_manual_test{
+    case_name = "piercing_rounds_factory_physical_feed",
+    component_name = "piercing_rounds_factory",
+    builder_position = builder_position,
+    game_speed = 8,
+    progress_log_interval_ticks = 60,
+    surface_name = surface.name,
+    suppress_player_autospawn = true,
+    disable_nearby_container_collection = true,
+    disable_nearby_machine_output_collection = true,
+    disable_nearby_machine_input_supply = true,
+    inventory = {
+      {name = "assembling-machine-1", count = 1},
+      {name = "burner-inserter", count = 8},
+      {name = "small-electric-pole", count = 12},
+      {name = "splitter", count = 3},
+      {name = "transport-belt", count = 256},
+      {name = "underground-belt", count = 48},
+      {name = "wooden-chest", count = 1},
+      {name = "coal", count = 200}
+    },
+    mutate_request = function(request)
+      local block_task = request.tasks and request.tasks[1] or nil
+      if not block_task then
+        error("enemy-builder test: expected piercing rounds manual request to include a block task")
+      end
+
+      for _, request_task in ipairs(request.tasks or {}) do
+        request_task.post_place_pause_ticks = 0
+        if request_task.type == "place-assembly-input-route" then
+          request_task.belt_route_search_margin = 96
+          request_task.underground_route_max_states = 240
+        end
+      end
+
+      block_task.manual_target_position = clone_position(factory_center)
+      block_task.manual_target_search_radius = 12
+      block_task.manual_target_search_step = 1
+    end,
+    assertion = {
+      case_name = "piercing_rounds_factory_physical_feed",
+      surface_name = surface.name,
+      area = area,
+      deadline_offset_ticks = 18000,
+      primary_entity_name = "assembling-machine-1",
+      debug_all_transport_belts = true,
+      expected_counts = {
+        ["assembling-machine-1"] = 1,
+        ["burner-inserter"] = 4,
+        ["wooden-chest"] = 1
+      },
+      minimum_counts = {
+        ["small-electric-pole"] = 2
+      },
+      output_entity_names = {"wooden-chest"},
+      output_item_name = "piercing-rounds-magazine",
+      minimum_output_item_count = 1,
+      required_researched_technologies = {"enemy-builder-piercing-rounds-magazine"}
+    }
+  }
+
+  local force = game.forces[builder_data.force_name]
+  local physical_damage_technology =
+    force.technologies and force.technologies[builder_data.force.research.technology_line[1].name] or nil
+  local piercing_rounds_technology =
+    force.technologies and force.technologies["enemy-builder-piercing-rounds-magazine"] or nil
+  if physical_damage_technology then
+    physical_damage_technology.researched = true
+  end
+  if piercing_rounds_technology then
+    piercing_rounds_technology.researched = true
+  end
+
+  place_test_powered_firearm_anchor(surface, anchor_position)
+  place_test_plate_belt_sources(surface, {
+    {
+      item_name = "firearm-magazine",
+      machine_position = {x = 6, y = 0},
+      options = {belt_direction_name = "east"}
+    },
+    {
+      item_name = "steel-plate",
+      machine_position = {x = 30, y = -12},
+      options = {belt_direction_name = "west"}
+    },
+    {
+      item_name = "copper-plate",
+      machine_position = {x = 18, y = 12},
+      options = {belt_direction_name = "north"}
+    }
+  })
+
+  return result
+end
+
+function setup_build_out_piercing_rounds_factory_after_research_test_case()
+  local surface = game.surfaces["nauvis"] or game.surfaces[1]
+  if not surface then
+    error("enemy-builder test: nauvis surface is unavailable")
+  end
+
+  local builder_position = {x = 0, y = -6}
+  local anchor_position = {x = 18, y = 18}
+  local factory_center = {x = 18, y = 0}
+  local area = make_test_area(factory_center, 80, 72)
+
+  surface.always_day = true
+  clear_test_area(surface, area)
+
+  return setup_scaling_test{
+    case_name = "build_out_piercing_rounds_factory_after_research",
+    builder_position = builder_position,
+    game_speed = 8,
+    progress_log_interval_ticks = 60,
+    surface_name = surface.name,
+    suppress_player_autospawn = true,
+    disable_nearby_container_collection = true,
+    disable_nearby_machine_output_collection = true,
+    disable_nearby_machine_input_supply = true,
+    completed_scaling_milestones = {
+      ["firearm-magazine-assembler"] = true,
+      ["solar-panel-factory-block"] = true,
+      ["solar-panel-factory-copper-cable-input"] = true,
+      ["solar-panel-factory-iron-input"] = true,
+      ["solar-panel-factory-copper-solar-input"] = true,
+      ["solar-panel-factory-steel-input"] = true,
+      ["solar-panel-factory-power"] = true,
+      ["gun-turret-factory-block"] = true,
+      ["gun-turret-factory-iron-gear-input"] = true,
+      ["gun-turret-factory-iron-turret-input"] = true,
+      ["gun-turret-factory-copper-input"] = true,
+      ["gun-turret-factory-power"] = true,
+      ["automation-science-lab-block"] = true,
+      ["automation-science-lab-iron-gear-input"] = true,
+      ["automation-science-lab-copper-input"] = true,
+      ["automation-science-lab-power"] = true
+    },
+    inventory = {
+      {name = "assembling-machine-1", count = 1},
+      {name = "burner-inserter", count = 6},
+      {name = "small-electric-pole", count = 8},
+      {name = "splitter", count = 1},
+      {name = "transport-belt", count = 96},
+      {name = "underground-belt", count = 16},
+      {name = "wooden-chest", count = 1},
+      {name = "coal", count = 120}
+    },
+    mutate_builder_state = function(builder_state, test_surface)
+      local force = builder_state.entity.force
+      local anchor = place_test_powered_firearm_anchor(test_surface, anchor_position)
+      if not anchor then
+        error("enemy-builder test: failed to create piercing rounds build-out anchor")
+      end
+
+      local count_sites = {
+        {pattern_name = "iron_plate_belt_export", resource_name = "iron-ore"},
+        {pattern_name = "iron_plate_belt_export", resource_name = "iron-ore"},
+        {pattern_name = "copper_plate_belt_export", resource_name = "copper-ore"},
+        {pattern_name = "copper_plate_belt_export", resource_name = "copper-ore"},
+        {pattern_name = "steel_plate_belt_export", resource_name = "iron-ore"}
+      }
+      for index, site_spec in ipairs(count_sites) do
+        local counter_pole = test_surface.create_entity{
+          name = "small-electric-pole",
+          position = {x = -240 - index, y = -240},
+          force = force,
+          create_build_effect_smoke = false
+        }
+        if not (counter_pole and counter_pole.valid) then
+          error("enemy-builder test: failed to create piercing rounds completion counter pole")
+        end
+
+        register_resource_site(
+          {
+            id = "test-build-out-piercing-rounds-counter-" .. tostring(index),
+            pattern_name = site_spec.pattern_name,
+            resource_name = site_spec.resource_name
+          },
+          counter_pole,
+          nil,
+          nil
+        )
+      end
+
+      local physical_damage_technology =
+        force.technologies and force.technologies[builder_data.force.research.technology_line[1].name] or nil
+      local piercing_rounds_technology =
+        force.technologies and force.technologies["enemy-builder-piercing-rounds-magazine"] or nil
+      if physical_damage_technology then
+        physical_damage_technology.researched = true
+      end
+      if piercing_rounds_technology then
+        piercing_rounds_technology.researched = true
+      end
+    end,
+    assertion = {
+      case_name = "build_out_piercing_rounds_factory_after_research",
+      surface_name = surface.name,
+      area = area,
+      deadline_offset_ticks = 3600,
+      skip_output_assertion = true,
+      expected_counts = {
+        ["assembling-machine-1"] = 1,
+        ["burner-inserter"] = 1,
+        ["wooden-chest"] = 1
+      },
+      required_completed_scaling_milestones = {
+        "piercing-rounds-factory-block"
+      }
+    }
+  }
+end
+
 function setup_build_out_gun_turret_factory_finds_nearby_open_space_test_case()
   local surface = game.surfaces["nauvis"] or game.surfaces[1]
   if not surface then
@@ -7016,7 +7255,8 @@ function setup_container_collection_inventory_caps_test_case()
     suppress_player_autospawn = true,
     inventory = {
       {name = "solar-panel", count = 39},
-      {name = "gun-turret", count = 39}
+      {name = "gun-turret", count = 39},
+      {name = "piercing-rounds-magazine", count = 999}
     },
     mutate_builder_state = function(builder_state, test_surface)
       builder_state.task_state = {
@@ -7042,6 +7282,7 @@ function setup_container_collection_inventory_caps_test_case()
 
       inventory.insert{name = "solar-panel", count = 5}
       inventory.insert{name = "gun-turret", count = 5}
+      inventory.insert{name = "piercing-rounds-magazine", count = 5}
     end,
     assertion = {
       case_name = "container_collection_inventory_caps",
@@ -7051,11 +7292,13 @@ function setup_container_collection_inventory_caps_test_case()
       skip_output_assertion = true,
       minimum_builder_inventory_items = {
         {name = "solar-panel", count = 40},
-        {name = "gun-turret", count = 40}
+        {name = "gun-turret", count = 40},
+        {name = "piercing-rounds-magazine", count = 1000}
       },
       maximum_builder_inventory_items = {
         {name = "solar-panel", count = 40},
-        {name = "gun-turret", count = 40}
+        {name = "gun-turret", count = 40},
+        {name = "piercing-rounds-magazine", count = 1000}
       }
     }
   }
@@ -9303,6 +9546,9 @@ local test_remote_interface = {
   setup_solar_panel_factory_test_case = setup_solar_panel_factory_test_case,
   setup_gun_turret_factory_test_case = setup_gun_turret_factory_test_case,
   setup_automation_science_lab_test_case = setup_automation_science_lab_test_case,
+  setup_piercing_rounds_factory_test_case = setup_piercing_rounds_factory_test_case,
+  setup_build_out_piercing_rounds_factory_after_research_test_case =
+    setup_build_out_piercing_rounds_factory_after_research_test_case,
   setup_build_out_gun_turret_factory_finds_nearby_open_space_test_case =
     setup_build_out_gun_turret_factory_finds_nearby_open_space_test_case,
   setup_build_out_patrol_walks_to_ore_patch_test_case =
@@ -9379,6 +9625,9 @@ local test_remote_interface = {
   solar_panel_factory_physical_feed = setup_solar_panel_factory_test_case,
   gun_turret_factory_physical_feed = setup_gun_turret_factory_test_case,
   automation_science_lab_physical_feed = setup_automation_science_lab_test_case,
+  piercing_rounds_factory_physical_feed = setup_piercing_rounds_factory_test_case,
+  build_out_piercing_rounds_factory_after_research =
+    setup_build_out_piercing_rounds_factory_after_research_test_case,
   build_out_gun_turret_factory_finds_nearby_open_space =
     setup_build_out_gun_turret_factory_finds_nearby_open_space_test_case,
   build_out_patrol_walks_to_ore_patch = setup_build_out_patrol_walks_to_ore_patch_test_case,
@@ -10126,6 +10375,9 @@ function on_tick(event)
     builder_runtime.trace_test_stage(event.tick, "before-advance-builder", builder_state)
     advance_builder(builder_state, event.tick)
     builder_runtime.trace_test_stage(event.tick, "after-advance-builder", builder_state)
+    if (event.tick % 60) == 0 then
+      builder_runtime.queue_next_configured_research(builder_state.entity.force)
+    end
     builder_runtime.update_goal_model(builder_state, event.tick)
     builder_runtime.trace_test_stage(event.tick, "after-update-goal-model", builder_state)
   end

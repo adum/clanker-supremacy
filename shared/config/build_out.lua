@@ -1,4 +1,5 @@
 local build_tasks = require("shared.config.build_tasks")
+local constants = require("shared.config.constants")
 local deep_copy = require("shared.config.util").deep_copy
 
 local function milestone_task(task, task_id, reopen_milestone_name)
@@ -81,6 +82,31 @@ local automation_science_lab_power_task = milestone_task(
   build_tasks.automation_science_lab_power,
   "build-out-connect-automation-science-lab-power",
   "automation-science-lab-block"
+)
+
+local piercing_rounds_factory_task = milestone_task(
+  build_tasks.piercing_rounds_factory,
+  "build-out-place-piercing-rounds-factory"
+)
+local piercing_rounds_factory_firearm_magazine_input_task = milestone_task(
+  build_tasks.piercing_rounds_factory_firearm_magazine_input,
+  "build-out-connect-piercing-rounds-factory-firearm-magazine-input",
+  "piercing-rounds-factory-block"
+)
+local piercing_rounds_factory_steel_input_task = milestone_task(
+  build_tasks.piercing_rounds_factory_steel_input,
+  "build-out-connect-piercing-rounds-factory-steel-input",
+  "piercing-rounds-factory-block"
+)
+local piercing_rounds_factory_copper_input_task = milestone_task(
+  build_tasks.piercing_rounds_factory_copper_input,
+  "build-out-connect-piercing-rounds-factory-copper-input",
+  "piercing-rounds-factory-block"
+)
+local piercing_rounds_factory_power_task = milestone_task(
+  build_tasks.piercing_rounds_factory_power,
+  "build-out-connect-piercing-rounds-factory-power",
+  "piercing-rounds-factory-block"
 )
 
 return {
@@ -356,6 +382,82 @@ return {
         {name = "small-electric-pole", count = 32}
       },
       task = automation_science_lab_power_task
+    },
+    {
+      name = "piercing-rounds-factory-block",
+      display_name = "Place piercing rounds factory block",
+      pursue_proactively = true,
+      unlock = {
+        required_completed_milestones = {"automation-science-lab-power"},
+        required_researched_technologies = {constants.enemy_builder_piercing_rounds_technology_name}
+      },
+      required_items = {
+        {name = "assembling-machine-1", count = 1},
+        {name = "burner-inserter", count = 4},
+        {name = "small-electric-pole", count = 6},
+        {name = "transport-belt", count = 64},
+        {name = "wooden-chest", count = 1}
+      },
+      task = piercing_rounds_factory_task
+    },
+    {
+      name = "piercing-rounds-factory-firearm-magazine-input",
+      display_name = "Connect piercing rounds factory magazine input",
+      pursue_proactively = true,
+      unlock = {
+        required_completed_milestones = {"piercing-rounds-factory-block"}
+      },
+      required_items = {
+        {name = "transport-belt", count = 96},
+        {name = "underground-belt", count = 16},
+        {name = "splitter", count = 1},
+        {name = "burner-inserter", count = 1}
+      },
+      task = piercing_rounds_factory_firearm_magazine_input_task
+    },
+    {
+      name = "piercing-rounds-factory-steel-input",
+      display_name = "Connect piercing rounds factory steel input",
+      pursue_proactively = true,
+      unlock = {
+        required_completed_milestones = {"piercing-rounds-factory-firearm-magazine-input"}
+      },
+      required_items = {
+        {name = "transport-belt", count = 96},
+        {name = "underground-belt", count = 16},
+        {name = "splitter", count = 1},
+        {name = "burner-inserter", count = 1}
+      },
+      task = piercing_rounds_factory_steel_input_task
+    },
+    {
+      name = "piercing-rounds-factory-copper-input",
+      display_name = "Connect piercing rounds factory copper input",
+      pursue_proactively = true,
+      unlock = {
+        required_completed_milestones = {"piercing-rounds-factory-steel-input"}
+      },
+      required_items = {
+        {name = "transport-belt", count = 96},
+        {name = "underground-belt", count = 16},
+        {name = "splitter", count = 1},
+        {name = "burner-inserter", count = 1}
+      },
+      task = piercing_rounds_factory_copper_input_task
+    },
+    {
+      name = "piercing-rounds-factory-power",
+      display_name = "Connect piercing rounds factory power",
+      pursue_proactively = true,
+      unlock = {
+        required_completed_milestones = {
+          "piercing-rounds-factory-copper-input"
+        }
+      },
+      required_items = {
+        {name = "small-electric-pole", count = 32}
+      },
+      task = piercing_rounds_factory_power_task
     }
   }
 }

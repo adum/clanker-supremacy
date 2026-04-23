@@ -39,6 +39,7 @@ constants.clanker_artillery_fire_cooldown_multiplier = 2
 constants.clanker_artillery_ammo_capacity = 50
 constants.clanker_artillery_range = 60
 constants.enemy_builder_physical_damage_1_technology_name = "enemy-builder-physical-damage-1"
+constants.enemy_builder_piercing_rounds_technology_name = "enemy-builder-piercing-rounds-magazine"
 constants.enemy_builder_research_technology_name = constants.enemy_builder_physical_damage_1_technology_name
 
 constants.ammo_defense_required_items = {

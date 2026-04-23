@@ -408,6 +408,40 @@ build_tasks.automation_science_lab_copper_input =
 build_tasks.automation_science_lab_power =
   make_assembly_power_task("automation-science-lab-power", "automation_science_lab", "automation-science-pack")
 
+build_tasks.piercing_rounds_factory = make_assembly_block_task(
+  "piercing-rounds-factory-block",
+  "piercing_rounds_factory",
+  "piercing-rounds-magazine",
+  "piercing_rounds_factory"
+)
+build_tasks.piercing_rounds_factory_firearm_magazine_input =
+  make_assembly_input_route_task(
+    "piercing_rounds_factory",
+    "piercing-rounds-magazine",
+    "firearm-magazine-line",
+    "firearm-magazine"
+  )
+build_tasks.piercing_rounds_factory_steel_input =
+  make_assembly_input_route_task(
+    "piercing_rounds_factory",
+    "piercing-rounds-magazine",
+    "steel-plate-line",
+    "steel-plate"
+  )
+build_tasks.piercing_rounds_factory_copper_input =
+  make_assembly_input_route_task(
+    "piercing_rounds_factory",
+    "piercing-rounds-magazine",
+    "copper-plate-line",
+    "copper-plate"
+  )
+build_tasks.piercing_rounds_factory_power =
+  make_assembly_power_task(
+    "piercing-rounds-factory-power",
+    "piercing_rounds_factory",
+    "piercing-rounds-magazine"
+  )
+
 build_tasks.copper_plate_belt_export = make_fresh_output_belt_task(
   "copper_plate_belt_export",
   "copper-ore",

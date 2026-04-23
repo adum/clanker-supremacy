@@ -174,5 +174,25 @@ return {
       {name = "underground-belt", count = 24}
     },
     build_task = build_tasks.automation_science_lab
+  },
+  piercing_rounds_factory = {
+    display_name = "piercing rounds factory",
+    tasks = {
+      build_tasks.piercing_rounds_factory,
+      build_tasks.piercing_rounds_factory_firearm_magazine_input,
+      build_tasks.piercing_rounds_factory_steel_input,
+      build_tasks.piercing_rounds_factory_copper_input,
+      build_tasks.piercing_rounds_factory_power
+    },
+    required_items = {
+      {name = "assembling-machine-1", count = 1},
+      {name = "burner-inserter", count = 4},
+      {name = "small-electric-pole", count = 8},
+      {name = "splitter", count = 3},
+      {name = "transport-belt", count = 192},
+      {name = "underground-belt", count = 24},
+      {name = "wooden-chest", count = 1}
+    },
+    build_task = build_tasks.piercing_rounds_factory
   }
 }

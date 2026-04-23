@@ -5,7 +5,8 @@ return {
     stone = 500,
     ["copper-plate"] = 500,
     ["solar-panel"] = 40,
-    ["gun-turret"] = 40
+    ["gun-turret"] = 40,
+    ["piercing-rounds-magazine"] = 1000
   },
   nearby_container_collection = {
     interval_ticks = 5 * 60,
@@ -55,7 +56,8 @@ return {
     assembler_item_limits = {
       ["firearm-magazine"] = 100,
       ["solar-panel"] = 100,
-      ["gun-turret"] = 100
+      ["gun-turret"] = 100,
+      ["piercing-rounds-magazine"] = 1000
     },
     own_force_only = true,
     max_entities_per_scan = 12

@@ -93,6 +93,20 @@ function predicates.unlock_requirements_met(builder_state, unlock, get_resource_
     end
   end
 
+  local force = builder_state and builder_state.entity and builder_state.entity.valid and builder_state.entity.force or nil
+  for _, technology_name in ipairs(unlock.required_researched_technologies or {}) do
+    local researched = false
+    if force then
+      pcall(function()
+        local technology = force.technologies and force.technologies[technology_name] or nil
+        researched = technology and technology.researched == true
+      end)
+    end
+    if not researched then
+      return false
+    end
+  end
+
   return true
 end
 
