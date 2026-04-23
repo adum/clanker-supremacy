@@ -5,6 +5,9 @@ local artillery_entity_name = builder_data.prototypes.clanker_artillery_entity_n
 local artillery_cannon_name = builder_data.prototypes.clanker_artillery_cannon_name
 local artillery_shell_name = builder_data.prototypes.clanker_artillery_shell_item_name
 local artillery_shell_starting_speed = builder_data.prototypes.clanker_artillery_shell_starting_speed
+local artillery_shell_stack_size = builder_data.prototypes.clanker_artillery_shell_stack_size or 50
+local artillery_fire_cooldown_multiplier = builder_data.prototypes.clanker_artillery_fire_cooldown_multiplier or 2
+local artillery_ammo_capacity = builder_data.prototypes.clanker_artillery_ammo_capacity or 50
 local artillery_range = builder_data.prototypes.clanker_artillery_range
 
 local clanker_tint = {r = 0.36, g = 0.92, b = 1.0, a = 0.95}
@@ -58,6 +61,8 @@ artillery_cannon.order = "z[enemy-builder]-b[clanker-artillery-cannon]"
 artillery_cannon.attack_parameters.range = artillery_range
 artillery_cannon.attack_parameters.min_range = 8
 artillery_cannon.attack_parameters.ammo_category = artillery_shell_name
+artillery_cannon.attack_parameters.cooldown =
+  (artillery_cannon.attack_parameters.cooldown or 200) * artillery_fire_cooldown_multiplier
 
 local artillery_ammo_category = table.deepcopy(data.raw["ammo-category"]["artillery-shell"])
 artillery_ammo_category.name = artillery_shell_name
@@ -77,6 +82,7 @@ artillery_shell.icons = {
 artillery_shell.hidden = true
 artillery_shell.auto_recycle = false
 artillery_shell.ammo_category = artillery_shell_name
+artillery_shell.stack_size = artillery_shell_stack_size
 artillery_shell.subgroup = "other"
 artillery_shell.order = "z[enemy-builder]-b[clanker-artillery-shell]"
 artillery_shell.ammo_type.action.action_delivery.starting_speed = artillery_shell_starting_speed
@@ -97,6 +103,8 @@ artillery_entity.hidden = true
 artillery_entity.minable = nil
 artillery_entity.fast_replaceable_group = nil
 artillery_entity.gun = artillery_cannon_name
+artillery_entity.ammo_stack_limit = artillery_ammo_capacity
+artillery_entity.automated_ammo_count = artillery_ammo_capacity
 artillery_entity.manual_range_modifier = 1
 artillery_entity.map_color = {r = 0.18, g = 0.68, b = 0.9, a = 1}
 
