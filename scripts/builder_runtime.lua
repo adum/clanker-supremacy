@@ -3292,6 +3292,7 @@ local function setup_manual_test(spec)
       storage.enemy_builder_test.assertion.surface_name or spec.surface_name
     storage.enemy_builder_test.assertion.surface_index =
       storage.enemy_builder_test.assertion.surface_index or spec.surface_index
+    storage.enemy_builder_test.assertion.start_tick = game.tick
     storage.enemy_builder_test.assertion.deadline_tick =
       game.tick + (storage.enemy_builder_test.assertion.deadline_offset_ticks or 0)
     storage.enemy_builder_test.assertion.result_file =
@@ -3408,6 +3409,7 @@ local function setup_scaling_test(spec)
       storage.enemy_builder_test.assertion.surface_name or spec.surface_name
     storage.enemy_builder_test.assertion.surface_index =
       storage.enemy_builder_test.assertion.surface_index or spec.surface_index
+    storage.enemy_builder_test.assertion.start_tick = game.tick
     storage.enemy_builder_test.assertion.deadline_tick =
       game.tick + (storage.enemy_builder_test.assertion.deadline_offset_ticks or 0)
     storage.enemy_builder_test.assertion.result_file =
@@ -3526,22 +3528,25 @@ function setup_clanker_artillery_placement_test_case()
 
   local artillery_item_name = builder_data.prototypes.clanker_artillery_item_name
   local artillery_entity_name = builder_data.prototypes.clanker_artillery_entity_name
+  local shell_item_name = builder_data.prototypes.clanker_artillery_shell_item_name
   local shell_count = 5
-  local artillery_position = {x = 0, y = 0}
-  local area = make_test_area(artillery_position, 48, 48)
+  local artillery_position = {x = 192, y = 192}
+  local builder_position = {x = 184, y = 192}
+  local target_position = {x = 208, y = 192}
+  local area = make_test_area(artillery_position, 96, 96)
 
   surface.always_day = true
   clear_test_area(surface, area)
 
   return setup_scaling_test{
     case_name = "clanker_artillery_placement",
-    builder_position = {x = -8, y = 0},
+    builder_position = builder_position,
     surface_name = surface.name,
     suppress_player_autospawn = true,
     disable_nearby_machine_output_collection = true,
     inventory = {
       {name = artillery_item_name, count = 1},
-      {name = "artillery-shell", count = shell_count}
+      {name = shell_item_name, count = shell_count}
     },
     mutate_builder_state = function(builder_state, test_surface)
       local builder_recipe = builder_state.entity.force.recipes[artillery_item_name]
@@ -3573,21 +3578,47 @@ function setup_clanker_artillery_placement_test_case()
       if not (artillery and artillery.valid) then
         error("enemy-builder test: failed to place Clanker Artillery")
       end
+      artillery.artillery_auto_targeting = true
+
+      local target = test_surface.create_entity{
+        name = "gun-turret",
+        position = target_position,
+        force = player_force,
+        create_build_effect_smoke = false
+      }
+      if not (target and target.valid) then
+        error("enemy-builder test: failed to place player target for Clanker Artillery")
+      end
+      debug_log(
+        "test setup clanker_artillery_placement: placed player target at " ..
+        format_position(target.position)
+      )
 
       local ammo_inventory = get_artillery_ammo_inventory(artillery)
       if not ammo_inventory then
         error("enemy-builder test: Clanker Artillery has no artillery ammo inventory")
       end
 
-      local removed_shells = builder_inventory.remove{name = "artillery-shell", count = shell_count}
+      local removed_shells = builder_inventory.remove{name = shell_item_name, count = shell_count}
       if removed_shells < shell_count then
         error("enemy-builder test: expected builder to hold artillery shells before loading")
       end
 
-      local inserted_shells = ammo_inventory.insert{name = "artillery-shell", count = removed_shells}
+      local inserted_shells = ammo_inventory.insert{name = shell_item_name, count = removed_shells}
       if inserted_shells < shell_count then
         error("enemy-builder test: failed to load Clanker Artillery with artillery shells")
       end
+      local loaded_shells = ammo_inventory.get_item_count(shell_item_name)
+      if loaded_shells < shell_count then
+        error("enemy-builder test: Clanker Artillery only has " .. loaded_shells .. " artillery shell(s) after loading")
+      end
+      debug_log(
+        "test setup clanker_artillery_placement: loaded Clanker Artillery at "
+          .. format_position(artillery.position)
+          .. " with "
+          .. loaded_shells
+          .. " artillery shell(s)"
+      )
 
       builder_state.task_state = {
         phase = "waiting-for-resource",
@@ -3599,7 +3630,8 @@ function setup_clanker_artillery_placement_test_case()
       case_name = "clanker_artillery_placement",
       surface_name = surface.name,
       area = area,
-      deadline_offset_ticks = 1,
+      deadline_offset_ticks = 1800,
+      minimum_elapsed_ticks_before_pass = 120,
       skip_output_assertion = true,
       expected_counts = {
         [artillery_entity_name] = 1
@@ -3609,8 +3641,15 @@ function setup_clanker_artillery_placement_test_case()
           label = "clanker-artillery-shells",
           entity_name = artillery_entity_name,
           inventory = "artillery_turret_ammo",
-          item_name = "artillery-shell",
-          count = shell_count
+          item_name = shell_item_name,
+          count = shell_count - 1
+        }
+      },
+      minimum_entity_damage_dealt = {
+        {
+          label = "clanker-artillery-damage",
+          entity_name = artillery_entity_name,
+          count = 1
         }
       }
     }
@@ -7878,6 +7917,20 @@ function get_test_entity_inventory_item_count(surface, force, area, requirement)
   return total_count
 end
 
+function get_test_entity_damage_dealt(surface, force, area, requirement)
+  local total_damage = 0
+
+  for _, entity in ipairs(surface.find_entities_filtered{
+    area = area,
+    force = force,
+    name = requirement.entity_name
+  }) do
+    total_damage = total_damage + (entity.damage_dealt or 0)
+  end
+
+  return total_damage
+end
+
 local function get_test_output_item_count(surface, force, area, entity_names, item_name)
   local total_count = 0
 
@@ -8260,12 +8313,15 @@ local function get_test_entity_debug_details(surface, force, area, assertion)
     name = builder_data.prototypes.clanker_artillery_entity_name
   }) do
     local ammo_inventory = get_artillery_ammo_inventory(artillery)
-    local shell_count = ammo_inventory and ammo_inventory.get_item_count("artillery-shell") or 0
+    local ammo_item_name = builder_data.prototypes.clanker_artillery_shell_item_name or "artillery-shell"
+    local shell_count = ammo_inventory and ammo_inventory.get_item_count(ammo_item_name) or 0
     details[#details + 1] = string.format(
-      "artillery(pos=%s name=%s shells=%d)",
+      "artillery(pos=%s name=%s shells=%d damage=%.1f auto_targeting=%s)",
       format_position(artillery.position),
       artillery.name,
-      shell_count
+      shell_count,
+      artillery.damage_dealt or 0,
+      tostring(artillery.artillery_auto_targeting)
     )
   end
 
@@ -8354,6 +8410,13 @@ local function format_test_failure_summary(surface, force, assertion)
     parts[#parts + 1] =
       label .. ">=" .. tostring(requirement.count or 0) ..
       " actual=" .. get_test_entity_inventory_item_count(surface, force, area, requirement)
+  end
+
+  for _, requirement in ipairs(assertion.minimum_entity_damage_dealt or {}) do
+    local label = requirement.label or (tostring(requirement.entity_name) .. "-damage")
+    parts[#parts + 1] =
+      label .. ">=" .. tostring(requirement.count or 0) ..
+      " actual=" .. get_test_entity_damage_dealt(surface, force, area, requirement)
   end
 
   for pattern_name, minimum_count in pairs(assertion.minimum_resource_site_counts or {}) do
@@ -8582,6 +8645,13 @@ local function test_assertion_passed(surface, force, assertion)
   local resource_site_counts = get_resource_site_counts and get_resource_site_counts() or {}
   local builder_state = get_builder_state and get_builder_state() or nil
 
+  if assertion.minimum_elapsed_ticks_before_pass then
+    local start_tick = assertion.start_tick or game.tick
+    if game.tick < start_tick + assertion.minimum_elapsed_ticks_before_pass then
+      return false
+    end
+  end
+
   for entity_name, expected_count in pairs(assertion.expected_counts or {}) do
     if count_test_entities(surface, force, area, entity_name) < expected_count then
       return false
@@ -8656,6 +8726,12 @@ local function test_assertion_passed(surface, force, assertion)
 
   for _, requirement in ipairs(assertion.minimum_entity_inventory_items or {}) do
     if get_test_entity_inventory_item_count(surface, force, area, requirement) < (requirement.count or 0) then
+      return false
+    end
+  end
+
+  for _, requirement in ipairs(assertion.minimum_entity_damage_dealt or {}) do
+    if get_test_entity_damage_dealt(surface, force, area, requirement) < (requirement.count or 0) then
       return false
     end
   end

@@ -29,6 +29,8 @@ return {
     clanker_artillery_item_name = constants.clanker_artillery_item_name,
     clanker_artillery_entity_name = constants.clanker_artillery_entity_name,
     clanker_artillery_cannon_name = constants.clanker_artillery_cannon_name,
+    clanker_artillery_shell_item_name = constants.clanker_artillery_shell_item_name,
+    clanker_artillery_shell_starting_speed = constants.clanker_artillery_shell_starting_speed,
     clanker_artillery_range = constants.clanker_artillery_range
   },
   default_plan = "bootstrap",
